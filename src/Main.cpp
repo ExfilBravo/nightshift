@@ -3660,6 +3660,112 @@ namespace
             return failures == 0 ? 0 : 1;
         }
 
+        if (args.has ("--plugininstrumenttest"))
+        {
+            // A plugin instrument added to a song that has never played (Nightshift Drums, as
+            // installed) is heard at once, the song stopped: a hit from its own window or a note
+            // needs Tracktion's playback running, and pressing Play mustn't be what starts it
+            Song song;
+            song.loadEmpty();
+            AudioEngine audio (song, false);
+
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            const auto bundle = paths::userVst3().getChildFile ("Nightshift Drums.vst3");
+            std::unique_ptr<juce::PluginDescription> drums;
+            auto& formats = audio.getPluginFormats();
+
+            for (int i = 0; i < formats.getNumFormats() && drums == nullptr; ++i)
+                if (formats.getFormat (i)->getName() == "VST3" && bundle.exists())
+                {
+                    juce::OwnedArray<juce::PluginDescription> found;
+                    formats.getFormat (i)->findAllTypesForFile (found, bundle.getFullPathName());
+
+                    if (! found.isEmpty())
+                    {
+                        drums = std::make_unique<juce::PluginDescription> (*found[0]);
+                        audio.getKnownPlugins().addType (*drums);
+                    }
+                }
+
+            if (drums == nullptr)
+            {
+                std::cout << "SKIP  Nightshift Drums isn't installed (" << bundle.getFullPathName() << ")" << std::endl;
+                return 0;
+            }
+
+            const double sr = 48000.0;
+            const int block = 512;
+            juce::AudioBuffer<float> buffer (2, block);
+
+            auto run = [&] (double seconds)
+            {
+                float loudest = 0.0f;
+
+                for (int b = 0; b < (int) (seconds * sr) / block; ++b)
+                {
+                    buffer.clear();
+                    audio.processHostedBlock (buffer);
+
+                    if (b % 4 == 0)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+
+                    loudest = std::max (loudest, buffer.getMagnitude (0, block));
+                }
+
+                return loudest;
+            };
+
+            run (0.3);
+            auto& transport = audio.getEdit().getTransport();
+            const bool runningBefore = transport.getCurrentPlaybackContext() != nullptr;
+
+            // Added as the sidebar adds it, the song never played; its window asks for the plugin
+            auto& channel = song.addChannel (drums->name, InstrumentType::plugin);
+            channel.pluginId = drums->createIdentifierString();
+            song.selectedChannelId = channel.id;
+            const int id = channel.id;
+            song.notify (Song::Change::channels);
+            settleMessages (20);
+            audio.syncNow();
+
+            auto* plugin = dynamic_cast<te::ExternalPlugin*> (audio.getInstrument (id));
+
+            if (plugin != nullptr)
+                (void) plugin->getAudioPluginInstance();
+
+            // Hits as a click in its window makes them, straight into its track (nothing else
+            // started), once a second while its kit loads: the first one heard ends it
+            float heard = 0.0f;
+            double after = 0.0;
+
+            if (plugin != nullptr)
+                if (auto* track = dynamic_cast<te::AudioTrack*> (plugin->getOwnerTrack()))
+                    for (; after < 20.0 && heard < 0.001f; after += 1.0)
+                    {
+                        track->injectLiveMidiMessage (juce::MidiMessage::noteOn (1, 38, (juce::uint8) 110), 0);
+                        heard = run (0.5);
+                        track->injectLiveMidiMessage (juce::MidiMessage::noteOff (1, 38), 0);
+                        run (0.5);
+                    }
+
+            check (plugin != nullptr, "Nightshift Drums loads on a new channel");
+            check (transport.getCurrentPlaybackContext() != nullptr,
+                   juce::String ("Tracktion's playback runs without Play having been pressed (before the channel came it was ")
+                     + (runningBefore ? "running" : "not running") + ")");
+            check (! transport.isPlaying() && heard > 0.001f,
+                   "a hit on the new channel is heard, the song stopped (peak " + juce::String (juce::Decibels::gainToDecibels (heard), 1)
+                     + " dB, " + juce::String (after, 0) + " s after it was added, its kit loading)");
+
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--keyboardtest"))
         {
             // The PC keyboard as a music keyboard (its top two letter rows like a piano's keys), as

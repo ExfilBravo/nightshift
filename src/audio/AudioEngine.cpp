@@ -1048,6 +1048,12 @@ void AudioEngine::syncChannels()
     }
 
     syncBuses();
+
+    // Every instrument is heard as soon as it's there, the song stopped: a plugin's own window
+    // (Nightshift Drums' kit, a synth's keyboard) plays through Tracktion's playback, which
+    // otherwise only Play, a key, a recording or an audio track's input would have started
+    if (! song.channels.empty() && ! edit->getTransport().isRecording())
+        edit->getTransport().ensureContextAllocated();
 }
 
 void AudioEngine::syncBuses()
