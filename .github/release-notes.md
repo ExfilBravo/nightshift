@@ -1,11 +1,12 @@
 NightShift is a free music studio for Windows and Mac: patterns and a step sequencer, a piano roll, a mixer, built-in synths and drum kits, and an AI band (drummer, bass, guitar, keys and synth) that writes parts in the style you describe.
 
-## What's new in 0.3.0
+## What's new in 0.4.0
 
-- **The AI drummer plays with a real drummer's feel.** Its swing, how far ahead or behind the beat each drum sits, and how hard each hit lands are learned from Google Magenta's Groove MIDI Dataset: 13.6 hours of ten drummers. Funk swings and breathes, neo-soul keeps its lazy pocket, and house and trap stay tight.
-- **Typing a file name no longer plays notes.** In Save as, Open, Export and the other file dialogs, your keys type instead of playing the computer keyboard.
+- **Give the AI band a song for its vibe.** In the AI tab's Song panel, click **Listen to a song...** (or drop an MP3, WAV, AIFF, FLAC or Ogg file on it). In a few seconds the band hears its tempo, beat, key, chords, sections and sound, then writes a new song of its own with that vibe. You choose how close it stays: Close, Some changes or Loosely. It all happens on your computer and nothing is sent anywhere.
+- **The 808 and 909 in Nightshift Drums.** Two new kits, each drawn as its drum machine: click a drum to play it, and the step lamps follow the beat. They're built in, so there's nothing to download.
+- **Clicking a drum plays it straight away.** In NightShift, clicking a drum in Nightshift Drums (or a key on a synth's own keyboard) now plays at once, even before you've pressed Play.
 
-0.2.0 brought 13 new styles the AI band plays as its own (house, techno, EDM, drum and bass, dubstep, synthwave, reggae, reggaeton, afrobeats, bossa nova, ambient, cinematic and country), soft verses that stay soft on the built-in sounds, and a Donate button. NightShift is free and always will be; donating is entirely up to you.
+0.3.0 gave the AI drummer a real drummer's feel, learned from the Groove MIDI Dataset, and stopped file names you type in Save as from playing notes. 0.2.0 brought 13 new styles the AI band plays as its own (house, techno, EDM, drum and bass, dubstep, synthwave, reggae, reggaeton, afrobeats, bossa nova, ambient, cinematic and country), soft verses that stay soft on the built-in sounds, and a Donate button. NightShift is free and always will be; donating is entirely up to you.
 
 ## Install
 
