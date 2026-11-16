@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
+
+#include "Genres.h"
+
+namespace nightshift::agents
+{
+
+// Each genre as the band plays it: the style nearest it and the feel that makes it itself (the user,
+// 2026-11-15: "I told it to make a sleep token style song and it gave me a blues shuffle"). Rows made
+// from a table by tools that check every artist's genre is here and no name means two things.
+const std::vector<Genre>& genres()
+{
+    static const std::vector<Genre> list {
+@GENRES@    };
+
+    return list;
+}
+
+const std::vector<Artist>& artists()
+{
+    static const std::vector<Artist> list {
+@ARTISTS@    };
+
+    return list;
+}
+
+const Genre* findGenre (const juce::String& id)
+{
+    for (auto& g : genres())
+        if (id == g.id)
+            return &g;
+
+    return nullptr;
+}
+
+juce::String Named::feel() const
+{
+    juce::StringArray all;
+
+    if (genre != nullptr)
+        all.add (genre->feel);
+
+    if (artist != nullptr)
+        all.add (artist->feel);
+
+    all.removeEmptyStrings();
+    return all.joinIntoString (", ");
+}
+
+namespace
+{
+    // A letter without its accent (Beyonce is typed with an e acute or without; the names here are written without)
+    juce_wchar folded (juce_wchar c)
+    {
+        // Capitals too: a Mac's towlower (its "C" locale) leaves an E acute a capital
+        if (c >= 0xc0 && c <= 0xdd && c != 0xd7)
+            c += 0x20;
+
+        if (c >= 0xe0 && c <= 0xe5) return 'a';
+        if (c == 0xe7) return 'c';
+        if (c >= 0xe8 && c <= 0xeb) return 'e';
+        if (c >= 0xec && c <= 0xef) return 'i';
+        if (c == 0xf1) return 'n';
+        if (c >= 0xf2 && c <= 0xf6) return 'o';
+        if (c >= 0xf9 && c <= 0xfc) return 'u';
+        if (c == 0xfd || c == 0xff) return 'y';
+        return c;
+    }
+
+    juce::String foldedText (const juce::String& text)
+    {
+        juce::String s;
+        s.preallocateBytes (text.getNumBytesAsUTF8() + 1);
+
+        for (auto c : text)
+            s += juce::String::charToString (folded (c));
+
+        return s;
+    }
+
+    // As Request.cpp spaces words: lower case, anything but letters, digits, & / - # a space
+    juce::String spacedName (const juce::String& name)
+    {
+        juce::String s;
+
+        for (auto c : foldedText (name.toLowerCase()))
+            s << (isWordLetter (c) || c == '/' || c == '&' || c == '-' || c == '#' ? juce::String::charToString (c) : juce::String (" "));
+
+        return s.replace ("-", " - ").trim().replace ("  ", " ").replace ("  ", " ");
+    }
+
+    // A one-word name that's also a word ("Ghost", "Ride", "Future", "Death") only names an artist
+    // beside a word that says it does: "like Ghost", "Ghost style", "a Future type beat", "Ride vibes"
+    bool cued (const juce::String& text, int at, int length)
+    {
+        static const juce::StringArray before { "like", "by", "of", "la", "similar to", "inspired by" };
+        static const juce::StringArray after { "style", "styled", "type", "vibe", "vibes", "song", "songs", "track", "tracks", "sound",
+                                               "sounding", "inspired", "ish", "esque", "kind", "beat", "beats" };
+        const auto left = text.substring (0, at).trimEnd().trimCharactersAtEnd ("- ").trimEnd();
+        const auto right = text.substring (at + length).trimStart().trimCharactersAtStart ("- ").trimStart();
+
+        for (auto& w : before)
+            if (left.endsWith (" " + w) || left == w)
+                return true;
+
+        for (auto& w : after)
+            if (right.startsWith (w + " ") || right == w)
+                return true;
+
+        return false;
+    }
+}
+
+bool isWordLetter (juce::juce_wchar c)
+{
+    return juce::CharacterFunctions::isLetterOrDigit (c) || (c >= 0xc0 && c <= 0x24f && c != 0xd7 && c != 0xf7);
+}
+
+Named findNamed (const juce::String& spacedWords)
+{
+    const auto text = foldedText (spacedWords);
+    Named best;
+
+    auto consider = [&] (const juce::String& name, const Genre* genre, const Artist* artist)
+    {
+        const auto n = spacedName (name);
+
+        if (n.isEmpty())
+            return;
+
+        // Every place it's named, the first that counts
+        for (int at = text.indexOf (" " + n + " "); at >= 0; at = text.indexOf (at + 1, " " + n + " "))
+        {
+            const bool oneWord = n.containsOnly ("abcdefghijklmnopqrstuvwxyz");
+
+            // A soul chord isn't soul music
+            if (genre != nullptr && text.substring (at + n.length() + 2).startsWith ("chord"))
+                continue;
+
+            if (artist != nullptr && oneWord && ! cued (text, at + 1, n.length()))
+                continue;
+
+            // The longest name wins, the first of two as long; a genre or artist over a style's word
+            // as long is the caller's choice
+            if (n.length() > best.length || (n.length() == best.length && at < best.at))
+            {
+                best.genre = genre != nullptr ? genre : findGenre (artist->genre);
+                best.artist = artist;
+                best.at = at;
+                best.length = n.length();
+            }
+
+            break;
+        }
+    };
+
+    for (auto& g : genres())
+        for (auto& w : g.words)
+            consider (w, &g, nullptr);
+
+    for (auto& a : artists())
+    {
+        consider (a.name, nullptr, &a);
+
+        for (auto& w : a.words)
+            consider (w, nullptr, &a);
+    }
+
+    return best;
+}
+
+juce::String withFeel (const juce::String& words)
+{
+    juce::String s;
+
+    for (auto c : words.toLowerCase())
+        s << (isWordLetter (c) || c == '/' || c == '&' || c == '-' || c == '#' ? juce::String::charToString (c) : juce::String (" "));
+
+    const auto named = findNamed (" " + s.replace ("-", " - ").replace ("  ", " ") + " ");
+    const auto feel = named.feel();
+    return feel.isEmpty() ? words : words + ", " + feel;
+}
+
+} // namespace nightshift::agents

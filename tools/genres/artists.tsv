@@ -1,0 +1,343 @@
+# artist	genre	extra feel (words read as if typed)	other spellings (comma-separated)
+Sleep Token	altmetal	piano, soul chords, ambient intro	sleeptoken
+Bad Omens	altmetal	synth
+Spiritbox	altmetal	synth, djent riffs
+Deftones	altmetal	synth, dreamy
+Loathe	altmetal	synth, dreamy
+Bring Me The Horizon	altmetal	synth	bmth
+Breaking Benjamin	altmetal
+Chevelle	altmetal
+Three Days Grace	altmetal
+Architects	metalcore
+Parkway Drive	metalcore
+Killswitch Engage	metalcore
+August Burns Red	metalcore
+As I Lay Dying	metalcore
+Wage War	metalcore
+Polaris	metalcore
+Currents	metalcore
+Erra	metalcore
+Of Mice & Men	metalcore		of mice and men
+Ice Nine Kills	metalcore
+Asking Alexandria	metalcore
+Motionless in White	metalcore	synth
+I Prevail	metalcore
+Memphis May Fire	metalcore
+We Came As Romans	metalcore
+Crown the Empire	metalcore
+The Devil Wears Prada	metalcore
+Knocked Loose	metalcore
+Code Orange	metalcore
+Converge	metalcore
+The Dillinger Escape Plan	metalcore	busy
+Northlane	djent
+Periphery	djent
+Meshuggah	djent
+TesseracT	djent		
+Animals as Leaders	djent
+Monuments	djent
+Vildhjarta	djent
+Lorna Shore	deathcore
+Whitechapel	deathcore
+Suicide Silence	deathcore
+Thy Art Is Murder	deathcore
+Shadow of Intent	deathcore
+Chelsea Grin	deathcore
+Brand of Sacrifice	deathcore
+Polyphia	progmetal	clean
+Intervals	progmetal
+Plini	progmetal
+Tool	progmetal
+Dream Theater	progmetal
+Opeth	progmetal
+Mastodon	progmetal
+Metallica	thrash
+Slayer	thrash
+Megadeth	thrash
+Anthrax	thrash
+Exodus	thrash
+Testament	thrash
+Kreator	thrash
+Power Trip	thrash
+Sepultura	thrash
+Pantera	groovemetal
+Lamb of God	groovemetal
+Machine Head	groovemetal
+Gojira	groovemetal
+Slipknot	numetal
+Korn	numetal
+Linkin Park	numetal	synth
+Limp Bizkit	numetal
+System of a Down	numetal
+Disturbed	numetal
+Papa Roach	numetal
+Rage Against the Machine	numetal
+Iron Maiden	metal	gallops
+Judas Priest	metal
+Ghost	metal	keys
+Black Sabbath	doom
+Electric Wizard	doom
+Candlemass	doom
+Sleep	doom
+Cannibal Corpse	blast
+Death	blast
+Behemoth	blast
+Mayhem	blast
+Darkthrone	blast
+Emperor	blast
+Dimmu Borgir	blast	keys
+Deafheaven	blast	dreamy
+Nightwish	symphonic
+Epica	symphonic
+Within Temptation	symphonic
+Rammstein	industrial
+Nine Inch Nails	industrial		nin
+Ministry	industrial
+In Flames	melodeath
+Arch Enemy	melodeath
+At the Gates	melodeath
+Amon Amarth	melodeath
+Children of Bodom	melodeath	keys
+Pierce the Veil	posthardcore
+Sleeping With Sirens	posthardcore
+Dance Gavin Dance	posthardcore
+Thrice	posthardcore
+Thursday	posthardcore
+Underoath	posthardcore	synth
+Silverstein	posthardcore
+Senses Fail	posthardcore
+Hands Like Houses	posthardcore
+A Day to Remember	poppunk	with a breakdown	adtr
+Blink-182	poppunk		blink 182, blink
+Green Day	poppunk
+Sum 41	poppunk
+New Found Glory	poppunk
+The Story So Far	poppunk
+Neck Deep	poppunk
+State Champs	poppunk
+Paramore	poppunk
+Fall Out Boy	poppunk
+All Time Low	poppunk
+Simple Plan	poppunk
+Avril Lavigne	poppunk
+The Ramones	punk		ramones
+Sex Pistols	punk
+The Clash	punk
+Bad Religion	punk
+Rise Against	punk
+NOFX	punk
+Descendents	punk
+Black Flag	punk
+Dead Kennedys	punk
+Misfits	punk
+My Chemical Romance	emo		mcr
+Taking Back Sunday	emo
+Brand New	emo
+The Used	emo
+Dashboard Confessional	emo
+Jimmy Eat World	emo
+American Football	midwestemo
+Mineral	midwestemo
+Cap'n Jazz	midwestemo		capn jazz
+Sunny Day Real Estate	midwestemo
+Modern Baseball	midwestemo
+Tigers Jaw	midwestemo
+Origami Angel	midwestemo
+TTNG	mathrock		this town needs guns
+Covet	mathrock
+toe	mathrock
+Chon	mathrock
+Hella	mathrock
+Battles	mathrock
+Explosions in the Sky	postrock
+Godspeed You! Black Emperor	postrock		godspeed you black emperor, godspeed
+Mogwai	postrock
+This Will Destroy You	postrock
+Sigur Rós	postrock		sigur ros
+Russian Circles	postrock
+Caspian	postrock
+God Is an Astronaut	postrock
+My Bloody Valentine	shoegaze
+Slowdive	shoegaze
+Ride	shoegaze
+Cocteau Twins	shoegaze
+Beach House	shoegaze
+Alcest	shoegaze
+Nirvana	grunge
+Pearl Jam	grunge
+Soundgarden	grunge
+Alice in Chains	grunge
+Stone Temple Pilots	grunge
+Smashing Pumpkins	grunge		the smashing pumpkins
+Foo Fighters	rock
+Radiohead	rock
+The Strokes	rock
+Arctic Monkeys	rock
+Muse	rock
+The White Stripes	rock
+Fleetwood Mac	rock
+Queen	rock
+Incubus	rock
+Red Hot Chili Peppers	funk	funk rock	rhcp
+Queens of the Stone Age	hardrock		qotsa
+AC/DC	hardrock		acdc, ac dc
+Led Zeppelin	hardrock
+Guns N' Roses	hardrock		guns n roses, guns and roses
+Van Halen	hardrock
+Aerosmith	hardrock
+Deep Purple	hardrock
+Kiss	hardrock
+Def Leppard	hardrock
+Bon Jovi	hardrock
+Greta Van Fleet	hardrock
+Royal Blood	hardrock
+Shinedown	hardrock
+B.B. King	blues		bb king, b b king
+Muddy Waters	blues
+Howlin' Wolf	blues		howlin wolf
+Robert Johnson	blues
+Buddy Guy	blues
+Albert King	blues
+Stevie Ray Vaughan	bluesrock		srv
+Gary Clark Jr.	bluesrock		gary clark jr, gary clark
+Joe Bonamassa	bluesrock
+John Mayer	bluesrock
+Eric Clapton	bluesrock
+Jimi Hendrix	bluesrock		hendrix
+ZZ Top	bluesrock
+The Black Keys	bluesrock
+The Rolling Stones	bluesrock		rolling stones
+Johnny Cash	country
+Willie Nelson	country
+Dolly Parton	country
+Chris Stapleton	country
+Luke Combs	country
+Morgan Wallen	country
+Zach Bryan	country
+Tyler Childers	country
+Taylor Swift	pop
+Olivia Rodrigo	pop
+Harry Styles	pop
+Ed Sheeran	pop
+Billie Eilish	pop
+Lorde	pop
+Coldplay	pop
+Imagine Dragons	pop
+Maroon 5	pop
+Lady Gaga	pop
+The Beatles	pop		beatles
+Dua Lipa	disco
+Bruno Mars	funk
+Michael Jackson	funk
+Prince	funk
+Stevie Wonder	funk
+James Brown	funk
+Parliament	funk		funkadelic, parliament funkadelic
+Earth, Wind & Fire	funk		earth wind and fire, earth wind & fire
+Vulfpeck	funk
+Cory Wong	funk
+Snarky Puppy	funk
+Anderson .Paak	funk		anderson paak
+Childish Gambino	funk
+Chic	disco
+Bee Gees	disco
+Daft Punk	disco
+Tatsuro Yamashita	citypop
+Mariya Takeuchi	citypop
+Anri	citypop
+Travis Scott	trap
+Future	trap
+Metro Boomin	trap
+Playboi Carti	trap	rage
+Lil Uzi Vert	trap
+21 Savage	trap
+Young Thug	trap
+Migos	trap
+Gunna	trap
+Lil Baby	trap
+$uicideboy$	trap	phonk	suicideboys, suicideboy
+Kordhell	trap	phonk
+DVRST	trap	phonk
+Pop Smoke	drill
+Central Cee	drill
+Headie One	drill
+Chief Keef	drill
+Fivio Foreign	drill
+Kanye West	hiphop		kanye
+Kendrick Lamar	hiphop		kendrick
+J. Cole	hiphop		j cole
+Drake	hiphop
+Eminem	hiphop
+2Pac	hiphop		tupac, 2 pac
+Nas	boombap
+Wu-Tang Clan	boombap		wu tang, wu-tang
+The Notorious B.I.G.	boombap		biggie, notorious big, biggie smalls
+Mobb Deep	boombap
+A Tribe Called Quest	boombap		tribe called quest, atcq
+J Dilla	boombap	swing	dilla
+MF DOOM	boombap		
+Joey Bada$$	boombap		joey badass
+Freddie Gibbs	boombap
+Juice WRLD	emorap		juice world
+Lil Peep	emorap
+XXXTentacion	emorap		
+Trippie Redd	emorap
+Nujabes	lofi
+Joji	altrnb
+Tom Misch	neosoul
+Erykah Badu	neosoul
+D'Angelo	neosoul		dangelo
+Hiatus Kaiyote	neosoul
+Thundercat	neosoul
+Robert Glasper	neosoul
+Daniel Caesar	neosoul
+H.E.R.	neosoul		
+Steve Lacy	neosoul
+Frank Ocean	altrnb
+SZA	altrnb
+Brent Faiyaz	altrnb
+The Weeknd	altrnb	synth	weeknd
+Summer Walker	trapsoul
+Bryson Tiller	trapsoul
+6LACK	trapsoul		
+PARTYNEXTDOOR	trapsoul		party next door
+Ariana Grande	rnb
+Beyoncé	rnb		beyonce
+Rihanna	rnb
+Miles Davis	jazz
+John Coltrane	jazz		coltrane
+Bill Evans	jazz
+Herbie Hancock	jazz
+Chet Baker	ballad
+Norah Jones	ballad
+Aretha Franklin	soul
+Marvin Gaye	soul
+Otis Redding	soul
+Al Green	soul
+Leon Bridges	soul
+Amy Winehouse	soul
+Adele	soul
+Kirk Franklin	gospel
+The Midnight	synthwave
+Kavinsky	synthwave
+Carpenter Brut	synthwave	heavy
+Perturbator	synthwave	heavy
+FM-84	synthwave		fm84
+Gunship	synthwave
+Timecop1983	synthwave
+Tycho	synthwave	chill
+Skrillex	dubstep
+Avicii	edm
+Calvin Harris	house
+Fred again..	house		
+Disclosure	house
+Deadmau5	house
+Pendulum	dnb
+Noisia	dnb
+Brian Eno	ambient
+Hans Zimmer	cinematic
+Bob Marley	reggae
+Bad Bunny	reggaeton
+Burna Boy	afrobeats
+Antônio Carlos Jobim	bossa		antonio carlos jobim, jobim, tom jobim
+João Gilberto	bossa		joao gilberto

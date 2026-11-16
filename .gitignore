@@ -1,0 +1,25 @@
+# Build output
+build/
+
+# Audio and pictures made while working (renders, screenshots); the ones the build needs are let back in below
+*.wav
+*.png
+!resources/*.png
+!docs/*.png
+
+# Old previews and design screenshots (they show this PC's folders)
+preview/
+design/*.png
+
+# Working notes and the Mac kit's helpers (local only)
+NEXT.md
+mac/CLAUDE-kit.md
+mac/BUILD ON MAC.txt
+mac/make_kit.ps1
+mac/kit.gitignore
+
+# What mac/build.sh makes beside itself
+mac/.tools/
+mac/.tests/
+mac/report.txt
+mac/build.log

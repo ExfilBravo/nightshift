@@ -1,0 +1,119 @@
+# Builds NightShift's downloads on GitHub's machines: the Windows setup and the Mac installer, each with
+# the Lofi, Bass and Drums plugins. Run it by hand (Actions > Build > Run workflow) to try a build; push
+# a tag like v0.1.0 to build and publish a release with both downloads.
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-2025
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: nightshift
+          submodules: recursive
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/nightshift-lofi
+          path: nightshift-lofi
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/nightshift-bass
+          path: nightshift-bass
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/nightshift-drums
+          path: nightshift-drums
+
+      - name: Build NightShift
+        shell: cmd
+        run: call nightshift\build.cmd Release
+
+      - name: Build the plugins
+        shell: cmd
+        run: |
+          call nightshift-lofi\build.cmd Release || exit /b 1
+          call nightshift-bass\build.cmd Release || exit /b 1
+          call nightshift-drums\build.cmd Release || exit /b 1
+
+      - name: Get Inno Setup (6.7 or later, for the dark wizard)
+        shell: pwsh
+        run: choco upgrade innosetup --no-progress -y
+
+      - name: Make the setup
+        shell: cmd
+        run: call nightshift\setup.cmd
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: nightshift/build/installer/NightShift-Setup-*.exe
+          if-no-files-found: error
+
+  mac:
+    name: Mac
+    runs-on: macos-15
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: nightshift
+          submodules: recursive
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/nightshift-lofi
+          path: nightshift-lofi
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/nightshift-bass
+          path: nightshift-bass
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/nightshift-drums
+          path: nightshift-drums
+
+      - name: Build NightShift, Lofi and Bass
+        run: |
+          if ! bash nightshift/mac/build.sh --quick; then cat nightshift/mac/report.txt; exit 1; fi
+          cat nightshift/mac/report.txt
+
+      - name: Build Nightshift Drums
+        run: |
+          if ! bash nightshift-drums/mac/build.sh --no-tests; then cat nightshift-drums/mac/report.txt; exit 1; fi
+          cat nightshift-drums/mac/report.txt
+
+      - name: Make the installer
+        run: bash nightshift/mac/package.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mac
+          path: nightshift/build/installer/NightShift-*-mac.pkg
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: downloads
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" downloads/* --repo "$GITHUB_REPOSITORY" \
+            --title "NightShift ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md

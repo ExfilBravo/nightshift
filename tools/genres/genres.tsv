@@ -1,0 +1,40 @@
+# id	name	plays (a style)	own (yes / near)	slowest	usual	fastest	feel (read as if typed)	words (comma-separated)	about (said back)
+altmetal	Alternative metal	djent	yes	70	140	180	soft verses, heavy half-time chorus, drop c, synth	alternative metal, alt metal, alt-metal	heavy and dynamic: quiet verses, crushing half-time choruses, drop tuning
+progmetal	Progressive metal	djent	yes	90	130	180	busy	progressive metal, prog metal, prog-metal, prog	complex riffs and big turns, busy drums
+posthardcore	Post-hardcore	metalcore	yes	120	160	200	soft verses, big chorus	post-hardcore, post hardcore, posthardcore, screamo	urgent and melodic: driving verses, huge sung choruses
+groovemetal	Groove metal	metal	yes	90	115	140	heavy	groove metal	mid-tempo and heavy: chugging riffs locked to the kick
+melodeath	Melodic death metal	thrash	yes	140	180	220	busy	melodic death metal, melodeath, melo death, gothenburg	fast and melodic: twin-guitar leads over a driving double kick
+doom	Doom metal	metal	yes	50	66	90	half-time, heavy, drop a	doom, doom metal, stoner metal, sludge, sludge metal	slow and crushing: huge low riffs with room around every hit
+symphonic	Symphonic metal	metal	yes	100	140	180	keys	symphonic metal, symphonic	epic metal with orchestral keys
+industrial	Industrial metal	metal	yes	90	120	140	synth, simple	industrial, industrial metal	mechanical and heavy: tight straight beats, synths and chugs
+numetal	Nu metal	metal	yes	80	100	130	heavy	nu metal, nu-metal, numetal, rap metal	bouncy and heavy: low riffs, hip-hop-tinged grooves
+emo	Emo	poppunk	yes	120	160	200	soft verses, big chorus	emo, emo rock	heart-on-sleeve: driving and dynamic, big choruses
+midwestemo	Midwest emo	rock	yes	100	140	180	busy, clean	midwest emo, twinkly emo, twinkle emo, twinkle	twinkly clean guitars and busy, restless drums
+mathrock	Math rock	rock	yes	110	150	190	busy, clean	math rock, mathrock	intricate: tapped clean guitars, busy drums, odd turns
+postrock	Post-rock	rock	yes	60	90	130	soft verses, builds, big chorus	post-rock, post rock, postrock	slow builds from quiet to huge, no hurry
+shoegaze	Shoegaze	rock	yes	70	100	140	dreamy, synth	shoegaze, dream pop, dreampop, blackgaze	washes of sound: dreamy and wide, soft and loud at once
+grunge	Grunge	rock	yes	90	120	150	soft verses, heavy chorus, drop d	grunge, post-grunge, post grunge	the 90s quiet-loud: soft verses, distorted choruses
+blues	Blues	rock	yes	60	90	140	shuffle, twelve bar, 12 bars	blues, delta blues, chicago blues, twelve bar, 12 bar	a shuffle on twelve-bar changes
+bluesrock	Blues rock	hardrock	yes	80	115	150	shuffle, twelve bar, 12 bars	blues rock, blues-rock	driving rock on blues changes
+country	Country	country	yes	80	110	160	simple	country, americana, honky tonk, outlaw country	the train beat, a boom-chick bass, strummed open chords
+pop	Pop	rock	yes	90	110	130	keys, synth, big chorus	pop, pop rock, power pop, k-pop, kpop, j-pop	bright and catchy: a steady beat and big choruses
+emorap	Emo rap	trap	yes	120	140	170	guitar	emo rap, sad rap, cloud rap	trap beats under sad guitar loops
+trapsoul	Trapsoul	trap	yes	120	130	150	keys, soul chords, chill	trapsoul, trap soul	slow trap beats with lush soul chords
+altrnb	Alternative R&B	neosoul	yes	60	80	100	synth, dreamy	alternative r&b, alt r&b, alt rnb, alt-r&b	moody, spacious R&B: lush chords and soft beats
+rnb	R&B	neosoul	yes	65	85	100	keys	r&b, rnb, r and b, contemporary r&b	smooth R&B grooves and rich chords
+soul	Soul	neosoul	yes	70	95	120	keys	soul, motown, classic soul, northern soul	warm and live: classic soul grooves and chords
+gospel	Gospel	neosoul	yes	70	90	130	keys, big chorus	gospel, church	rich gospel chords building to big choruses
+citypop	City pop	funk	yes	95	110	125	keys, synth	city pop, citypop, japanese city pop	80s Tokyo: smooth funk under bright keys and synths
+disco	Disco	funk	yes	110	120	130	four on the floor	disco, nu disco, nu-disco	four-on-the-floor dance grooves
+synthwave	Synthwave	synthwave	yes	80	100	125	synth	synthwave, retrowave, outrun, darksynth, chillwave	80s neon: gated drums, octave bass in eighths, arpeggios and pads
+house	House	house	yes	118	124	128	synth	house, deep house, tech house	four on the floor: the clap on 2 and 4, open hats between, an offbeat bass
+edm	EDM	edm	yes	120	128	130	synth	edm, electronic dance, big room, festival, future bass	builds rolling up into big four-on-the-floor drops
+techno	Techno	techno	yes	125	130	140	synth	techno	four on the floor, ticking hats, a rolling acid bass
+dubstep	Dubstep	dubstep	yes	135	140	150	heavy, synth	dubstep, brostep, riddim	half-time drops: the snare on 3, a wobble bass
+dnb	Drum and bass	dnb	yes	160	174	180	synth	dnb, drum and bass, drum & bass, drum n bass, jungle, liquid	the two-step at 174, a long Reese bass
+ambient	Ambient	ambient	yes	50	70	90	chill	ambient, drone, downtempo	no drums, long pads and a slow piano
+cinematic	Cinematic	cinematic	yes	60	90	120	keys	cinematic, film score, orchestral, epic score	big toms in 3+3+2, string pads, a piano ostinato
+reggae	Reggae	reggae	yes	60	75	90	chill	reggae, roots reggae, dub, ska	the one drop, a skank on 2 and 4, a deep bass
+reggaeton	Reggaeton	reggaeton	yes	85	92	100		reggaeton, dembow, latin trap	the dembow under an 808
+afrobeats	Afrobeats	afrobeats	yes	95	105	115		afrobeats, afrobeat, amapiano, afropop	a syncopated kick, a shaker off the beat, highlife guitar
+bossa	Bossa nova	bossa	yes	110	130	150	brushes, chill	bossa, bossa nova, samba, latin jazz	the bossa clave, a dotted bass, seventh chords on the off-beats

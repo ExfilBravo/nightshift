@@ -1,0 +1,37 @@
+NightShift - third-party notices
+================================
+
+NightShift is Copyright (C) 2026 NightWriter, free software under the GNU General Public License,
+version 3 or later (LICENSE.txt beside this file). Its source code, and the source of the NightShift
+plugins, is at:
+
+    https://github.com/michaeldedmondson-design/nightshift
+    https://github.com/michaeldedmondson-design/nightshift-lofi
+    https://github.com/michaeldedmondson-design/nightshift-bass
+    https://github.com/michaeldedmondson-design/nightshift-drums
+
+NightShift and its plugins are built with the following open-source software. Each one's full licence
+text is in its folder in the source (external/tracktion_engine and external/NeuralAmpModelerCore).
+
+  JUCE 9 (juce.com) ......................... GNU Affero General Public License v3
+      with, inside JUCE: the VST3 SDK (MIT), the ASIO SDK (GPL v3), the Audio Unit SDK (Apache 2.0)
+      and zlib (zlib licence)
+  Tracktion Engine (tracktion.com) .......... GNU General Public License v3 or later
+      with, inside the engine: SoundTouch (GNU LGPL 2.1), signalsmith-stretch (MIT),
+      Airwindows (MIT), libsamplerate (BSD 2-clause), CHOC (ISC), crill (Boost 1.0),
+      magic_enum (MIT), rigtorp (MIT), rpmalloc (public domain / MIT)
+  Neural Amp Modeler core and AudioDSPTools . MIT (Steven Atkinson)
+      with: Eigen (MPL 2.0), nlohmann/json (MIT), the iPlug2 / WDL resampler (zlib-style)
+  Selawik font 1.01 (Microsoft) ............. SIL Open Font License 1.1 (resources/fonts)
+
+GPL v3 section 13 allows combining NightShift (GPL v3 or later) with JUCE (AGPL v3).
+
+Sounds NightShift downloads when you ask for them (they are not part of the download itself):
+
+  Studio drum kits (CrocellKit, MuldjordKit, DRSKit) by DrumGizmo.org ..... CC BY 4.0
+      Music made with them should credit "Drum samples provided by DrumGizmo.org".
+  AVL Drumkits by Glen MacArthur ........................................... CC BY-SA 3.0
+  Salamander Grand Piano by Alexander Holm (SFZ by sfzinstruments) ......... CC BY 3.0
+  Versilian Studios Chamber Orchestra 2 Community Edition .................. CC0
+
+The 808 and 909 kits and Nova's factory sounds are NightShift's own.
