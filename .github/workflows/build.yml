@@ -115,5 +115,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" downloads/* --repo "$GITHUB_REPOSITORY" \
-            --title "NightShift ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
+          # A release made by hand for this tag already: just put these downloads on it
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" downloads/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" downloads/* --repo "$GITHUB_REPOSITORY" \
+              --title "NightShift ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
+          fi
