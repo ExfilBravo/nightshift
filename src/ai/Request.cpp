@@ -129,6 +129,14 @@ juce::var Request::toVar() const
     o->setProperty ("softIn", listOf (softIn));
     o->setProperty ("heavyIn", listOf (heavyIn));
     o->setProperty ("halfTimeIn", listOf (halfTimeIn));
+    o->setProperty ("form", listOf (form));
+
+    auto* chords = new juce::DynamicObject();
+
+    for (auto& [kind, names] : chordsIn)
+        chords->setProperty (kind.isEmpty() ? juce::String ("all") : kind, listOf (names));
+
+    o->setProperty ("chords", juce::var (chords));
     return juce::var (o);
 }
 
@@ -185,6 +193,18 @@ Request Request::fromVar (const juce::var& v)
     read ("softIn", r.softIn);
     read ("heavyIn", r.heavyIn);
     read ("halfTimeIn", r.halfTimeIn);
+    read ("form", r.form);
+
+    if (auto* chords = v.getProperty ("chords", {}).getDynamicObject())
+        for (auto& p : chords->getProperties())
+            if (auto* list = p.value.getArray())
+            {
+                auto& names = r.chordsIn[p.name.toString() == "all" ? juce::String() : p.name.toString()];
+
+                for (auto& name : *list)
+                    names.add (name.toString());
+            }
+
     return r;
 }
 
@@ -296,6 +316,98 @@ namespace
             }
 
         r.understood.addArray (said);
+        juce::String kept (" ");
+
+        for (int i = 0; i < tokens.size(); ++i)
+            if (! gone[(size_t) i])
+                kept << tokens[i] << " ";
+
+        return kept;
+    }
+
+    // A chord's name as a token of the spaced text: a note (a to g, maybe # or b) and a quality the bassist knows
+    bool chordLike (const juce::String& t)
+    {
+        static const juce::StringArray qualities { "", "m", "min", "maj", "5", "6", "m6", "7", "m7", "maj7", "9", "m9", "maj9", "11", "13",
+                                                   "dim", "dim7", "aug", "sus2", "sus4", "7sus4", "add9" };
+
+        if (t.isEmpty() || ! juce::String ("abcdefg").containsChar (t[0]))
+            return false;
+
+        auto rest = t.substring (1);
+
+        if (rest.startsWithChar ('#') || (rest.startsWithChar ('b') && ! qualities.contains (rest)))
+            rest = rest.substring (1);
+
+        return qualities.contains (rest);
+    }
+
+    // A section's chords ("verse chords Am F C G"; "chords Em C G D" for every section) and the song's form ("form
+    // intro verse chorus verse chorus outro"), as the vibe listener writes them or anyone types them: taken out of the
+    // text, so a chord isn't read as a key, nor a section named there as one asked for
+    juce::String takeChords (const juce::String& text, Request& r)
+    {
+        static const std::pair<const char*, const char*> kinds[] {
+            { "intro", "intro" }, { "intros", "intro" }, { "verse", "verse" }, { "verses", "verse" }, { "prechorus", "prechorus" },
+            { "prechoruses", "prechorus" }, { "chorus", "chorus" }, { "choruses", "chorus" }, { "bridge", "bridge" }, { "breakdown", "breakdown" },
+            { "hook", "hook" }, { "hooks", "hook" }, { "drop", "drop" }, { "outro", "outro" } };
+
+        auto kindOf = [] (const juce::String& t) -> juce::String
+        {
+            for (auto& [w, k] : kinds)
+                if (t == w)
+                    return k;
+
+            return {};
+        };
+
+        auto tokens = juce::StringArray::fromTokens (text, " ", "");
+        tokens.removeEmptyStrings();
+        std::vector<bool> gone ((size_t) tokens.size(), false);
+
+        for (int i = 0; i < tokens.size(); ++i)
+        {
+            if (tokens[i] == "chords")
+            {
+                juce::StringArray names;
+                int j = i + 1;
+
+                for (; j < tokens.size() && chordLike (tokens[j]); ++j)
+                    names.add (tokens[j].substring (0, 1).toUpperCase() + tokens[j].substring (1));
+
+                if (names.isEmpty())
+                    continue;                               // "soul chords", "power chords": not a list
+
+                const auto kind = i > 0 ? kindOf (tokens[i - 1]) : juce::String();
+                r.chordsIn[kind] = names;
+                r.understood.add ((kind.isNotEmpty() ? kind + " chords " : juce::String ("chords ")) + names.joinIntoString (" "));
+
+                for (int k = kind.isNotEmpty() ? i - 1 : i; k < j; ++k)
+                    gone[(size_t) k] = true;
+
+                i = j - 1;
+            }
+            else if (tokens[i] == "form")
+            {
+                juce::StringArray form;
+                int j = i + 1;
+
+                for (; j < tokens.size() && kindOf (tokens[j]).isNotEmpty(); ++j)
+                    form.add (kindOf (tokens[j]));
+
+                if (form.size() < 2)
+                    continue;
+
+                r.form = form;
+                r.understood.add ("form " + form.joinIntoString (", "));
+
+                for (int k = i; k < j; ++k)
+                    gone[(size_t) k] = true;
+
+                i = j - 1;
+            }
+        }
+
         juce::String kept (" ");
 
         for (int i = 0; i < tokens.size(); ++i)
@@ -432,7 +544,7 @@ Request Request::parse (const juce::String& words, const Request* previous)
 
     // The words read from here on: with the genre's feel after them, and how sections are played
     // taken out (a soft verse isn't a softer song all through, or a song of verses alone)
-    const auto text = takeSectionFeel (byGenre ? spaced (words + ", " + byName.feel()) : said, r);
+    const auto text = takeChords (takeSectionFeel (byGenre ? spaced (words + ", " + byName.feel()) : said, r), r);
     const auto tokens = juce::StringArray::fromTokens (text, " ", "");
 
     // Tempo: "150 bpm", "150bpm", "at 150", "tempo 150"
@@ -563,8 +675,23 @@ Request Request::parse (const juce::String& words, const Request* previous)
         r.understood.add (more ? "busier" : "simpler");
     }
 
-    // Swing
-    if (hasAny (text, { "straight", "no swing", "quantized", "on the grid" }))
+    // Swing: in numbers ("45% swing", "swing 45%"), or in words. (A number has a digit: an empty word, as the words'
+    // spaces leave at their ends, "contains only digits" too)
+    int swingPercent = -1;
+    auto number = [] (const juce::String& t) { return t.isNotEmpty() && t.length() <= 3 && t.containsOnly ("0123456789"); };
+
+    for (int i = 0; i + 1 < tokens.size(); ++i)
+        if (number (tokens[i]) && tokens[i + 1] == "swing")
+            swingPercent = tokens[i].getIntValue();
+        else if (tokens[i] == "swing" && number (tokens[i + 1]))
+            swingPercent = tokens[i + 1].getIntValue();
+
+    if (swingPercent >= 0 && swingPercent <= 100)
+    {
+        r.swing = (float) swingPercent / 100.0f;
+        r.understood.add (juce::String (swingPercent) + "% swing");
+    }
+    else if (hasAny (text, { "straight", "no swing", "quantized", "on the grid" }))
     {
         r.swing = 0.0f;
         r.understood.add ("straight");

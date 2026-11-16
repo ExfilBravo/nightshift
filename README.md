@@ -422,6 +422,21 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   engineer masters it for the style. It says what it made (the key, tempo, length, sections with their repeats, who
   played on what, how loud the master came out), with **Play from the top** and a button per player to open its
   agent and change its part; the prompt and what it made are saved with the project. Offline, like every agent.
+  - **A song's vibe** – or give it a song to go by: **Listen to a song...** in the Song panel (or drop an MP3, WAV,
+    AIFF, FLAC or Ogg file on it) and the band's ears listen to it, on this computer in a few seconds, nothing
+    sent anywhere. They hear its tempo and beat (where its bars start, its swing, a kick on every beat, a half-time
+    backbeat), its key and a chord a bar, its sections (where the music changes, which parts come back, how loud
+    each is: intro, verse, chorus, bridge, outro), its drums and its sound (dark or bright, clean or gritty, how
+    much low end), and the band's styles it's nearest. It says what it heard, offers its nearest three styles to
+    **Play it as**, and **How close** to keep to it (Close: its tempo, key, chords and form as heard; Some changes:
+    the tempo moves a little and a chord or two turns to a neighbour; Loosely: the key and the form may change too),
+    with what the new song keeps and changes. **Write a song with this vibe** has the song agent make it: the band
+    writes its own parts, so it's never a copy. The words it writes are the song agent's own ("funk at 104 bpm in
+    E minor, 33% swing, verse chords Em7 Em7 A9 Em7, chorus chords A9 A9 Em7 Em7, form intro verse chorus verse
+    chorus bridge chorus outro"), and anyone can type them: "verse chords ..." (or "chords ..." for every section)
+    has the bassist, and everyone after it, play those chords, and "form ..." lays the song out that way. The
+    styles it knows by ear it learned by listening to the band itself: every style rendered as a whole song three
+    times and heard (`tools/vibes/learn_ears.js`, `src/ai/StyleEars.cpp`).
 - **AI bassist** – the same prompt, switched to AI Bass (Shift+F8, or the AI tab's **Bass**): describe a bass
   line ("funk, slap the octaves", "metalcore in drop C, locked to the kick",
   "trap 808 with slides", "walking jazz bass in Bb") and it's written at once, offline, playing with the
@@ -919,6 +934,16 @@ drummers' swing, push and looseness and saying so, disco and soul their genres' 
 keep their own and boom bap keeps its swing, render placing the snare on 2 and a swung hat exactly where the push and
 the step's timing say, hats all written alike accented as the drummers play them (their average kept), and the feel
 saved with the groove (and none in 6/8).
+`--vibetest` checks the vibe listener: the song files it opens (MP3 among them); a song made of sines and noise
+(a quiet intro, verses, louder choruses with other chords, a quiet outro at 120) heard at its tempo with its first bar
+where it starts, in A minor, every bar's chord on the right root, its sections named and lettered, the choruses the
+louder; hats swung a triplet heard swung, a kick on every beat heard as four on the floor; the band's own funk,
+metalcore and house (rendered by another of the app) heard at their tempos, their bars where they start, four in five
+bars' chords on the bassist's root, their verses and choruses found and their style among the nearest three; the song
+agent's words for a vibe read back as the request they'll be (close: everything as heard; loosely, the tempo and the
+key moving); "verse chords ...", "chords ..." and "form ..." read, saved and played as asked; and every style's ears.
+`--listen song.mp3 [--closeness 0..1] [--seed n] [--as style] [--features]` prints what it hears in a song and the
+song agent's words for one with its vibe.
 `--trackstest` covers Arrange's
 tracks: none in a new song, old projects' fixed rows loading as their used tracks, Add track (audio tracks named
 and placed), drops (new track at the end or between two, replacing the 808's instrument and hearing the synth
@@ -1108,7 +1133,9 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
 - `src/ai` – the offline agents: what the band knows of genres and artists (`Genres.cpp`: each genre's style and
   feel, the artists; its rows are made from a table that checks every name means one thing), the AI drummer (`Drummer.cpp`, a groove and rendering it into patterns;
   `OfflineDrummer.cpp`, the drummer that writes it; `LearnedFeel.cpp`, the feel learned from the Groove MIDI Dataset,
-  made by `tools/groove/learn_feel.js`), the AI bassist (`Bass.cpp`, a part, its patterns and
+  made by `tools/groove/learn_feel.js`), the band's ears (`VibeListener.cpp`: a song's tempo, beat, key, chords,
+  sections, drums and sound, and the song agent's words for its vibe; `StyleEars.cpp`, every style as the band's own
+  renders sound, made by `tools/vibes/learn_ears.js`), the AI bassist (`Bass.cpp`, a part, its patterns and
   Arrange; `OfflineBass.cpp`, the bassist: keys, progressions, a specialist per style), the AI song agent's plan (`SongWriter.cpp`: each style's band, its song form and
   an order two minutes long or more), the AI mastering engineer (`MasteringEngineer.cpp`: hearing a mix,
   each style's master, deciding, checking its tone, the reply), the AI keys player (`Keys.cpp`, its part and patterns, rolled chords; `OfflineKeys.cpp`, the

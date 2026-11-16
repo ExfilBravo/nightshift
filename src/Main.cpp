@@ -26,6 +26,8 @@
 #include "ai/Genres.h"
 #include "ai/OfflineDrummer.h"
 #include "ai/LearnedFeel.h"
+#include "ai/VibeListener.h"
+#include "ai/StyleEars.h"
 #include "ai/OfflineBass.h"
 #include "ai/OfflineGuitar.h"
 #include "ai/OfflineKeys.h"
@@ -178,6 +180,67 @@ namespace
     }
 
     //==============================================================================
+    /** A song for the vibe listener to hear (--vibetest), made of sines and noise so what's in it is known: each bar's
+        chord held (its notes from the C an octave under middle C, a little of their octaves and fifths over them), the
+        bass on its root two octaves down, and the drums (a kick's falling sine, a snare's burst of noise, a hat's short
+        hiss): the kick on 1 and 3 (every beat for four on the floor), the snare on 2 and 4, the hats on the 8ths, the
+        offbeat ones late by `swing` (0 straight, 1 a triplet). Each bar as loud as its gain. */
+    struct TestBar { juce::String chord; float gain = 1.0f; };
+
+    std::vector<float> testSong (double rate, double bpm, const std::vector<TestBar>& bars, float swing, bool fourOnFloor)
+    {
+        const double beat = 60.0 / bpm;
+        const auto n = (size_t) ((double) bars.size() * 4.0 * beat * rate + rate);
+        std::vector<float> x (n, 0.0f);
+        juce::Random random (42);
+
+        auto add = [&] (double from, double length, float gain, const std::function<float (double)>& wave, double decay)
+        {
+            const auto a = (size_t) (from * rate), count = (size_t) (length * rate);
+
+            for (size_t i = 0; i < count && a + i < n; ++i)
+            {
+                const double t = (double) i / rate;
+                const double shape = std::min (1.0, t / 0.004) * std::exp (-t / decay);
+                x[a + i] += gain * (float) shape * wave (t);
+            }
+        };
+
+        auto tone = [] (double hz) { return [hz] (double t) { return (float) (std::sin (juce::MathConstants<double>::twoPi * hz * t)
+                                                                                 + 0.5 * std::sin (juce::MathConstants<double>::twoPi * 2.0 * hz * t)
+                                                                                 + 0.25 * std::sin (juce::MathConstants<double>::twoPi * 3.0 * hz * t)); }; };
+
+        for (size_t b = 0; b < bars.size(); ++b)
+        {
+            const double start = (double) b * 4.0 * beat;
+            const auto chord = theory::parseChord (bars[b].chord);
+            const float g = bars[b].gain;
+
+            for (auto t : chord.tones)
+                add (start, 4.0 * beat, 0.05f * g, tone (130.81 * std::pow (2.0, (chord.root + t) / 12.0)), 3.0);
+
+            for (int i = 0; i < 4; ++i)
+                add (start + i * beat, beat, 0.12f * g, tone (32.70 * std::pow (2.0, (chord.root + 12) / 12.0)), 0.5);
+
+            for (int step = 0; step < 16; step += 2)
+            {
+                const double at = start + step * beat / 4.0 + (step % 4 == 2 ? swing * beat / 6.0 : 0.0);
+
+                if (step % 8 == 0 || (fourOnFloor && step % 4 == 0))
+                    add (at, 0.3, 0.5f * g, [] (double t) { return (float) std::sin (juce::MathConstants<double>::twoPi * (45.0 * t + 75.0 * 0.03 * (1.0 - std::exp (-t / 0.03)))); }, 0.12);
+
+                if (step == 4 || step == 12)
+                    add (at, 0.2, 0.25f * g, [&random] (double) { return random.nextFloat() * 2.0f - 1.0f; }, 0.06);
+
+                float last = 0.0f;
+                add (at, 0.06, 0.08f * g, [&random, &last] (double) { const float w = random.nextFloat() * 2.0f - 1.0f, d = w - last; last = w; return d; }, 0.015);
+            }
+        }
+
+        return x;
+    }
+
+    //==============================================================================
     /** Command-line modes for checking the app without opening a window:
           --writekit <folder>                   write the built-in kit WAVs
           --render <file.wav>                   render the demo song (or --project <file>)
@@ -190,6 +253,8 @@ namespace
           --arrangetest / --stepstest / --sidebartest  click and type through those parts of the window
           --genretest                           the genres and artists the band knows, Sleep Token played by all five, each new style by the band
           --feeltest                            the drum feel learned from real drummers (Groove MIDI Dataset): the table, who plays it, render
+          --vibetest                            the vibe listener: made-up songs, the band's own (rendered), the words it writes, read back
+          --listen <song> [--closeness 0..1] [--seed n] [--as style] [--features]   what it hears in a song, and the words for one like it
           --looptest / --mutetest               where loop playback starts; muting mid-chord lets go
           --fxtest                              effect plugins (the Nightshift Lofi VST3s) in channel and master chains
           --stockfxtest / --bustest / --mixertest  the stock effects measured; buses, sends, sidechain; the mixer
@@ -1698,6 +1763,252 @@ namespace
             return failures == 0 ? 0 : 1;
         }
 
+        if (args.has ("--vibetest"))
+        {
+            // The vibe listener (ai/VibeListener.h): songs made of sines and noise, where what's in them is known; the
+            // band's own songs, rendered (another of this app, --bandrender), against what each player played; the
+            // song agent's words for a vibe, read back; and the words it writes (chords, a form) played as asked
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto rootOf = [] (const juce::String& chord) { return theory::parseChord (chord).root; };
+
+            // The song files it opens: MP3 among them (JUCE's own decoder: no download, no licence)
+            {
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+                bool all = true;
+
+                for (auto type : juce::StringArray::fromTokens (vibes::fileTypes(), ";", {}))
+                    all = all && formats.findFormatForFileExtension (type.fromFirstOccurrenceOf (".", false, false)) != nullptr;
+
+                check (all && vibes::fileTypes().contains ("*.mp3"), "it opens " + vibes::fileTypes() + ", MP3 among them");
+            }
+
+            // A made-up song: a quiet intro, verse, chorus (louder, other chords), verse, chorus, a quiet outro, at 120
+            {
+                const double rate = 44100.0;
+                std::vector<TestBar> bars;
+                juce::StringArray want, kinds;
+
+                auto section = [&] (const juce::String& kind, const juce::StringArray& chords, int times, float gain)
+                {
+                    for (int t = 0; t < times; ++t)
+                        for (auto& c : chords)
+                        {
+                            bars.push_back ({ c, gain });
+                            want.add (c);
+                        }
+
+                    kinds.add (kind);
+                };
+
+                section ("intro", { "Am", "Am", "Am", "Am" }, 1, 0.45f);
+                section ("verse", { "Am", "F", "C", "G" }, 2, 0.7f);
+                section ("chorus", { "F", "G", "Am", "E" }, 2, 1.0f);
+                section ("verse", { "Am", "F", "C", "G" }, 2, 0.7f);
+                section ("chorus", { "F", "G", "Am", "E" }, 2, 1.0f);
+                section ("outro", { "Am", "Am", "Am", "Am" }, 1, 0.4f);
+
+                const auto x = testSong (rate, 120.0, bars, 0.0f, false);
+                const auto v = vibes::listen (x.data(), (int) x.size(), rate, "made up");
+                int rightRoots = 0, heardBars = 0;
+                juce::StringArray heardKinds, heardChords;
+
+                for (auto& s : v.sections)
+                {
+                    heardKinds.add (s.kind);
+
+                    for (int i = 0; i < s.chords.size(); ++i)
+                    {
+                        heardChords.add (s.chords[i]);
+                        rightRoots += s.startBar + i < want.size() && rootOf (s.chords[i]) == rootOf (want[s.startBar + i]) ? 1 : 0;
+                        ++heardBars;
+                    }
+                }
+
+                check (v.ok() && std::abs (v.tempo - 120.0) < 1.5 && std::abs (v.firstBar) < 0.06,
+                       "a made-up song at 120: heard at " + juce::String (v.tempo, 1) + " bpm, its first bar at " + juce::String (v.firstBar, 3) + " s");
+                check (v.keyName() == "A minor", "its key, A minor: heard " + v.keyName());
+                check (heardBars == want.size() && rightRoots >= want.size() * 9 / 10,
+                       "a chord a bar, " + juce::String (rightRoots) + " of " + juce::String (want.size()) + " on the right root: " + heardChords.joinIntoString (" "));
+                check (heardKinds == kinds, "its sections: " + heardKinds.joinIntoString (", ") + " (want " + kinds.joinIntoString (", ") + ")");
+                check (v.sections.size() == 6 && v.sections[1].label == v.sections[3].label && v.sections[2].label == v.sections[4].label
+                         && v.sections[1].label != v.sections[2].label && v.sections[2].energyDb > v.sections[1].energyDb + 2.0f,
+                       "the verses one music and the choruses another, the choruses the louder");
+                check (! v.fourOnFloor && v.swing < 0.15f, "straight, the kick on 1 and 3: not four on the floor, not swung");
+
+                // The song agent's words for it: as heard when close, read back as the request it'll be
+                const auto close = vibes::planFrom (v, 1.0f, 7, "rock");
+                const auto r = agents::Request::parse (close.words);
+                check (r.style == "rock" && std::abs (r.tempo - 120.0) < 0.5 && r.keyRoot == 9 && r.mode == "minor"
+                         && r.form == juce::StringArray ({ "intro", "verse", "chorus", "verse", "chorus", "outro" })
+                         && r.chordsIn.count ("verse") > 0 && r.chordsIn.at ("verse") == juce::StringArray ({ "Am", "F", "C", "G" })
+                         && r.chordsIn.count ("chorus") > 0 && r.chordsIn.at ("chorus") == juce::StringArray ({ "F", "G", "Am", "E" })
+                         && close.changed.isEmpty(),
+                       "close, its words keep it all and read back so: \"" + close.words + "\"");
+
+                // Looser, each take changes something, and not always the same thing
+                int tempoMoved = 0, keyMoved = 0;
+
+                for (juce::int64 seed = 1; seed <= 12; ++seed)
+                {
+                    const auto loose = agents::Request::parse (vibes::planFrom (v, 0.25f, seed, "rock").words);
+                    tempoMoved += std::abs (loose.tempo - 120.0) >= 1.0 ? 1 : 0;
+                    keyMoved += loose.keyRoot != 9 || loose.mode != "minor" ? 1 : 0;
+                }
+
+                check (tempoMoved >= 6 && keyMoved >= 3 && keyMoved <= 11,
+                       "loosely, twelve takes: the tempo moved in " + juce::String (tempoMoved) + ", the key in " + juce::String (keyMoved));
+            }
+
+            // Swung, and four on the floor
+            {
+                std::vector<TestBar> bars;
+
+                for (int i = 0; i < 6; ++i)
+                    for (auto c : { "Dm7", "G7", "Cmaj7", "Cmaj7" })
+                        bars.push_back ({ c, 0.8f });
+
+                const auto swung = testSong (44100.0, 90.0, bars, 1.0f, false);
+                const auto s = vibes::listen (swung.data(), (int) swung.size(), 44100.0, "swung");
+                const auto floor = testSong (44100.0, 124.0, bars, 0.0f, true);
+                const auto f = vibes::listen (floor.data(), (int) floor.size(), 44100.0, "four on the floor");
+                check (s.ok() && std::abs (s.tempo - 90.0) < 1.5 && s.swing >= 0.6f && ! s.swingSixteenths,
+                       "the hats' offbeats a triplet late: heard at " + juce::String (s.tempo, 1) + " bpm, 8ths swung " + juce::String (s.swing, 2));
+                check (f.ok() && std::abs (f.tempo - 124.0) < 1.5 && f.fourOnFloor, "a kick on every beat at 124: heard at " + juce::String (f.tempo, 1)
+                         + (f.fourOnFloor ? ", four on the floor" : ", not four on the floor"));
+            }
+
+            // The band's own songs, rendered by another of this app: what each player played is known
+            {
+                const auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+                const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift vibetest");
+                folder.createDirectory();
+                struct Take { juce::String words, style; juce::File wav; std::unique_ptr<juce::ChildProcess> process; juce::String out; };
+                std::vector<Take> takes;
+                takes.push_back ({ "a funk groove", "funk", folder.getChildFile ("funk.wav"), {}, {} });
+                takes.push_back ({ "metalcore", "metalcore", folder.getChildFile ("metalcore.wav"), {}, {} });
+                takes.push_back ({ "a house track", "house", folder.getChildFile ("house.wav"), {}, {} });
+
+                for (auto& t : takes)
+                {
+                    t.process = std::make_unique<juce::ChildProcess>();
+                    t.process->start (juce::StringArray { exe.getFullPathName(), "--bandrender", t.wav.getFullPathName(), t.words, "--song", "--seed", "3" });
+                }
+
+                for (auto& t : takes)
+                {
+                    t.out = t.process->readAllProcessOutput();
+                    t.process->waitForProcessToFinish (600000);
+                }
+
+                for (auto& t : takes)
+                {
+                    const auto v = vibes::listen (t.wav);
+                    const double bpm = t.out.fromFirstOccurrenceOf ("sections (RMS dBFS) at ", false, false).getDoubleValue();
+
+                    // What the bassist played, bar by bar, in the song's order; and each section's kind
+                    juce::StringArray played, kinds;
+
+                    for (auto line : juce::StringArray::fromLines (t.out))
+                        if (line.startsWith ("chords "))
+                        {
+                            kinds.add (theory::kindOf (line.fromFirstOccurrenceOf ("chords ", false, false).upToFirstOccurrenceOf (":", false, false)));
+                            played.addTokens (line.fromFirstOccurrenceOf (": ", false, false), " ", {});
+                        }
+
+                    int right = 0, heardBars = 0;
+                    juce::StringArray heardKinds, top;
+
+                    for (auto& s : v.sections)
+                    {
+                        heardKinds.add (s.kind);
+
+                        for (int i = 0; i < s.chords.size(); ++i, ++heardBars)
+                            right += s.startBar + i < played.size() && rootOf (s.chords[i]) == rootOf (played[s.startBar + i]) ? 1 : 0;
+                    }
+
+                    for (size_t i = 0; i < std::min<size_t> (3, v.styles.size()); ++i)
+                        top.add (v.styles[i].style);
+
+                    const bool tempoRight = std::abs (v.tempo - bpm) < bpm * 0.02 || std::abs (v.tempo * 2.0 - bpm) < bpm * 0.02 || std::abs (v.tempo - bpm * 2.0) < bpm * 0.04;
+                    check (v.ok() && tempoRight && std::abs (v.firstBar) < 0.06 && played.size() > 0 && right >= played.size() * 4 / 5,
+                           "the band's " + t.style + " at " + juce::String (bpm, 0) + " bpm: heard at " + juce::String (v.tempo, 1) + ", its first bar at "
+                             + juce::String (v.firstBar, 3) + " s, " + juce::String (right) + " of " + juce::String (played.size()) + " bars' chords on the bassist's root");
+                    check (heardKinds.size() >= kinds.size() - 2 && heardKinds.size() <= kinds.size() + 2 && heardKinds.contains ("chorus") && heardKinds.contains ("verse"),
+                           "  its sections: " + heardKinds.joinIntoString (", ") + " (played " + kinds.joinIntoString (", ") + ")");
+                    check (top.contains (t.style) || (t.style == "house" && (top.contains ("edm") || top.contains ("techno"))),
+                           "  its style among the nearest three: " + top.joinIntoString (", "));
+                    t.wav.deleteFile();
+                }
+
+                folder.deleteRecursively();
+            }
+
+            // Its words read back: chords for a kind of section and for every section, a form; a chord isn't a key
+            {
+                const auto r = agents::Request::parse ("funk at 100 bpm in E minor, verse chords E7 A7 E7 B7, chorus chords A7 A7 E7 E7, form intro verse chorus verse chorus outro");
+                const auto all = agents::Request::parse ("lofi, chords Dm7 G7 Cmaj7 Am7");
+                check (r.style == "funk" && r.keyRoot == 4 && r.mode == "minor" && r.chordsIn.size() == 2 && r.chordsIn.at ("verse").size() == 4
+                         && r.chordsIn.at ("chorus")[0] == "A7" && r.form.size() == 6 && all.chordsIn.count ({}) > 0 && all.chordsIn.at ({}).size() == 4
+                         && agents::Request::fromVar (r.toVar()).chordsIn == r.chordsIn && agents::Request::fromVar (r.toVar()).form == r.form,
+                       "\"verse chords ...\", \"chords ...\" and \"form ...\" read as asked, and saved and read back");
+
+                // The bassist plays them, and the song agent lays the form out
+                Song song;
+                song.loadBlank();
+                const auto words = juce::String ("funk at 100 bpm in E minor, verse chords E7 A7 E7 B7, chorus chords A7 A7 E7 E7, form intro verse chorus verse chorus bridge chorus outro");
+                auto groove = drummer::offline::write (songwriter::drummerWords (words, "funk"), song, nullptr, {}, false, {}, true, 5).groove;
+                const auto b = bass::offline::write (words, song, nullptr, &groove, true, true, 5);
+                bool asked = true;
+                int seen = 0;
+
+                for (auto& s : b.part.sections)
+                {
+                    const auto kind = theory::kindOf (s.name);
+                    const juce::StringArray want = kind == "verse" ? juce::StringArray { "E7", "A7", "E7", "B7" } : kind == "chorus" ? juce::StringArray { "A7", "A7", "E7", "E7" } : juce::StringArray();
+
+                    if (want.isEmpty())
+                        continue;
+
+                    ++seen;
+
+                    for (size_t i = 0; i < s.bars.size(); ++i)
+                        asked = asked && rootOf (s.bars[i].chord) == rootOf (want[(int) i % 4]) && s.bars[i].chord.contains ("7");
+                }
+
+                const auto arrangement = songwriter::arrange (groove, "funk", words, 4.0 * 60.0 / 100.0);
+                juce::StringArray arranged;
+
+                for (auto& name : arrangement)
+                    arranged.add (theory::kindOf (name));
+
+                check (seen >= 2 && asked, "the bassist plays the verse's and the chorus's chords as asked");
+                check (arranged == juce::StringArray ({ "intro", "verse", "chorus", "verse", "chorus", "bridge", "chorus", "outro" }), "the song agent lays out the form asked: " + arranged.joinIntoString (", "));
+            }
+
+            // The band's ears: every style it plays heard, from two renders or more, its drums between 0 and 1
+            {
+                juce::StringArray missing;
+
+                for (auto& s : agents::styles())
+                    if (const auto* ear = vibes::ears::find (s.id); ear == nullptr || ear->heard < 2
+                          || std::any_of (std::begin (ear->pattern), std::end (ear->pattern), [] (float p) { return p < 0.0f || p > 1.0f; }))
+                        missing.add (s.id);
+
+                check (missing.isEmpty() && vibes::ears::all().size() == agents::styles().size(),
+                       juce::String ((int) vibes::ears::all().size()) + " styles' ears, one for each style the band plays" + (missing.isEmpty() ? juce::String() : ": not " + missing.joinIntoString (", ")));
+            }
+
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--feeltest"))
         {
             // The drummer's feel learned from real drummers (ai/LearnedFeel.h, the Groove MIDI Dataset): the table, which
@@ -1739,8 +2050,8 @@ namespace
                 }
 
                 check (learnedFeels().size() >= 15 && bad.isEmpty(),
-                       juce::String ((int) learnedFeels().size()) + " feels learned, each a style or genre of the band's, from two minutes of playing or more, "
-                         "every step within 40 ms and every accent between 0.3 and 2" + (bad.isEmpty() ? juce::String() : ": not " + bad.joinIntoString (", ")));
+                       juce::String ((int) learnedFeels().size()) + " feels learned (" + juce::String (minutes) + " minutes of playing), each a style or genre of the band's, "
+                         "from two minutes or more, every step within 40 ms and every accent between 0.3 and 2" + (bad.isEmpty() ? juce::String() : ": not " + bad.joinIntoString (", ")));
             }
 
             Song song;
@@ -11048,7 +11359,8 @@ namespace
             static const View views[] {
                 { "Arrange and Steps", "" }, { "a laptop's 1366 x 768", "--size 1366x768" }, { "the piano roll", "--raise piano" },
                 { "the mixer", "--raise mixer" }, { "the mixer with buses", "--buses --raise mixer" },
-                { "AI: Song", "--raise song" }, { "AI: Drums", "--raise drummer" }, { "AI: Bass", "--raise bass" },
+                { "AI: Song", "--raise song" }, { "AI: Song, a song heard for its vibe", "--raise song --vibedemo" },
+                { "AI: Song, listening to a song", "--raise song --vibelistening" }, { "AI: Drums", "--raise drummer" }, { "AI: Bass", "--raise bass" },
                 { "AI: Guitar", "--raise guitar" }, { "AI: Keys", "--raise keys" }, { "AI: Synth", "--raise aisynth" },
                 { "AI: Master", "--raise aimaster" }, { "the drummer's conversation", "--drummer panel" },
                 { "the bassist's", "--bass \"funk slap bass\"" }, { "the guitarist's, with tab", "--guitar \"pop punk power chords\"" },
@@ -13394,7 +13706,8 @@ namespace
             return ok ? 0 : 1;
         }
 
-        // The whole band, rendered and measured (--bandrender out.wav "metalcore" [--only drums|bass|guitar|keys|synth]):
+        // The whole band, rendered and measured (--bandrender out.wav "metalcore" [--only drums|bass|guitar|keys|synth]
+        // [--seed n]: another take from every player):
         // the drummer, then the bassist, the guitarist, the keys and the synth with it, each on the
         // sound it picks, so where each sits in the mix can be measured (the words may name the
         // synth's job: "metalcore pad"). With --master "words" the AI mastering engineer masters it
@@ -13406,6 +13719,7 @@ namespace
             const juce::File out (args.valueAfter ("--bandrender"));
             const auto words = args.tokens[args.tokens.indexOf ("--bandrender") + 2].unquoted();
             const auto only = args.valueAfter ("--only");
+            const juce::int64 seed = args.has ("--seed") ? args.valueAfter ("--seed").getLargeIntValue() : 1;   // every player's
 
             // As a computer without the downloads plays it (a Mac's, so far): --nosamples hides the sampled
             // instruments (the keys on a Nova sound), --kit "808" forces the drum kit
@@ -13424,7 +13738,15 @@ namespace
             song.findChannel (drumsId)->kit = drumkits::ids()[0];
             song.findChannel (bassId)->synthPreset = "Finger Bass";
 
-            const auto groove = drummer::offline::write (words, song, nullptr, drummer::kitNamesFor (*song.findChannel (drumsId)), true, {}, true, 1).groove;
+            auto groove = drummer::offline::write (args.has ("--song") ? songwriter::drummerWords (words, agents::Request::parse (words).style) : words,
+                                                   song, nullptr, drummer::kitNamesFor (*song.findChannel (drumsId)), true, {}, true, seed).groove;
+
+            // --song: in the order the song agent plays it, two minutes or more (verses and choruses coming back)
+            if (args.has ("--song"))
+            {
+                const double tempo = groove.tempo > 0 ? groove.tempo : song.bpm;
+                groove.arrangement = songwriter::arrange (groove, agents::Request::parse (words).style, words, 4.0 * 60.0 / tempo);
+            }
 
             if (const auto kit = drumkits::idForName (groove.kit); kit.isNotEmpty())
                 song.findChannel (drumsId)->kit = kit;
@@ -13448,10 +13770,10 @@ namespace
             }
 
             drummer::render (song, drumsId, groove, drummer::keyMapFor (*song.findChannel (drumsId)));
-            const auto b = bass::offline::write (words, song, nullptr, &groove, true, true, 1);
-            const auto g = guitar::offline::write (words, song, nullptr, &groove, &b.part, true, true, 1);
+            const auto b = bass::offline::write (words, song, nullptr, &groove, true, true, seed);
+            const auto g = guitar::offline::write (words, song, nullptr, &groove, &b.part, true, true, seed);
             song.findChannel (guitarId)->instrument = guitarsound::pathFor (g.part.sound);
-            const auto kp = keys::offline::write (words, song, nullptr, &groove, &b.part, true, true, 1);
+            const auto kp = keys::offline::write (words, song, nullptr, &groove, &b.part, true, true, seed);
             const int keysId = song.addChannel ("Keys", kp.part.sampled.isNotEmpty() ? InstrumentType::instrument : InstrumentType::synth).id;
 
             if (kp.part.sampled.isNotEmpty())
@@ -13460,7 +13782,7 @@ namespace
                 song.findChannel (keysId)->synthPreset = kp.part.sound;
 
             song.findChannel (keysId)->volume = juce::jlimit (0.0f, 1.0f, 0.78f * std::pow (10.0f, kp.part.levelDb / 40.0f));
-            const auto sp = synth::offline::write (words, song, nullptr, {}, {}, &groove, &b.part, &kp.part, true, true, 1);
+            const auto sp = synth::offline::write (words, song, nullptr, {}, {}, &groove, &b.part, &kp.part, true, true, seed);
             const int synthId = song.addChannel ("Synth", InstrumentType::synth).id;
             song.findChannel (synthId)->synthPreset = sp.part.sound;
             song.findChannel (synthId)->volume = juce::jlimit (0.0f, 1.0f, 0.78f * std::pow (10.0f, sp.part.levelDb / 40.0f));
@@ -13556,7 +13878,92 @@ namespace
                       << "integrated " << juce::String (m.integratedLufs, 1) << " LUFS, true peak " << juce::String (m.truePeakDb, 1)
                       << " dBTP, range " << juce::String (m.loudnessRangeLu, 1) << " LU" << std::endl
                       << "sections (RMS dBFS) at " << song.bpm << " bpm: " << levels << std::endl;
+
+            // The bassist's chords, section by section in the song's order (what the vibe listener should hear)
+            for (auto& name : groove.arrangement)
+                for (auto& s : b.part.sections)
+                    if (s.name == name)
+                    {
+                        juce::StringArray chords;
+
+                        for (auto& bar : s.bars)
+                            chords.add (bar.chord);
+
+                        std::cout << "chords " << name << ": " << chords.joinIntoString (" ") << std::endl;
+                    }
+
             return ok ? 0 : 1;
+        }
+
+        // What the vibe listener hears in a song (--listen song.mp3 [--closeness 0..1] [--seed n] [--as style]): its
+        // vibe, each section's chords bar by bar, the styles it's nearest, and the song agent's words for a new song with it
+        if (args.has ("--listen"))
+        {
+            const juce::File file (args.valueAfter ("--listen").unquoted());
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            const auto v = vibes::listen (file);
+            const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+
+            if (! v.ok())
+            {
+                std::cout << "couldn't listen: " << v.problem << std::endl;
+                return 1;
+            }
+
+            std::cout << "heard " << file.getFileName() << " in " << juce::String (ms / 1000.0, 1) << " s (" << juce::String (v.seconds, 1) << " s of audio)" << std::endl
+                      << v.summary() << std::endl
+                      << "first bar at " << juce::String (v.firstBar, 2) << " s; tempo " << juce::String (v.tempo, 1) << " (confidence " << juce::String (v.tempoConfidence, 2) << "), key " << v.keyName()
+                      << " (" << juce::String (v.keyConfidence, 2) << "), swing " << juce::String (v.swing, 2) << (v.swingSixteenths ? " 16ths" : " 8ths")
+                      << ", brightness " << juce::String (v.brightness, 2) << ", grit " << juce::String (v.grit, 2) << ", low end " << juce::String (v.lowEnd, 2) << std::endl;
+
+            for (auto& s : v.sections)
+                std::cout << "  " << s.label << " " << s.kind << " bar " << s.startBar + 1 << ", " << s.bars << " bars, " << juce::String (s.energyDb, 1) << " dB: "
+                          << s.chords.joinIntoString (" ") << std::endl;
+
+            for (size_t band = 0; band < 3; ++band)
+            {
+                std::cout << (band == 0 ? "  kick " : band == 1 ? "  snare" : "  hats ");
+
+                for (auto x : v.pattern[band])
+                    std::cout << " " << juce::String (x, 1);
+
+                std::cout << std::endl;
+            }
+
+            for (size_t i = 0; i < std::min<size_t> (6, v.styles.size()); ++i)
+                std::cout << "  " << v.styles[i].style << " " << juce::String (v.styles[i].score, 3) << (v.styles[i].why.isNotEmpty() ? " (" + v.styles[i].why + ")" : juce::String()) << std::endl;
+
+            // --features: what it measured, on one line (tools/vibes/learn_ears.js reads it)
+            if (args.has ("--features"))
+            {
+                auto* f = new juce::DynamicObject();
+                juce::Array<juce::var> pattern;
+
+                for (auto& band : v.pattern)
+                    for (auto x : band)
+                        pattern.add (x);
+
+                f->setProperty ("tempo", v.tempo);
+                f->setProperty ("swing", v.swing);
+                f->setProperty ("swingSixteenths", v.swingSixteenths);
+                f->setProperty ("mode", v.mode);
+                f->setProperty ("pattern", pattern);
+                f->setProperty ("highShare", v.highShare);
+                f->setProperty ("heldFlatness", v.heldFlatness);
+                f->setProperty ("lowShare", v.lowShare);
+                f->setProperty ("minorShare", v.minorShare);
+                f->setProperty ("seventhShare", v.seventhShare);
+                f->setProperty ("powerShare", v.powerShare);
+                f->setProperty ("firstBar", v.firstBar);
+                std::cout << "features " << juce::JSON::toString (juce::var (f), true) << std::endl;
+            }
+
+            const auto plan = vibes::planFrom (v, (float) args.valueAfter ("--closeness").getDoubleValue() + (args.has ("--closeness") ? 0.0f : 1.0f),
+                                               args.valueAfter ("--seed").getLargeIntValue(), args.valueAfter ("--as").unquoted());
+            std::cout << "words: " << plan.words << std::endl
+                      << "kept: " << plan.kept.joinIntoString ("; ") << std::endl
+                      << "changed: " << plan.changed.joinIntoString ("; ") << std::endl;
+            return 0;
         }
 
         if (args.has ("--render"))
@@ -13728,6 +14135,48 @@ namespace
             // Brings a window forward the way clicking it does
             if (auto raise = args.valueAfter ("--raise"); raise.isNotEmpty())
                 main.setPanelVisible (panelNamed (raise), true);
+
+            // The AI Song panel after it's heard a song for its vibe (a made-up one: what the listener says of the band's
+            // funk), or while it listens
+            if (args.has ("--vibedemo"))
+            {
+                vibes::Vibe v;
+                v.name = "Midnight Drive";
+                v.seconds = 131.2;
+                v.tempo = 104.2;
+                v.keyRoot = 4;
+                v.mode = "minor";
+                v.swing = 0.33f;
+                v.swingSixteenths = true;
+                v.brightness = 0.62f;
+                v.grit = 0.3f;
+                v.lowEnd = 0.55f;
+                auto section = [&v] (const char* kind, const char* label, int start, int bars, float db, const juce::String& chords)
+                {
+                    vibes::Section s;
+                    s.kind = kind;
+                    s.label = label;
+                    s.startBar = start;
+                    s.bars = bars;
+                    s.energyDb = db;
+                    s.chords = juce::StringArray::fromTokens (chords, " ", {});
+                    v.sections.push_back (s);
+                };
+
+                section ("intro", "A", 0, 4, -7.0f, "Em7 Em7 Em7 Em7");
+                section ("verse", "B", 4, 8, -3.0f, "Em7 Em7 A9 Em7 Em7 Em7 A9 Em7");
+                section ("chorus", "C", 12, 8, 0.0f, "A9 A9 Em7 Em7 A9 A9 Em7 Em7");
+                section ("verse", "B", 20, 8, -3.0f, "Em7 Em7 A9 Em7 Em7 Em7 A9 Em7");
+                section ("chorus", "C", 28, 8, 0.0f, "A9 A9 Em7 Em7 A9 A9 Em7 Em7");
+                section ("bridge", "D", 36, 8, -2.0f, "D9 A9 D9 A9 D9 A9 D9 A9");
+                section ("chorus", "C", 44, 8, 0.0f, "A9 A9 Em7 Em7 A9 A9 Em7 Em7");
+                section ("outro", "B", 52, 4, -8.0f, "Em7 Em7 A9 Em7");
+                v.styles = { { "funk", 0.9f, "its drums, its tempo, its sound" }, { "synthwave", 0.8f, "its tempo" }, { "hiphop", 0.76f, "its tempo" } };
+                main.getSongPanel().showHeard (v);
+            }
+
+            if (args.has ("--vibelistening"))
+                main.getSongPanel().showListening ("Midnight Drive", 0.42f);
 
             // A page of the Synth tab, as clicking its name does (0 is Oscillators)
             if (auto synthPage = args.valueAfter ("--synthpage"); synthPage.isNotEmpty())

@@ -3,6 +3,7 @@
 
 #include "OfflineBass.h"
 #include "OfflineDrummer.h"
+#include "Theory.h"
 #include "audio/Nova.h"
 #include <numeric>
 
@@ -52,6 +53,17 @@ namespace
         int seventh() const                 { return has (10) ? 10 : has (11) ? 11 : -1; }
         bool operator== (const Chord& o) const { return root == o.root && tones == o.tones; }
     };
+
+    // A chord by its name ("Am", "F#m7", "C5"): the song's own chords, as asked for
+    Chord named (const juce::String& name)
+    {
+        const auto t = theory::parseChord (name);
+        Chord c;
+        c.root = t.root;
+        c.tones = t.tones;
+        c.name = name;
+        return c;
+    }
 
     // "i", "bVI", "V7", "ii7", "Imaj7", "bII", "IV9", "viio", "i5": the numeral's degree of the
     // major scale (flattened or sharpened), upper case major and lower case minor, then the extras
@@ -1817,8 +1829,13 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
         std::vector<Chord> barChords;
         const auto& prog = progressions[kind];
 
+        // The song's own chords where it has them (the vibe listener's, or typed: "verse chords Am F C G"), a bar each,
+        // round and round; else the style's progression
+        const auto* own = req.chordsIn.count (kind) > 0 ? &req.chordsIn.at (kind) : req.chordsIn.count ({}) > 0 ? &req.chordsIn.at ({}) : nullptr;
+
         for (size_t b = 0; b < s.bars.size(); ++b)
-            barChords.push_back (chordOf (prog[(int) (b % (size_t) prog.size())], key.root, sharpKey (key.root, key.mode)));
+            barChords.push_back (own != nullptr && ! own->isEmpty() ? named ((*own)[(int) (b % (size_t) own->size())])
+                                                                     : chordOf (prog[(int) (b % (size_t) prog.size())], key.root, sharpKey (key.root, key.mode)));
 
         chords.push_back (std::move (barChords));
     }

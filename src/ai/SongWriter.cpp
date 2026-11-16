@@ -125,6 +125,10 @@ juce::StringArray lineupFor (const juce::String& style, const juce::String& word
 
 juce::StringArray formFor (const juce::String& style, const juce::String& words)
 {
+    // A form asked for (the vibe listener's, or typed: "form intro verse chorus outro"): the song as asked
+    if (const auto asked = agents::Request::parse (words).form; asked.size() >= 2)
+        return asked;
+
     const auto f = familyOf (style);
     juce::StringArray form;
 

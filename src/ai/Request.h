@@ -50,6 +50,12 @@ namespace nightshift::agents
         bool clean = false;                 // "clean": the guitar's clean sound
         bool piano = false;                 // "piano": the keys on the grand piano, played as a piano (not a pad)
 
+        // A song's own chords and form, as the vibe listener heard them (VibeListener.h) or as typed: a kind of section's
+        // chords, a bar each, round and round ("verse chords Am F C G"; "chords Em C G D", kind "", for every section),
+        // and the whole song's sections in order ("form intro verse chorus verse chorus outro")
+        std::map<juce::String, juce::StringArray> chordsIn;
+        juce::StringArray form;
+
         juce::StringArray understood;       // what it picked out, in words, for the reply
 
         juce::var toVar() const;
