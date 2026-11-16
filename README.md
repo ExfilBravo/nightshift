@@ -1,7 +1,12 @@
-# NightShift
+# NightShift: a free DAW for Windows and Mac
 
-A pattern-first digital audio workstation for Windows and Mac, in the spirit of FL Studio, with an AI band
-that writes parts in the style you describe. Built in C++ on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) 3.5 and JUCE.
+NightShift is a free, open-source DAW (digital audio workstation) for Windows and Mac: a pattern-first music
+studio in the spirit of FL Studio, with a step sequencer, piano roll, playlist, mixer, synths, drum kits,
+recording, VST3 and Audio Unit plugins, and an AI band (drummer, bassist, guitarist, keys and synth player)
+that writes parts in the style you describe. No account, no trial, no ads.
+**Website: [michaeldedmondson-design.github.io/nightshift](https://michaeldedmondson-design.github.io/nightshift/)**
+
+Built in C++ on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) 3.5 and JUCE.
 
 ![NightShift with its demo song: patterns, the arrangement, the step sequencer and the mixer strip](docs/screenshot.png)
 
