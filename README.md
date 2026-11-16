@@ -43,9 +43,9 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   open after installing), a banner across its foot says so and asks for a donation: **Donate** opens the
   page in the browser and the banner says thank you; **No thanks** takes it away. It never asks by itself
   again (the option nsDonationAsked remembers). **About NightShift** (the ⋯ menu) always has
-  **Donate...**, beside the keys and the credits. The page is `donate::url` in `src/ui/Donate.h`, empty
-  for now, which hides every Donate (the banner and About's button) until the real page (Ko-fi,
-  PayPal.me...) goes in.
+  **Donate...**, beside the keys and the credits. The page is `donate::url` in `src/ui/Donate.h`:
+  [paypal.me/Exfilbravo](https://paypal.me/Exfilbravo), also behind the Sponsor button on GitHub
+  (`.github/FUNDING.yml`). Left empty, every Donate (the banner and About's button) is hidden.
 - **Recording, FL's way** – the Record button in the top bar arms recording (tinted red); then Play (Space)
   records, and Space again stops. Record stays armed after Stop, so Space records the next take too, until
   you click Record off. What it records: what you play (the computer keyboard) on the selected instrument channel,

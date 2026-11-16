@@ -25,9 +25,8 @@ namespace nightshift::links
     browser. */
 namespace nightshift::donate
 {
-    /** Where Donate goes: the real page (Ko-fi, PayPal.me, Buy Me a Coffee, GitHub Sponsors...).
-        Empty hides every Donate there is, as it is until there's a page to send people to. */
-    inline const juce::String url {};
+    /** Where Donate goes: NightWriter's PayPal.me page. Empty hides every Donate there is. */
+    inline const juce::String url { "https://paypal.me/Exfilbravo" };
 
     inline bool isSet()                                 { return url.isNotEmpty(); }
 
