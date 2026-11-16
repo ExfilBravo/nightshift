@@ -34,6 +34,8 @@ namespace nightshift::textaudit
         juce::Rectangle<float> within;  // the component that drew it, in the painted component
         juce::String owner;             // the component under it, then its parents
         juce::String drawnBy;           // the component that drew it, then its parent
+        bool veiled = false;            // painted over afterwards by something mostly opaque (a dialog's dimming
+                                        // of the window behind it, a panel over another): not there to be read
 
         bool small() const      { return height < (capitals ? capitalsFloorPx : floorPx) - 0.01f; }
         bool squeezed() const   { return squash < 0.99f; }

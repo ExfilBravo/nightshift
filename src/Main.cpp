@@ -25,6 +25,7 @@
 #include "ai/Drummer.h"
 #include "ai/Genres.h"
 #include "ai/OfflineDrummer.h"
+#include "ai/LearnedFeel.h"
 #include "ai/OfflineBass.h"
 #include "ai/OfflineGuitar.h"
 #include "ai/OfflineKeys.h"
@@ -188,6 +189,7 @@ namespace
           --pianotest                           check which channel the piano roll edits, and its picker
           --arrangetest / --stepstest / --sidebartest  click and type through those parts of the window
           --genretest                           the genres and artists the band knows, Sleep Token played by all five, each new style by the band
+          --feeltest                            the drum feel learned from real drummers (Groove MIDI Dataset): the table, who plays it, render
           --looptest / --mutetest               where loop playback starts; muting mid-chord lets go
           --fxtest                              effect plugins (the Nightshift Lofi VST3s) in channel and master chains
           --stockfxtest / --bustest / --mixertest  the stock effects measured; buses, sends, sidechain; the mixer
@@ -1690,6 +1692,187 @@ namespace
                 check (back.genre == st.genre && back.artist == st.artist && back.softIn == st.softIn && back.heavyIn == st.heavyIn
                          && back.halfTimeIn == st.halfTimeIn && back.richChords && back.piano && back.lowest == st.lowest,
                        "a request saved and read back keeps its genre, artist and how its sections are played");
+            }
+
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--feeltest"))
+        {
+            // The drummer's feel learned from real drummers (ai/LearnedFeel.h, the Groove MIDI Dataset): the table, which
+            // styles and genres play it (and which keep their own), and where render puts each hit and how hard
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            using drummer::learnedFeels;
+            using drummer::learnedFeel;
+            namespace offline = drummer::offline;
+            {
+                juce::StringArray bad;
+                int minutes = 0;
+
+                for (auto& f : learnedFeels())
+                {
+                    bool ok = (f.steps == 16 || f.steps == 12) && f.minutes >= 2 && f.grooves >= 2 && f.swing <= 1.0f && f.looseMs >= 0.0f && f.looseMs <= 30.0f
+                              && (agents::findStyle (f.id) != nullptr || agents::findGenre (f.id) != nullptr) && ! f.timingMs.empty();
+
+                    for (auto& [drum, ms] : f.pushMs)
+                        ok = ok && std::abs (ms) <= 25.0f && f.timingMs.count (drum) > 0;
+
+                    for (auto& [drum, v] : f.timingMs)
+                    {
+                        ok = ok && (int) v.size() == f.steps && f.accent.count (drum) > 0 && (int) f.accent.at (drum).size() == f.steps;
+
+                        for (size_t i = 0; ok && i < v.size(); ++i)
+                            ok = std::abs (v[i]) <= 40.0f && f.accent.at (drum)[i] >= 0.3f && f.accent.at (drum)[i] <= 2.0f;
+                    }
+
+                    if (! ok)
+                        bad.add (f.id);
+
+                    minutes += f.minutes;
+                }
+
+                check (learnedFeels().size() >= 15 && bad.isEmpty(),
+                       juce::String ((int) learnedFeels().size()) + " feels learned, each a style or genre of the band's, from two minutes of playing or more, "
+                         "every step within 40 ms and every accent between 0.3 and 2" + (bad.isEmpty() ? juce::String() : ": not " + bad.joinIntoString (", ")));
+            }
+
+            Song song;
+            song.loadBlank();
+            auto write = [&song] (const juce::String& words) { return offline::write (words, song, nullptr, {}, false, {}, true, 7); };
+
+            const auto funk = write ("a funk groove");
+            const auto* f = learnedFeel ("funk");
+            check (f != nullptr && funk.groove.learned == "funk" && std::abs (funk.groove.swing - f->swing) < 0.001f && funk.groove.swingSixteenths
+                     && std::abs (funk.groove.looseMs - f->looseMs) < 0.001f && funk.groove.pushMs.count ("snare") > 0
+                     && std::abs (funk.groove.pushMs.at ("snare") - f->pushMs.at ("snare")) < 0.001f
+                     && std::abs (funk.groove.pushMs.at ("clap") - f->pushMs.at ("snare")) < 0.001f
+                     && funk.reply.contains ("learned from real funk drummers") && funk.reply.contains ("Groove MIDI Dataset"),
+                   "funk plays the funk drummers' feel: its 16ths swung " + juce::String (funk.groove.swing, 2) + ", the snare (and a clap) "
+                     + juce::String (funk.groove.pushMs.count ("snare") > 0 ? funk.groove.pushMs.at ("snare") : 0.0f, 1) + " ms, looseness "
+                     + juce::String (funk.groove.looseMs, 1) + " ms, and says so");
+
+            // A genre's own learned feel first; the programmed styles and the lazy pockets keep theirs
+            {
+                const auto disco = write ("a disco song"), soul = write ("a soul song"), neo = write ("a neo soul groove");
+                const auto trap = write ("a trap beat"), house = write ("a house track"), boombap = write ("a boom bap beat");
+                const auto noSwing = write ("a funk groove, no swing");
+                check (disco.groove.learned == "disco" && soul.groove.learned == "soul" && neo.groove.learned.isEmpty() && std::abs (neo.groove.swing - 0.55f) < 0.001f
+                         && trap.groove.learned.isEmpty() && house.groove.learned.isEmpty()
+                         && boombap.groove.learned == "boombap" && std::abs (boombap.groove.swing - 0.58f) < 0.001f
+                         && boombap.groove.pushMs.count ("snare") > 0 && std::abs (boombap.groove.pushMs.at ("snare") - 12.0f) < 0.001f
+                         && noSwing.groove.learned == "funk" && noSwing.groove.swing == 0.0f,
+                       "disco and soul play their genres' feels; neo-soul keeps its lazy pocket, trap and house stay tight; boom bap "
+                       "learns the steps but keeps its MPC swing and late snare; \"no swing\" still means none");
+            }
+
+            // Render: each hit at its grid place, swung, plus its drum's push and its step's learned timing (no wander
+            // here), and its learned accent at half strength against the lane's own average
+            {
+                drummer::Groove g;
+                g.title = "test";
+                g.learned = "funk";
+                g.swing = f->swing;
+                g.swingSixteenths = true;
+                g.looseMs = 0.0f;
+                g.pushMs = funk.groove.pushMs;
+                drummer::Bar bar;
+                bar.steps = 16;
+                bar.lanes = { { "snare", "....5.......5..." }, { "hat_closed", "5555555555555555" } };
+                g.sections = { { "Verse", { bar } } };
+                g.arrangement = { "Verse" };
+                song.bpm = 100.0;
+                const int drums = song.addChannel ("Drums", InstrumentType::kit).id;
+                const auto keyFor = [] (const juce::String& v) { return drumkits::generalMidiKey (v); };
+                const double ticksPerMs = 100.0 / 60.0 * ticksPerBeat / 1000.0;
+                const int snareKey = drumkits::generalMidiKey ("snare"), hatKey = drumkits::generalMidiKey ("hat_closed");
+
+                auto played = [&] () -> std::vector<Note>
+                {
+                    drummer::render (song, drums, g, keyFor);
+                    const auto* c = song.findChannel (drums);
+
+                    if (c != nullptr && c->drummer.patterns.count ("Verse") > 0)
+                        if (const auto* p = song.findPattern (c->drummer.patterns.at ("Verse")))
+                            if (auto it = p->notes.find (drums); it != p->notes.end())
+                                return it->second;
+
+                    return {};
+                };
+
+                auto noteAt = [] (const std::vector<Note>& notes, int key, int from, int to) -> std::optional<Note>
+                {
+                    for (auto& n : notes)
+                        if (n.key == key && n.start >= from && n.start < to)
+                            return n;
+
+                    return {};
+                };
+
+                // Where: no wander (looseness_ms 0), so exactly the grid, the swing, the push and the step's timing
+                const auto timed = played();
+                const auto snare = noteAt (timed, snareKey, ticksPerBeat / 2, ticksPerBeat * 3 / 2);
+                const int snareWant = juce::roundToInt (ticksPerBeat + (g.pushMs.at ("snare") + f->timingMs.at ("snare")[4]) * ticksPerMs);
+                const auto hat = noteAt (timed, hatKey, ticksPerStep / 2, ticksPerStep * 3 / 2);
+                const int hatWant = juce::roundToInt (ticksPerStep + f->swing * ticksPerBeat / 12.0
+                                                      + (g.pushMs.at ("hat_closed") + f->timingMs.at ("hat_closed")[1]) * ticksPerMs);
+
+                check (snare && snare->start == snareWant && hat && hat->start == hatWant,
+                       "render: the snare on 2 at tick " + juce::String (snare ? snare->start : -1) + " (want " + juce::String (snareWant) + ": "
+                         + juce::String (ticksPerBeat) + " plus its push and its step's timing), the hat on the e of 1 at " + juce::String (hat ? hat->start : -1)
+                         + " (want " + juce::String (hatWant) + ", swung too)");
+
+                // How hard: the hats, all written '5', accented as the funk drummers play their 16ths, half as strongly,
+                // their average kept (the Looseness control at 0, which takes out the velocity's wander too)
+                song.findChannel (drums)->drummer.looseness = 0.0f;
+                const auto hard = played();
+                song.findChannel (drums)->drummer.looseness = 1.0f;
+                const auto& accent = f->accent.at ("hat_closed");
+                float meanAccent = 0.0f, sum = 0.0f;
+                bool shaped = true;
+                int count = 0;
+
+                for (auto a : accent)
+                    meanAccent += a / 16.0f;
+
+                for (int step = 0; step < 16; ++step)
+                    if (const auto n = noteAt (hard, hatKey, step * ticksPerStep - ticksPerStep / 2, step * ticksPerStep + ticksPerStep / 2))
+                    {
+                        const int want = juce::roundToInt ((float) drummer::velocityFor ('5') * (1.0f + 0.5f * (accent[(size_t) step] / meanAccent - 1.0f)));
+                        shaped = shaped && std::abs (n->velocity - want) <= 1;
+                        sum += (float) n->velocity;
+                        ++count;
+                    }
+
+                check (count == 16 && shaped && std::abs (sum / (float) count - (float) drummer::velocityFor ('5')) <= 2.0f,
+                       "and the hats, all written '5', accented as the funk drummers play their 16ths, half as strongly, their average "
+                         + juce::String (count > 0 ? sum / (float) count : 0.0f, 1) + " against " + juce::String (drummer::velocityFor ('5')));
+
+                // Saved and read back with the song; a feel it doesn't know is dropped; none in 6/8 (no swing there either:
+                // it counts quarter notes)
+                const auto back = drummer::Groove::fromJson (offline::toJson (g));
+                auto unknown = offline::toJson (g);
+
+                if (auto* o = unknown.getProperty ("feel", {}).getDynamicObject())
+                    o->setProperty ("learned", "zyx");
+
+                const auto lost = drummer::Groove::fromJson (unknown);
+                song.meterBeats = 6;
+                song.meterUnit = 8;
+                g.swing = 0.0f;
+                const auto compound = played();
+                const auto inSixEight = noteAt (compound, snareKey, 0, song.ticksPerBar() / 2);
+                const int sixEightWant = juce::roundToInt (song.ticksPerBar() * 4 / 16.0 + g.pushMs.at ("snare") * ticksPerMs);
+
+                check (back.has_value() && back->learned == "funk" && lost.has_value() && lost->learned.isEmpty() && inSixEight && inSixEight->start == sixEightWant,
+                       "the feel is saved with the groove and read back, an unknown one dropped, and in 6/8 no learned steps (theirs is a 4/4 bar): "
+                         + juce::String (inSixEight ? inSixEight->start : -1) + " against " + juce::String (sixEightWant));
             }
 
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
@@ -10771,7 +10954,8 @@ namespace
                 { "Nova: Mod matrix", "--moretracks --select \"Warm Analog Pad\" --raise synth --synthpage 3" },
                 { "Nova: Effects", "--moretracks --select \"Warm Analog Pad\" --raise synth --synthpage 4" },
                 { "Master: Loudness", "--masterpage 0" }, { "Master: Tone, punch & width", "--masterpage 1 --shapeexample" },
-                { "the start screen", "--startscreen --recent \"Demo song,Late night beat\"" }, { "Audio settings", "--settings" },
+                { "the start screen", "--startscreen --recent \"Demo song,Late night beat\"" },
+                { "the start screen after the first time", "--startscreen --asked --recent \"Demo song,Late night beat\"" }, { "Audio settings", "--settings" },
                 { "the metronome", "--metronome" }, { "the EQ", "--effectpanel nightshiftEQ" },
                 { "the compressor", "--effectpanel nightshiftCompressor" }, { "the filter", "--effectpanel nightshiftFilter" },
                 { "the reverb", "--effectpanel nightshiftReverb" }, { "the delay", "--effectpanel nightshiftDelay" },
@@ -13567,10 +13751,12 @@ namespace
                 templates::build (id, song, audio);
 
             // The start screen as NightShift opens on it (--recent: projects for its list, made
-            // in the temp folder from the demo)
+            // in the temp folder from the demo; --asked: as every time after the first, the donation
+            // banner asked already)
             if (args.has ("--startscreen"))
             {
                 auto o = audio.getOptions();
+                o.donationAsked = args.has ("--asked");
 
                 for (auto name : juce::StringArray::fromTokens (args.valueAfter ("--recent"), ",", {}))
                     if (name.isNotEmpty())

@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
+//
+// Made by tools/groove/learn_feel.js from the Groove MIDI Dataset: don't edit it by hand, edit
+// tools/groove/LearnedFeel.cpp.in (or the learner) and run it again. The tables are averages of the dataset's
+// performances: the Groove MIDI Dataset by Jon Gillick, Adam Roberts, Jesse Engel, Douglas Eck and David Bamman
+// (Google Magenta), CC BY 4.0, https://magenta.tensorflow.org/datasets/groove
+
+#include "LearnedFeel.h"
+
+namespace nightshift::drummer
+{
+
+const std::vector<LearnedFeel>& learnedFeels()
+{
+    static const std::vector<LearnedFeel> all {
+        // id, from, grooves, minutes, steps, swing, sixteenths, looseness ms,
+        // push ms by drum, timing ms by drum and step (against its push), accent by drum and step
+@@FEELS@@
+    };
+
+    return all;
+}
+
+const LearnedFeel* learnedFeel (const juce::String& id)
+{
+    for (auto& f : learnedFeels())
+        if (id.isNotEmpty() && id == juce::String (f.id))
+            return &f;
+
+    return nullptr;
+}
+
+juce::String learnedDrum (const LearnedFeel& feel, const juce::String& voice)
+{
+    // The drum the dataset's kit keeps a feel for that plays a voice's part
+    static const std::map<juce::String, juce::StringArray> parts {
+        { "kick", { "kick" } }, { "snare", { "snare" } }, { "snare_rim", { "snare" } }, { "clap", { "snare" } },
+        { "sidestick", { "sidestick", "snare" } }, { "hat_closed", { "hat_closed" } }, { "shaker", { "hat_closed" } },
+        { "tambourine", { "hat_closed" } }, { "hat_pedal", { "hat_pedal", "hat_closed" } }, { "hat_open", { "hat_open", "hat_closed" } },
+        { "ride", { "ride", "hat_closed" } }, { "ride_bell", { "ride", "hat_closed" } }, { "cowbell", { "ride", "hat_closed" } },
+        { "crash", { "crash" } }, { "crash_2", { "crash" } }, { "china", { "crash" } }, { "splash", { "crash" } },
+        { "tom_high", { "toms" } }, { "tom_mid", { "toms" } }, { "tom_floor", { "toms" } } };
+
+    if (auto it = parts.find (voice); it != parts.end())
+        for (auto& d : it->second)
+            if (feel.timingMs.count (d) > 0)
+                return d;
+
+    return {};
+}
+
+std::optional<LearnedStep> learnedStep (const LearnedFeel& feel, const juce::String& voice, double beatInBar)
+{
+    const auto drum = learnedDrum (feel, voice);
+
+    if (drum.isEmpty())
+        return {};
+
+    // On the feel's grid (16ths, or 8th-note triplets) and within its four beats
+    const int perBeat = feel.steps / 4;
+    const double x = beatInBar * perBeat;
+    const int step = juce::roundToInt (x);
+
+    if (std::abs (x - step) > 1.0e-6 || step < 0 || step >= feel.steps)
+        return {};
+
+    const auto& timing = feel.timingMs.at (drum);
+    const auto& accent = feel.accent.at (drum);
+    return LearnedStep { timing[(size_t) step], accent[(size_t) step] };
+}
+
+} // namespace nightshift::drummer

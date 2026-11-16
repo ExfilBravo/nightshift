@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "Drummer.h"
+#include "LearnedFeel.h"
 #include "audio/Kits.h"
 
 namespace nightshift::drummer
@@ -54,6 +55,9 @@ std::optional<Groove> Groove::fromJson (const juce::var& v)
         for (auto& p : *push)
             if (drumkits::voiceNames().contains (p.getProperty ("drum", {}).toString()))
                 g.pushMs[p.getProperty ("drum", {}).toString()] = juce::jlimit (-40.0f, 40.0f, (float) p.getProperty ("ms", 0.0));
+
+    if (learnedFeel (feel.getProperty ("learned", {}).toString()) != nullptr)
+        g.learned = feel.getProperty ("learned", {}).toString();
 
     std::set<juce::String> names;
 
@@ -163,6 +167,10 @@ void render (Song& song, int channelId, const Groove& g, std::function<int (cons
     const float swing = d.swing >= 0.0f ? d.swing : g.swing;
     std::set<int> used;
 
+    // The feel learned from real drummers, where it has one: each step's own timing and accent (its steps are a
+    // 4/4 bar's, so in quarter-note meters only, repeating every four beats)
+    const auto* learned = song.meterUnit == 4 ? learnedFeel (g.learned) : nullptr;
+
     for (size_t s = 0; s < g.sections.size(); ++s)
     {
         const auto& section = g.sections[s];
@@ -199,6 +207,24 @@ void render (Song& song, int channelId, const Groove& g, std::function<int (cons
 
                 const float push = g.pushMs.count (lane.voice) > 0 ? g.pushMs.at (lane.voice) : 0.0f;
 
+                // Each hit's learned step (where the drummers played it, and how hard), and the lane's average accent
+                // over them, so the accents shape the part without moving its level: half as strong as learned, the
+                // parts already leaning on the beat themselves
+                std::vector<std::optional<LearnedStep>> steps ((size_t) lane.hits.length());
+                float accents = 0.0f;
+                int accented = 0;
+
+                if (learned != nullptr)
+                    for (int i = 0; i < lane.hits.length(); ++i)
+                        if (const auto hit = lane.hits[i]; hit != '.' && hit != '-' && hit != '0')
+                            if ((steps[(size_t) i] = learnedStep (*learned, lane.voice, std::fmod (i * stepTicks / ticksPerBeat, 4.0))))
+                            {
+                                accents += steps[(size_t) i]->accent;
+                                ++accented;
+                            }
+
+                const float meanAccent = accented > 0 ? accents / (float) accented : 1.0f;
+
                 for (int i = 0; i < lane.hits.length(); ++i)
                 {
                     const auto hit = lane.hits[i];
@@ -207,6 +233,7 @@ void render (Song& song, int channelId, const Groove& g, std::function<int (cons
                         continue;
 
                     double pos = (double) b * barTicks + i * stepTicks;
+                    const auto& step = steps[(size_t) i];
 
                     // Swing: the off-beat 8ths (or 16ths) late, up to a triplet
                     const double beats = pos / ticksPerBeat;
@@ -217,12 +244,16 @@ void render (Song& song, int channelId, const Groove& g, std::function<int (cons
                     else if (g.swingSixteenths && (std::abs (frac - 0.25) < 1.0e-6 || std::abs (frac - 0.75) < 1.0e-6))
                         pos += swing * ticksPerBeat / 12.0;
 
-                    // Feel, the same every time it's played: the drum's push, then a little wander
+                    // Feel, the same every time it's played: the drum's push, the step's learned timing, then a little wander
                     juce::Random random ((juce::int64) (s * 1000003 + b * 10007 + (size_t) i * 101) ^ lane.voice.hashCode64());
-                    pos += (push + wobble (random) * g.looseMs * 0.6f) * d.looseness * ticksPerMs;
+                    pos += (push + (step ? step->timingMs : 0.0f) + wobble (random) * g.looseMs * 0.6f) * d.looseness * ticksPerMs;
 
                     int velocity = velocityFor (hit);
-                    velocity = 127 - juce::roundToInt ((127 - velocity) * d.dynamics);
+
+                    if (step && hit != 'g' && hit != 'G')
+                        velocity = juce::roundToInt ((float) velocity * (1.0f + 0.5f * (step->accent / meanAccent - 1.0f)));
+
+                    velocity = 127 - juce::roundToInt ((127 - juce::jlimit (1, 127, velocity)) * d.dynamics);
                     velocity += juce::roundToInt (wobble (random) * 3.0f * d.looseness);
                     velocity = juce::jlimit (1, 127, velocity);
 

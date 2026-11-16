@@ -2925,8 +2925,10 @@ namespace
                        "(bandshed.net), CC BY-SA 3.0. Salamander Grand Piano by Alexander Holm, CC BY 3.0. Versilian Studios "
                        "Chamber Orchestra 2 Community Edition, CC0. The NAM Amp runs Neural Amp Modeler's core and "
                        "AudioDSPTools by Steven Atkinson (MIT), with Eigen (MPL 2.0) and nlohmann/json (MIT). On a Mac the "
-                       "text is Selawik by Microsoft (SIL Open Font License 1.1), Segoe UI's open stand-in. The 808, 909, "
-                       "Nova and the AI drummer are NightShift's own, and the AI drummer writes on this computer, offline.",
+                       "text is Selawik by Microsoft (SIL Open Font License 1.1), Segoe UI's open stand-in. The AI drummer's "
+                       "feel is learned from the Groove MIDI Dataset by Jon Gillick, Adam Roberts, Jesse Engel, Douglas Eck "
+                       "and David Bamman (Google Magenta), CC BY 4.0. The 808, 909, Nova and the AI drummer are NightShift's "
+                       "own, and the AI drummer writes on this computer, offline.",
                        font (15.0f), textFaint);
             y += 14;
 

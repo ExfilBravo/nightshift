@@ -204,6 +204,33 @@ namespace
                 layers.pop_back();
         }
 
+        // Paint that goes over text drawn before it, at least half opaque (the start screen's dimming of the studio
+        // behind it, a panel laid over another): what's under it isn't there to be read, so it isn't checked (the
+        // dimmed studio's labels measured as faint against the dimming; a banner over them hid them by luck)
+        void fillRect (const juce::Rectangle<int>& r, bool replaceExistingContents) override
+        {
+            LowLevelGraphicsSoftwareRenderer::fillRect (r, replaceExistingContents);
+            veil (r.toFloat());
+        }
+
+        void fillRect (const juce::Rectangle<float>& r) override
+        {
+            LowLevelGraphicsSoftwareRenderer::fillRect (r);
+            veil (r);
+        }
+
+        void veil (juce::Rectangle<float> r)
+        {
+            if (fill.getFloatAlpha() * (layers.empty() ? 1.0f : layers.back()) < 0.5f)
+                return;
+
+            const auto covered = r.getIntersection (getClipBounds().toFloat()).transformedBy (transform).expanded (1.0f);
+
+            for (auto& run : runs)
+                if (! run.veiled && covered.contains (run.area))
+                    run.veiled = true;
+        }
+
         void drawGlyphs (juce::Span<const uint16_t> glyphs, juce::Span<const juce::Point<float>> positions,
                          const juce::AffineTransform& t) override
         {
@@ -347,6 +374,9 @@ std::vector<Run> collect (juce::Component& c, juce::Image* imageOut)
         juce::Graphics g (recorder);
         c.paintEntireComponent (g, true);
     }
+
+    // Text painted over afterwards isn't there to be read: not checked
+    runs.erase (std::remove_if (runs.begin(), runs.end(), [] (const Run& r) { return r.veiled; }), runs.end());
 
     for (auto& run : runs)
         measureContrast (run, image);

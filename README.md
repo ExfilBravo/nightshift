@@ -341,7 +341,11 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   Steps and the piano roll edit it; the section chips open them and Put in Arrange lays out the drummer's
   arrangement. It can set the song's tempo and time signature, plays ghost notes, flams, drags, swing and a
   per-drum push or lay-back; Swing, Looseness and Dynamics rework the feel without asking again (As written
-  goes back to the drummer's swing). Any channel can switch to another kit and keep its part. A VST3
+  goes back to the drummer's swing). Where the band has learned it, the feel is real drummers': learned from
+  Google's Groove MIDI Dataset (13.6 hours of ten drummers), each style's swing, how far ahead or behind each drum
+  sits, how loosely, and where each step of a bar lands and how hard (rock, hard rock, punk, pop-punk, funk,
+  hip-hop, boom bap, jazz, ballads, reggae, afrobeats, bossa nova, country, and the pop, soul, gospel and disco
+  genres; the programmed styles stay tight, and lofi and neo-soul keep their lazy pocket). It says so in its reply. Any channel can switch to another kit and keep its part. A VST3
   instrument channel gets an AI drummer (General MIDI) too, writing on the General MIDI drum map.
 - **Genres and artists** – the whole AI band (drummer, bassist, guitarist, keys, synth, the song agent and the
   mastering engineer) plays 32 styles and knows 39 genres (alternative and progressive metal, post-hardcore,
@@ -883,8 +887,10 @@ to 150), the right-click menus, and the top bar's tempo where the song is. `--sn
 a glide back, a 7/8 stretch, the tempo lane and the ruler's tags. `--snapshot ... --textaudit` paints the view through
 the text check, which reads back every piece of text as it's drawn and lists any that's under 15 px (the small
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
-behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. `--texttest` runs it over 48 views
-(every tab, AI agent, Nova page, effect window and dialog, the start screen, a laptop's 1366 x 768) and fails on any
+behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by
+something at least half opaque (the studio dimmed behind the start screen, a row label under an automation lane) isn't
+there to be read, so it isn't checked. `--texttest` runs it over 51 views (every tab, AI agent, Nova page, effect
+window and dialog, the start screen the first time and after it, a laptop's 1366 x 768) and fails on any
 of those; the user's own words (a channel's name, a sound's, a project's folder) may be cut short to fit, ours never.
 Sizes are Segoe UI's (a stand-in font's are measured by its letters). Where Segoe UI is installed, texttest also checks
 Selawik (the Mac's font) takes the same room; run it with `NIGHTSHIFT_FONT=selawik` set and every view is drawn and
@@ -907,6 +913,12 @@ afrobeats' clap and shaker, bossa nova's clave and rootless shells, ambient's em
 3+3+2 toms and ostinato, country's train beat, piano slide and boom-chick); "djent ambient pad" still djent and "an
 ambient arp" an arpeggio, and the song agent's drummer keeping "soft verses, heavy choruses"; a name it doesn't know
 said back; a request kept with the song.
+`--feeltest` checks the drum feel learned from real drummers: the table (each feel a style or genre of the band's,
+learned from two minutes or more, every step within 40 ms and every accent between 0.3 and 2), funk playing the funk
+drummers' swing, push and looseness and saying so, disco and soul their genres' feels while neo-soul, trap and house
+keep their own and boom bap keeps its swing, render placing the snare on 2 and a swung hat exactly where the push and
+the step's timing say, hats all written alike accented as the drummers play them (their average kept), and the feel
+saved with the groove (and none in 6/8).
 `--trackstest` covers Arrange's
 tracks: none in a new song, old projects' fixed rows loading as their used tracks, Add track (audio tracks named
 and placed), drops (new track at the end or between two, replacing the 808's instrument and hearing the synth
@@ -1095,7 +1107,8 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
   (ZIP64).
 - `src/ai` – the offline agents: what the band knows of genres and artists (`Genres.cpp`: each genre's style and
   feel, the artists; its rows are made from a table that checks every name means one thing), the AI drummer (`Drummer.cpp`, a groove and rendering it into patterns;
-  `OfflineDrummer.cpp`, the drummer that writes it), the AI bassist (`Bass.cpp`, a part, its patterns and
+  `OfflineDrummer.cpp`, the drummer that writes it; `LearnedFeel.cpp`, the feel learned from the Groove MIDI Dataset,
+  made by `tools/groove/learn_feel.js`), the AI bassist (`Bass.cpp`, a part, its patterns and
   Arrange; `OfflineBass.cpp`, the bassist: keys, progressions, a specialist per style), the AI song agent's plan (`SongWriter.cpp`: each style's band, its song form and
   an order two minutes long or more), the AI mastering engineer (`MasteringEngineer.cpp`: hearing a mix,
   each style's master, deciding, checking its tone, the reply), the AI keys player (`Keys.cpp`, its part and patterns, rolled chords; `OfflineKeys.cpp`, the
@@ -1147,6 +1160,14 @@ The grand piano is the Salamander Grand Piano by Alexander Holm, licensed
 orchestra is the Versilian Studios Chamber Orchestra 2 Community Edition, released under
 [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Both are downloaded on request. Nova's factory
 sounds are Nightshift's own.
+
+The AI drummer's feel (its swing, how far ahead or behind each drum sits, how loosely, and where each step of a bar
+lands and how hard) is learned from the [Groove MIDI Dataset](https://magenta.tensorflow.org/datasets/groove) by Jon
+Gillick, Adam Roberts, Jesse Engel, Douglas Eck and David Bamman (Google Magenta), licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (from "Learning to Groove with Inverse Sequence
+Transformations", ICML 2019). `src/ai/LearnedFeel.cpp` and `tools/groove/learned.json` are averages computed from its
+recordings by `tools/groove/learn_feel.js` (changed: reduced to each style's timing and velocity averages); the
+recordings themselves aren't included.
 
 The NAM Amp runs [Neural Amp Modeler's core](https://github.com/sdatkinson/NeuralAmpModelerCore) and its
 AudioDSPTools by Steven Atkinson (MIT; the resampler comes from iPlug2 and Cockos' WDL, zlib-style licences), with

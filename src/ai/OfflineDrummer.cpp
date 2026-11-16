@@ -3,6 +3,8 @@
 
 #include "OfflineDrummer.h"
 #include "Genres.h"
+#include "LearnedFeel.h"
+#include "audio/Kits.h"
 
 namespace nightshift::drummer::offline
 {
@@ -2134,6 +2136,35 @@ Result write (const juce::String& prompt, const Song& song, const agents::Reques
         groove.pushMs = it->second.push;
     }
 
+    // ...or, where the band has learned it, as real drummers play it (LearnedFeel.h: the Groove MIDI Dataset): the
+    // genre's (disco's, soul's), else the style's. Its swing and each drum's push (where the style doesn't keep its
+    // own), its looseness, and when it's played, each step's timing and accent
+    const auto* learned = learnedFeel (req.genre);
+
+    if (learned == nullptr)
+        learned = learnedFeel (style->id);
+
+    if (learned != nullptr)
+    {
+        if (learned->swing >= 0.0f)
+        {
+            groove.swing = learned->swing;
+            groove.swingSixteenths = learned->sixteenths;
+        }
+
+        if (! learned->pushMs.empty())
+        {
+            groove.pushMs.clear();
+
+            for (auto& voice : drumkits::voiceNames())
+                if (const auto drum = learnedDrum (*learned, voice); learned->pushMs.count (drum) > 0)
+                    groove.pushMs[voice] = juce::jlimit (-40.0f, 40.0f, learned->pushMs.at (drum));
+        }
+
+        groove.looseMs = juce::jlimit (0.0f, 30.0f, learned->looseMs);
+        groove.learned = learned->id;
+    }
+
     if (req.swing >= 0.0f)
         groove.swing = req.swing;
 
@@ -2168,6 +2199,10 @@ Result write (const juce::String& prompt, const Song& song, const agents::Reques
 
     for (auto& n : notes)
         reply << n << " ";
+
+    if (learned != nullptr)
+        reply << "The feel is learned from real " << learned->from << ": " << learned->grooves << " grooves, "
+              << learned->minutes << " minutes of Google's Groove MIDI Dataset. ";
 
     if (groove.tempo == 0 && (song.bpm < style->slowest || song.bpm > style->fastest))
         reply << "The song's at " << juce::roundToInt (song.bpm) << " bpm; " << style->name << " usually lives between " << style->slowest
@@ -2207,6 +2242,9 @@ juce::var toJson (const Groove& g)
     }
 
     feel->setProperty ("push", push);
+
+    if (g.learned.isNotEmpty())
+        feel->setProperty ("learned", g.learned);
     o->setProperty ("feel", juce::var (feel));
 
     juce::Array<juce::var> sections;

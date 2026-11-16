@@ -40,6 +40,7 @@ namespace nightshift::drummer
         bool swingSixteenths = false;   // swing the 16ths rather than the 8ths
         float looseMs = 0.0f;           // how far hits wander from the grid
         std::map<juce::String, float> pushMs;   // per drum: early (-) or late (+), in ms
+        juce::String learned;           // the feel learned from real drummers it plays (LearnedFeel.h), by id, or ""
         std::vector<Section> sections;
         juce::StringArray arrangement;  // section names in song order
 
