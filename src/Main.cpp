@@ -3648,6 +3648,32 @@ namespace
             settle();
             check (heardElsewhere && stopped.size() == 1, "with a plugin's window taking the key presses, a held A still plays, and stops when let go");
 
+            // A system dialog (Save as, Open, Export: the operating system's own, so none of
+            // Nightshift's fields has the focus) takes the typing, a file's name say: nothing plays
+            // while it's open, and once it has answered the keys play again
+            played.clear();
+            stopped.clear();
+            bool silentWhileOpen = false;
+            {
+                const auto dialog = ComputerKeyboard::openSystemDialog();
+
+                for (char c : juce::String ("dashed"))
+                {
+                    down.insert (c);
+                    settle();
+                    down.erase (c);
+                    settle();
+                }
+
+                silentWhileOpen = played.empty() && ComputerKeyboard::isSystemDialogOpen();
+            }
+            down.insert ('a');
+            settle();
+            const bool playsAfter = played.size() == 1 && played[0].first == kb.getLowestKey() && ! ComputerKeyboard::isSystemDialogOpen();
+            down.erase ('a');
+            settle();
+            check (silentWhileOpen && playsAfter, "typing a name into a system dialog (Save as) plays nothing; once it closes, A plays again");
+
             // F-keys stay shortcuts (F8's and F11's codes end in the same byte as W's and Z's)
             played.clear();
             const int lowestBefore = kb.getLowestKey();

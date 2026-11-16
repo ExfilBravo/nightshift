@@ -2022,7 +2022,8 @@ void MainComponent::importDrumKit()
 {
     chooser = std::make_unique<juce::FileChooser> ("Choose a folder of drum samples (a sample pack)",
                                                    juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("Downloads"));
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this] (const juce::FileChooser& fc)
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                          [this, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
     {
         if (const auto folder = fc.getResult(); folder.isDirectory())
         {
@@ -3119,7 +3120,7 @@ void MainComponent::openProject()
     {
         chooser = std::make_unique<juce::FileChooser> ("Open project", projectsFolder(), "*.nsproj");
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                              [this] (const juce::FileChooser& fc)
+                              [this, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
         {
             if (fc.getResult().existsAsFile())
                 loadProjectFile (fc.getResult());
@@ -3191,7 +3192,7 @@ void MainComponent::saveProject (bool saveAs, std::function<void()> saved)
     chooser = std::make_unique<juce::FileChooser> ("Save project", projectsFolder().getChildFile ("Untitled.nsproj"), "*.nsproj");
     chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                             | juce::FileBrowserComponent::warnAboutOverwriting,
-                          [write] (const juce::FileChooser& fc)
+                          [write, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
     {
         auto file = fc.getResult();
 
@@ -3253,7 +3254,7 @@ void MainComponent::chooseExportFile (int bits)
     chooser = std::make_unique<juce::FileChooser> ("Export WAV", projectsFolder().getChildFile (name + ".wav"), "*.wav");
     chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                             | juce::FileBrowserComponent::warnAboutOverwriting,
-                          [this, bits] (const juce::FileChooser& fc)
+                          [this, bits, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
     {
         auto file = fc.getResult();
 

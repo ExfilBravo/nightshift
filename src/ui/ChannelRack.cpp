@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "ChannelRack.h"
+#include "ComputerKeyboard.h"
 #include "audio/DrumKit.h"
 #include "audio/fx/StockEffects.h"
 #include "audio/Kits.h"
@@ -1849,7 +1850,7 @@ void ChannelRack::browseForSample (int channelId, std::function<void (int)> adde
 
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
                             | (channelId == 0 ? juce::FileBrowserComponent::canSelectMultipleItems : 0),
-                          [this, channelId, added] (const juce::FileChooser& fc)
+                          [this, channelId, added, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
     {
         if (channelId == 0)
         {

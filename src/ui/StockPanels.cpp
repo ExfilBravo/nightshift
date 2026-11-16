@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "StockPanels.h"
+#include "ComputerKeyboard.h"
 #include "Theme.h"
 #include "Widgets.h"
 #include "ParamControls.h"
@@ -1127,7 +1128,7 @@ namespace
             chooser = std::make_unique<juce::FileChooser> (forCabinet ? "Pick a cabinet (an impulse response, .wav)" : "Pick an amp model (.nam)",
                                                            from, forCabinet ? "*.wav" : "*.nam");
             chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                                  [this, forCabinet] (const juce::FileChooser& c)
+                                  [this, forCabinet, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& c)
                                   {
                                       if (const auto f = c.getResult(); f.existsAsFile())
                                           forCabinet ? amp.loadCabinet (f) : amp.loadModel (f);

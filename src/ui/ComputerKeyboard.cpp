@@ -123,7 +123,7 @@ bool ComputerKeyboard::poll (bool typingIntoText)
     if (! enabled)
         return false;
 
-    if (typingIntoText || ! isAppInFront())
+    if (typingIntoText || isSystemDialogOpen() || ! isAppInFront())
     {
         // Keys held now are typing (or for another app): none of them may act once it stops
         releaseAll();

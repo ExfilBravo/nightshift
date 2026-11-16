@@ -49,10 +49,27 @@ public:
     bool keyPressed (const juce::KeyPress&);
 
     /** Brings the notes in line with the keys held, and moves the octave or velocity for a
-        key just pressed; while text is being typed into one of Nightshift's fields, or another
-        app is in front, it stops every note instead. Returns true if any of its keys is
-        involved. */
+        key just pressed; while text is being typed into one of Nightshift's fields or a system
+        dialog, or another app is in front, it stops every note instead. Returns true if any of
+        its keys is involved. */
     bool poll (bool typingIntoText);
+
+    /** One of the operating system's own dialogs (Save as, Open, Export, picking a sample or an
+        amp model: a file chooser) is open, so the keys type into it, a file's name say, and play
+        nothing. Whatever opens one holds what openSystemDialog() returns until it closes: its
+        callback holds it, so it goes once the dialog has answered. */
+    struct SystemDialog
+    {
+        SystemDialog()                                  { ++count(); }
+        ~SystemDialog()                                 { --count(); }
+        SystemDialog (const SystemDialog&) = delete;
+        SystemDialog& operator= (const SystemDialog&) = delete;
+
+        static std::atomic<int>& count()                { static std::atomic<int> n { 0 }; return n; }
+    };
+
+    [[nodiscard]] static std::shared_ptr<SystemDialog> openSystemDialog()   { return std::make_shared<SystemDialog>(); }
+    static bool isSystemDialogOpen()                    { return SystemDialog::count() > 0; }
 
     /** Every note it's playing stops. */
     void releaseAll();
