@@ -26,6 +26,13 @@ text is in its folder in the source (external/tracktion_engine and external/Neur
 
 GPL v3 section 13 allows combining NightShift (GPL v3 or later) with JUCE (AGPL v3).
 
+What the AI drummer learned from:
+
+  Groove MIDI Dataset v1.0.0 by Jon Gillick, Adam Roberts, Jesse Engel, Douglas Eck and
+  David Bamman (Google Magenta) ............................................ CC BY 4.0
+      https://magenta.tensorflow.org/datasets/groove. The drummer's feel (each style's swing,
+      timing and accents) is learned from it (tools/groove); the dataset itself isn't included.
+
 Sounds NightShift downloads when you ask for them (they are not part of the download itself):
 
   Studio drum kits (CrocellKit, MuldjordKit, DRSKit) by DrumGizmo.org ..... CC BY 4.0
