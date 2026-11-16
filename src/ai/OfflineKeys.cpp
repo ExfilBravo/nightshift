@@ -47,19 +47,22 @@ namespace
             { "ballad",    { "Grand Piano", "Velvet Keys",     40.0f, 4.0f, 8.0f, -1.2f } },
             { "neosoul",   { "",            "Dusty Rhodes",    14.0f, 9.0f, 10.0f, 0.0f } },
             { "funk",      { "",            "Clav Funk",       0.0f, 0.0f, 2.5f, 1.9f } },
-            { "house",     { "Grand Piano", "Velvet Keys",     0.0f, 0.0f, 2.0f, 0.0f } },
+            // (Measured 2026-11-15 like the rest: the keys about 4 dB under the drums, reggae's organ 5, cinematic's
+            // piano 3; bossa's and country's brushes are too quiet to measure against, so there the keys sit 3 and
+            // 2 dB under the guitar, and ambient's piano is the loudest thing in it: as high as the fader goes)
+            { "house",     { "Grand Piano", "Velvet Keys",     0.0f, 0.0f, 2.0f, 3.6f } },
             { "techno",    { "",            "Felt Keys",       0.0f, 0.0f, 2.0f, 0.0f } },
-            { "edm",       { "Grand Piano", "Velvet Keys",     0.0f, 0.0f, 2.0f, 0.0f } },
-            { "dnb",       { "",            "Dusty Rhodes",    6.0f, 0.0f, 3.0f, 0.0f } },
+            { "edm",       { "Grand Piano", "Velvet Keys",     0.0f, 0.0f, 2.0f, 3.9f } },
+            { "dnb",       { "",            "Dusty Rhodes",    6.0f, 0.0f, 3.0f, -0.6f } },
             { "dubstep",   { "",            "Felt Keys",       0.0f, 0.0f, 2.0f, 0.0f } },
-            { "synthwave", { "",            "Velvet Keys",     4.0f, 0.0f, 2.0f, 0.0f } },
-            { "reggae",    { "",            "Drawbar Organ",   0.0f, 6.0f, 4.0f, -6.0f } },
-            { "reggaeton", { "Grand Piano", "Velvet Keys",     0.0f, 0.0f, 2.0f, 0.0f } },
-            { "afrobeats", { "",            "Dusty Rhodes",    0.0f, 4.0f, 4.0f, 0.0f } },
-            { "bossa",     { "",            "Dusty Rhodes",    8.0f, 2.0f, 6.0f, 0.0f } },
-            { "ambient",   { "Grand Piano", "Felt Keys",       20.0f, 0.0f, 8.0f, 0.0f } },
-            { "cinematic", { "Grand Piano", "Felt Keys",       0.0f, 0.0f, 3.0f, 0.0f } },
-            { "country",   { "Upright Piano", "Velvet Keys",   0.0f, 0.0f, 4.0f, 0.0f } },
+            { "synthwave", { "",            "Velvet Keys",     4.0f, 0.0f, 2.0f, -0.2f } },
+            { "reggae",    { "",            "Drawbar Organ",   0.0f, 6.0f, 4.0f, -6.3f } },
+            { "reggaeton", { "Grand Piano", "Velvet Keys",     0.0f, 0.0f, 2.0f, 3.4f } },
+            { "afrobeats", { "",            "Dusty Rhodes",    0.0f, 4.0f, 4.0f, -6.2f } },
+            { "bossa",     { "",            "Dusty Rhodes",    8.0f, 2.0f, 6.0f, -9.4f } },
+            { "ambient",   { "Grand Piano", "Felt Keys",       20.0f, 0.0f, 8.0f, 4.3f } },
+            { "cinematic", { "Grand Piano", "Felt Keys",       0.0f, 0.0f, 3.0f, 4.2f } },
+            { "country",   { "Upright Piano", "Velvet Keys",   0.0f, 0.0f, 4.0f, -3.8f } },
         };
 
         if (auto it = table.find (style); it != table.end())
@@ -576,14 +579,15 @@ namespace
 
             if (c.kind == "prechorus")
             {
-                // The build: the chords in eighths, louder bar by bar
+                // The build: the chord on each beat, louder bar by bar (the snare roll is the build's rush; the
+                // drop is where it all lands)
                 const int rise = juce::jlimit (0, 28, b.index * 4);
 
-                for (int t = 0; t < b.steps; t += 2 * u)
-                    chord (ns, t, 2 * u, v, 64 + rise + (t % b.beat == 0 ? 6 : 0), false);
+                for (auto beat : b.beats)
+                    chord (ns, beat, b.beat, v, 62 + rise + (beat == 0 ? 6 : 0), false);
 
-                add (ns, 0, b.steps, root + 12, 64 + rise, true);
-                c.note = "the chords in eighths, building bar by bar";
+                add (ns, 0, b.steps, root + 12, 62 + rise, true);
+                c.note = "the chord on each beat, building bar by bar";
                 return ns;
             }
 
@@ -1170,9 +1174,11 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
     // sampled piano that's also its brighter layers), jazz a little less
     // (Whole ids: a substring test gave "pop" poppunk's weight)
     const auto id = juce::String (style->id);
+    // (house's and EDM's stabs bright; ambient's few notes firm enough to carry over its drone)
     const int weight = juce::StringArray { "metalcore", "thrash", "metal", "trap", "drill" }.contains (id) ? 22
                      : juce::StringArray { "rock", "poppunk", "punk" }.contains (id) ? 16
-                     : id == "jazz" ? 14 : id == "ballad" ? 10 : 0;
+                     : id == "ambient" ? 20 : id == "jazz" ? 14 : juce::StringArray { "house", "edm" }.contains (id) ? 12
+                     : id == "ballad" ? 10 : 0;
 
     for (auto& s : part.sections)
         for (auto& b : s.bars)

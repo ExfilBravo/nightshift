@@ -182,8 +182,9 @@ juce::StringArray formFor (const juce::String& style, const juce::String& words)
 
 juce::String drummerWords (const juce::String& words, const juce::String& style)
 {
-    // The request without its section words (the song's form is what's written)...
-    auto t = spaced (words);
+    // The request without how its sections are played (said again at the end, on its own) or its section
+    // words (the song's form is what's written)...
+    auto t = " " + agents::withoutSectionFeel (words);
 
     for (auto* w : sectionWords)
         t = t.replace (" " + juce::String (w) + " ", " ");
@@ -204,8 +205,9 @@ juce::String drummerWords (const juce::String& words, const juce::String& style)
     for (auto* w : { " song ", " a song ", " track ", " a track " })
         t = t.replace (w, " ");
 
-    // ...then each section to write, once, in the order they first come; longer sections for the
-    // fast styles, so the song isn't all repeats
+    // ...with each section to write before them, once, in the order they first come (first, so no word of
+    // the request reads as how one is played: "ambient intro verse" would be a soft intro, and no intro);
+    // longer sections for the fast styles, so the song isn't all repeats
     juce::StringArray kinds;
 
     for (auto& k : formFor (style, words))
@@ -224,7 +226,14 @@ juce::String drummerWords (const juce::String& words, const juce::String& style)
     const double eightBarSong = (middle * 8 + 8) * 4.0 * 60.0 / tempo;
     const bool longer = eightBarSong < 90.0 && request.bars == 0;
 
-    return t.trim() + " " + kinds.joinIntoString (" ") + (longer ? " 16 bars" : "");
+    // How the sections are played, each on its own ("soft verses, heavy half-time choruses")
+    juce::String feel;
+
+    for (auto& k : request.softIn)      feel << ", soft " << k;
+    for (auto& k : request.heavyIn)     feel << ", heavy " << k;
+    for (auto& k : request.halfTimeIn)  feel << ", halftime " << k;
+
+    return kinds.joinIntoString (" ") + " " + t.trim() + (longer ? " 16 bars" : "") + feel;
 }
 
 double lengthOf (const drummer::Groove& g, const juce::StringArray& order, double secondsPerBar)

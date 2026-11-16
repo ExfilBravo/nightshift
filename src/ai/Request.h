@@ -74,4 +74,9 @@ namespace nightshift::agents
 
     const std::vector<Style>& styles();
     const Style* findStyle (const juce::String& id);
+
+    /** The words (spaced, lower case) without how their sections are played ("soft verses", "a heavy
+        half-time chorus", "builds"), as the request reads them: for a reader that rebuilds the words
+        (the song agent's, for its drummer) and says that part again on its own. */
+    juce::String withoutSectionFeel (const juce::String& words);
 }

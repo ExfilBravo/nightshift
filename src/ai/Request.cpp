@@ -351,31 +351,46 @@ namespace
     }
 }
 
+juce::String withoutSectionFeel (const juce::String& words)
+{
+    Request ignored;
+    return takeSectionFeel (spaced (words), ignored);
+}
+
 Request Request::parse (const juce::String& words, const Request* previous)
 {
     const auto said = spaced (words);
     Request r;
 
     // The style: the longest of any style's words in it ("death metal" over "metal"), the first
-    // named of two as long ("lofi jazz" is lofi)
+    // named of two as long ("lofi jazz" is lofi). Ambient and cinematic describe as often as they name
+    // ("djent ambient pad", "cinematic metal"): either is the style only when no other style is named
+    auto describes = [] (const juce::String& id) { return id == "ambient" || id == "cinematic"; };
     const Style* named = nullptr;
     int longest = 0, earliest = std::numeric_limits<int>::max();
 
-    for (auto& s : styles())
-        for (auto& w : s.words)
-            if (const int at = said.indexOf (" " + w.toLowerCase().replace ("-", " - ") + " "); at >= 0)
-                if (w.length() > longest || (w.length() == longest && at < earliest))
-                {
-                    named = &s;
-                    longest = w.length();
-                    earliest = at;
-                }
+    for (const bool describing : { false, true })
+        if (named == nullptr)
+            for (auto& s : styles())
+                if (describes (s.id) == describing)
+                    for (auto& w : s.words)
+                        if (const int at = said.indexOf (" " + w.toLowerCase().replace ("-", " - ") + " "); at >= 0)
+                            if (w.length() > longest || (w.length() == longest && at < earliest))
+                            {
+                                named = &s;
+                                longest = w.length();
+                                earliest = at;
+                            }
 
     // A genre or an artist (Genres.h) as long as any style's word named, or longer ("grunge" is the
     // genre more than rock's word for it; "Sleep Token" an artist): played as its style, with its
-    // feel read in after the words as if typed
+    // feel read in after the words as if typed. An ambient or cinematic genre ("drone", "film score")
+    // beside another style describes it, as those styles' own words do; the same word for both is the
+    // genre, as any tie is ("downtempo": deathcore's word too)
     const auto byName = findNamed (said);
-    const bool byGenre = byName.length > 0 && byName.length >= longest;
+    const bool byGenre = byName.length > 0 && byName.length >= longest
+                         && ! (named != nullptr && ! describes (named->id) && byName.genre != nullptr && describes (byName.genre->plays)
+                               && byName.at != earliest);
 
     if (byGenre)
         named = findStyle (byName.genre != nullptr ? juce::String (byName.genre->plays) : juce::String (byName.artist->genre));

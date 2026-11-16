@@ -1310,10 +1310,13 @@ namespace
 
         if (id == "dubstep")
         {
+            // Held back until the drop (a Nova bass is as loud played softly, so holding back means fewer, shorter
+            // notes): the build a sub on the one, the breakdown a held one
             if (! drop)
             {
-                add (ns, 0, b.steps, root, 100);
-                c.note = "a held sub under the build";
+                const bool build = c.kind == "prechorus";
+                add (ns, 0, build ? b.beat : b.steps, root, 100);
+                c.note = build ? "a short sub on the one, holding back for the drop" : "a held sub under the breakdown";
                 return ns;
             }
 
@@ -1352,6 +1355,23 @@ namespace
 
         if (id == "edm")
         {
+            // The verse and the build the root on each beat, short (held back so the drop lands); the drop pumping
+            // eighths; the breakdown is the piano's
+            if (c.kind == "breakdown")
+            {
+                c.note = "out: the breakdown is the piano's";
+                return ns;
+            }
+
+            if (! drop)
+            {
+                for (auto at : b.beats)
+                    add (ns, at, u, root, 100);
+
+                c.note = c.kind == "prechorus" ? "the root on each beat, short, holding back for the drop" : "the root on each beat, short";
+                return ns;
+            }
+
             for (int s = 0; s < b.steps; s += eighth)
                 add (ns, s, eighth, root, s % b.beat == 0 ? 96 : 116);
 
@@ -1625,9 +1645,13 @@ static const std::map<juce::String, float>& trims()
         { "trap", 0.0f }, { "drill", -0.3f }, { "boombap", -2.2f }, { "hiphop", -2.6f },
         { "rock", -8.9f }, { "hardrock", -10.6f }, { "poppunk", -6.7f }, { "punk", -2.0f },
         { "lofi", -3.9f }, { "jazz", -5.4f }, { "ballad", -5.4f }, { "neosoul", -3.8f }, { "funk", -0.7f },
-        { "house", -1.0f }, { "techno", -2.0f }, { "edm", -1.0f }, { "dnb", -1.0f }, { "dubstep", 0.0f }, { "synthwave", -2.0f },
-        { "reggae", 0.0f }, { "reggaeton", 0.0f }, { "afrobeats", -1.0f }, { "bossa", -4.0f }, { "ambient", -6.0f },
-        { "cinematic", -3.0f }, { "country", -6.0f },
+        // (Measured 2026-11-15: a dB under the drums for house, EDM, drum and bass, reggaeton and afrobeats, 1.5 for
+        // techno and synthwave, level with dubstep's, half a dB under reggae's, 2 under cinematic's toms; bossa's and
+        // country's brushes are too quiet to measure against, so there the bass sits 2 dB under the guitar, and in
+        // ambient 6 under the piano)
+        { "house", 0.1f }, { "techno", 1.9f }, { "edm", -1.1f }, { "dnb", -0.1f }, { "dubstep", -5.2f }, { "synthwave", -2.7f },
+        { "reggae", -5.8f }, { "reggaeton", -2.5f }, { "afrobeats", 0.5f }, { "bossa", -8.6f }, { "ambient", -17.3f },
+        { "cinematic", -6.5f }, { "country", -9.3f },
     };
     return t;
 }

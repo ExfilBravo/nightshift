@@ -1295,6 +1295,18 @@ namespace
 
         if (id == "dubstep")
         {
+            // The build: the snare rolling up in sixteenths over the kick on the one, into the drop
+            if (c.kind == "prechorus")
+            {
+                g.hit ("kick", 0, '8');
+
+                for (int s = 0; s < g.steps; ++s)
+                    g.hit ("snare", s, vel (3 + 6 * s / std::max (1, g.steps - 1)));
+
+                c.note = "the build: the snare rolling up in sixteenths";
+                return g;
+            }
+
             // Half-time: the kick on 1 (and a syncopated one in the drop), the snare on 3
             if (! breakdown)
             {
@@ -1348,9 +1360,9 @@ namespace
 
         if (c.kind == "prechorus" && id == "edm")
         {
-            // The build: the snare in sixteenths, rising to the drop
+            // The build: the snare in sixteenths, rising to the drop (from soft: the drop is the loudest part)
             for (int s = 0; s < g.steps; ++s)
-                g.hit ("snare", s, vel (3 + 6 * s / std::max (1, g.steps - 1)));
+                g.hit ("snare", s, vel (2 + 6 * s / std::max (1, g.steps - 1)));
 
             c.note = "the build: the snare rolling up in sixteenths";
             return g;

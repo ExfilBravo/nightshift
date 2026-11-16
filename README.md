@@ -376,6 +376,16 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
     it, an open hat barking on an offbeat; linear grooves (no two limbs at once) when it's busier, a disco
     chorus (four on the floor, open hats on the offbeats), a pickup on the "a" of 4 and 16th fills round the
     toms into the one.
+  - **Electronic** (house, techno, EDM, drum and bass, dubstep, synthwave): four on the floor with the clap on 2
+    and 4 and open hats between (techno's sixteenths ticking), EDM's build of a snare roll rising in sixteenths
+    and an empty beat before the drop, drum and bass's two-step at 174, dubstep half-time with its own build,
+    synthwave's 80s kick on 1 and 3 under a big snare.
+  - **Island and Latin** (reggae, reggaeton, afrobeats, bossa nova): reggae's one drop (the kick and side-stick
+    together on 3, nothing on 1; rockers in a chorus) on swung eighths, reggaeton's dembow, afrobeats' kick off
+    the beat under a clap on 2 and 4 and a shaker leaning off the beat, the bossa clave on the side-stick over a
+    soft surdo kick.
+  - **Ambient, cinematic and country**: ambient's no drums but a soft kick and ride in its biggest parts;
+    cinematic's toms in 3+3+2 under a big snare, a tom roll building into it; country's train beat and two-beat.
   For each section it writes 20 candidate bars and keeps the one that best fits its style's rules, then
   plays them through the song: phrases of four bars with a variation on the fourth, a fill into the next
   section, a crash where it lands. With no sections named it plays the style's usual song ("trap": intro,
@@ -428,6 +438,12 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
     chord tones, ghost notes.
   - **Funk**: on the one, hard; the kick's notes; the octave popped on the offbeat 16ths, never on the
     backbeat; dead notes ghosting in; a step into the next one; disco octaves in a four-on-the-floor chorus.
+  - **Electronic**: house's offbeat bass (or octaves bouncing), techno's rolling sixteenths between the kicks,
+    EDM's pumping eighths saved for the drop, drum and bass's long Reese, dubstep's wobble leaving room for the
+    snare on 3, synthwave's driving eighths with the octave on the offbeats.
+  - **Island, Latin, ambient, country**: reggae's deep, melodic line round the drop on 3, the 808 on reggaeton's
+    dembow, afrobeats bouncing between the root and the fifth, bossa's root and fifth on an upright, ambient's
+    soft sub, cinematic's low sub, country's root and fifth.
   It plays each genre's progressions in a key: asked for ("in F# minor", "key of Bb", "dorian", "drop B"), or
   the style's own (drop C for metalcore, F minor for trap, E dorian for funk, Bb for jazz...). For each
   section it writes 20 candidate lines, each played through every bar, and keeps the one that best fits the
@@ -460,6 +476,11 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   - **Funk**: the 16th chicken-scratch, the hand never stopping, ninth-chord stabs on the top three strings
     cutting through on the syncopations; disco chucks in a four-on-the-floor chorus; a single-note line in the
     bridge.
+  - **The newer styles**: synthwave's chord picked in eighths, house's short chops on the offbeats (techno,
+    EDM, drum and bass and dubstep leave it to the synths), reggae's skank on 2 and 4 (doubled in a chorus),
+    reggaeton's plucks on the dembow, afrobeats' highlife in sixteenths, the bossa thumb on the root and fifth
+    under the chord's shell on the off-beats, ambient swells, cinematic's power chord under the toms, country's
+    boom-chick.
   The fingering keeps the hand near where it was, never splits a power chord over a skipped string (an
   octave chord does), and keeps a chord within five frets.
 - **AI keys player** – the same prompt, switched to AI Keys (Alt+F8, or the AI tab's **Keys**): describe a keys
@@ -467,7 +488,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   piano, pumping 8ths", "trap piano melody", "funk clav") and it's written at once, offline, over the bassist's
   chords and locked to the drummer (each imagined when missing, and it says so). With no keys channel it makes
   one called Keys on the style's sound: the sampled Grand Piano when it's been fetched (metal, trap, rock,
-  pop-punk, jazz and ballads), else a Nova sound (Felt Keys, Velvet Keys, Dusty Rhodes, Clav Funk, Drawbar
+  pop-punk, jazz, ballads, house, EDM, reggaeton, ambient and cinematic; the upright piano for country), else a Nova sound (Felt Keys, Velvet Keys, Dusty Rhodes, Clav Funk, Drawbar
   Organ, a pad for deathcore and djent), its fader set for the style's mix (measured with `--bandrender`: 2 to 5
   dB under the drums). Every right-hand chord is led from the last (of all its inversions, the one whose notes
   move least). A specialist per style:
@@ -484,6 +505,15 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
     restruck on the syncopation, grace notes sliding into the top.
   - **Funk**: the clav, stabs on the syncopations and the left hand filling the 16ths between, never on the
     same 16th; clav chords on the off-beats in a four-on-the-floor chorus.
+  - **Electronic**: house's short piano stabs on one of its rhythms (3+3+4+2+4, the offbeats...), out of the
+    intro and held through the breakdown; EDM's chords on the beat, building through the prechorus, on the
+    drop's offbeats, alone in the breakdown; drum and bass's Rhodes holding ninths; synthwave's held chords;
+    none in techno or dubstep.
+  - **Island, Latin, ambient, country**: reggae's organ bubble (a chord on each offbeat, a lighter one just
+    after), reggaeton's chords on the dembow's 3+3+2 in the hook, afrobeats' two-bar syncopation, bossa's Rhodes
+    shells (the third, seventh and ninth), ambient's sparse piano (a note or two a bar), cinematic's ostinato in
+    eighths under the chord held high, country's honky-tonk (2 and 4, a slide into the third, a run down at a
+    phrase's end, on the upright piano).
   The piano styles are played with some weight (a trap melody or a metal intro hit firmly).
 - **AI synth player** – the last of the band: the same prompt, switched to AI Synth (Ctrl+Shift+F8, or the AI tab's
   **Synth**). Describe a synth part ("trap bell melody", "metalcore trance
@@ -513,6 +543,10 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
     Moog-style lead (Mono Lead, gliding) sliding and scooping into its notes, ninths and elevenths.
   - **Funk**: the horn section: short stabs on the syncopations between the kicks (rootless ninth voicings), a
     riff in octaves on the blues scale in the chorus, held chords swelling in the bridge.
+  - **The newer styles**: house's warm pad, techno's sequence, EDM's supersaw lead (level with the drums in the
+    drop), drum and bass's breathy pad, dubstep's dark one, synthwave's arpeggio, reggae's and afrobeats' horn
+    hits answering on the offbeats over two bars (afrobeats' own job a kalimba arpeggio), reggaeton's pluck,
+    bossa's flute, ambient's drone, cinematic's strings, country's strings.
   A legato lead is played one note at a time and runs on into its slides, so it glides.
 - **Time signatures** – 4/4, 3/4, 2/4, 5/4, 6/4, 7/4, 6/8, 9/8, 12/8, 5/8, 7/8, 11/8, 13/8, 7/16, 13/16, 15/16:
   click the time signature in the top bar or use the main menu. Steps shows a bar's worth of 16ths grouped by
@@ -865,8 +899,9 @@ the 13 newer styles each played by the band (house's four on the floor and short
 EDM's sixteenth-note build and offbeat chords, drum and bass's two-step at 174 under four-note Rhodes chords, synthwave's
 held chords, reggae's one drop, skank on 2 and 4 and organ bubble, reggaeton's dembow and chords on its 3+3+2,
 afrobeats' clap and shaker, bossa nova's clave and rootless shells, ambient's empty verse and sparse piano, cinematic's
-3+3+2 toms and ostinato, country's train beat, piano slide and boom-chick); a name it doesn't know said back; a request
-kept with the song.
+3+3+2 toms and ostinato, country's train beat, piano slide and boom-chick); "djent ambient pad" still djent and "an
+ambient arp" an arpeggio, and the song agent's drummer keeping "soft verses, heavy choruses"; a name it doesn't know
+said back; a request kept with the song.
 `--trackstest` covers Arrange's
 tracks: none in a new song, old projects' fixed rows loading as their used tracks, Add track (audio tracks named
 and placed), drops (new track at the end or between two, replacing the 808's instrument and hearing the synth

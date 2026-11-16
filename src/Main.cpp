@@ -1659,6 +1659,22 @@ namespace
                 }
             }
 
+            // Ambient and cinematic describe as often as they name; the song agent's drummer keeps how each section
+            // is played (its words rebuilt with the form first, the feel said again after)
+            {
+                const auto djent = Request::parse ("djent ambient pad");
+                const auto drone = Request::parse ("drone metal");
+                const auto arp = Request::parse ("an ambient arp");
+                const auto down = Request::parse ("a downtempo song");
+                const auto metalcore = Request::parse (songwriter::drummerWords ("metalcore with soft verses and heavy choruses", "metalcore"));
+                const auto ambient = Request::parse (songwriter::drummerWords ("an ambient song", "ambient"));
+                check (djent.style == "djent" && drone.style == "metal" && arp.style == "ambient" && down.genre == "ambient"
+                         && metalcore.softIn == juce::StringArray { "verse" } && metalcore.heavyIn == juce::StringArray { "chorus" }
+                         && metalcore.sections.size() > 0 && metalcore.sections[0] == "intro" && ambient.sections.size() > 0 && ambient.sections[0] == "intro",
+                       "\"djent ambient pad\" is djent, \"drone metal\" metal, \"an ambient arp\" ambient, downtempo the genre; the song agent's drummer keeps "
+                       "soft verses and heavy choruses (" + metalcore.understood.joinIntoString (", ") + ") and an ambient song's intro");
+            }
+
             // A name the band doesn't know is said back, not quietly played as rock
             {
                 const auto r = Request::parse ("make a zyxwv style song");

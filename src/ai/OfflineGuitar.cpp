@@ -949,11 +949,16 @@ namespace
 
     int unitOf (const BarIn& b)     { return std::max (1, b.sixteenth > 0 ? b.sixteenth : b.steps / 16); }
 
-    // The chord's top notes, high on the neck: a skank's, a chop's, a swell's
+    // The chord's three notes close together within an octave from `from`, for the top three strings: a
+    // skank's, a chop's, a swell's (a barre's top notes ran off the neck for a high root, and a chord
+    // folded back down onto it no longer fitted the strings)
     std::vector<int> highChord (const Chord& ch, int from)
     {
-        auto v = barre (ch, atOrAbove (ch.root, from));
-        return std::vector<int> (v.end() - std::min<std::ptrdiff_t> (3, (std::ptrdiff_t) v.size()), v.end());
+        const int third = ch.third() >= 0 ? ch.third() : 4;
+        const int fifth = ch.has (6) ? 6 : 7;
+        std::vector<int> v { atOrAbove (ch.root, from), atOrAbove ((ch.root + third) % 12, from), atOrAbove ((ch.root + fifth) % 12, from) };
+        std::sort (v.begin(), v.end());
+        return v;
     }
 
     // Electronic: out of the way. Synthwave's clean guitar picks the chord in eighths; house's chops the
@@ -1186,7 +1191,11 @@ float levelFor (const juce::String& style)
         { "poppunk", 1.5f }, { "punk", 1.5f }, { "rock", -2.9f }, { "hardrock", -2.9f },
         { "funk", 3.3f }, { "jazz", -3.8f }, { "ballad", -3.8f }, { "lofi", 0.5f }, { "neosoul", 0.0f },
         { "trap", 0.0f }, { "drill", 0.0f }, { "boombap", 0.0f }, { "hiphop", 0.0f },
-        { "bossa", -3.8f }, { "ambient", -4.0f }, { "cinematic", 4.3f }, { "country", -2.9f },
+        // (Measured 2026-11-15: house's chops, synthwave's eighths and reggae's skank 3 under, reggaeton's plucks 4,
+        // cinematic's power chords 2; bossa's and country's guitars 3 over their brushes, ambient's swells 4 under
+        // its piano)
+        { "house", 1.1f }, { "synthwave", -2.0f }, { "reggae", -3.4f }, { "reggaeton", -2.4f }, { "afrobeats", -5.3f },
+        { "bossa", -5.0f }, { "ambient", -10.9f }, { "cinematic", -2.5f }, { "country", -4.1f },
     };
 
     const auto it = trims.find (style);

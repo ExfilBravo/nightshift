@@ -1387,7 +1387,9 @@ Ask askOf (const juce::String& words)
     const auto t = spaced (words);
     Ask a;
 
-    if (has (t, { "pad", "pads", "chords", "held chords", "atmosphere", "ambient", "ambience", "texture", "swell", "swells" }))
+    // ("Ambient" asks for a pad, unless it's the style: "an ambient arp" is an arpeggio)
+    if (has (t, { "pad", "pads", "chords", "held chords", "atmosphere", "ambience", "texture", "swell", "swells" })
+        || (has (t, { "ambient" }) && agents::Request::parse (words).style != "ambient"))
         a.role = "pad";
     else if (has (t, { "arp", "arps", "arpeggio", "arpeggios", "arpeggiated", "arpeggiate", "sequence", "sequenced", "sequencer" }))
         a.role = "arp";
@@ -1489,19 +1491,22 @@ float levelFor (const juce::String& style, const juce::String& role)
             { "ballad",    { -14.6f, -8.3f, -9.8f, -8.4f } },
             { "neosoul",   { -9.7f, -3.4f, -4.9f, -3.5f } },
             { "funk",      { -5.7f, -0.1f, -0.7f, -3.2f } },
-            { "house",     { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "techno",    { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "edm",       { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "dnb",       { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "dubstep",   { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "synthwave", { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "reggae",    { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "reggaeton", { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "afrobeats", { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "bossa",     { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "ambient",   { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "cinematic", { 0.0f, 0.0f, 0.0f, 0.0f } },
-            { "country",   { 0.0f, 0.0f, 0.0f, 0.0f } },
+            // (Measured 2026-11-15 the same way; cinematic's strings 4 under, not 7. Bossa's and country's brushes are
+            // too quiet to measure against: there each job sits that far under the guitar instead (the guitar 3 dB
+            // over the brushes), and in ambient under the piano, which the drums barely play under)
+            { "house",     { -6.2f, -1.6f, 1.3f, -3.0f } },
+            { "techno",    { -9.3f, -1.1f, -2.7f, -2.7f } },
+            { "edm",       { -7.7f, -0.1f, 0.0f, -2.0f } },     // its lead level with the drums: it's the drop
+            { "dnb",       { -7.4f, -0.9f, -0.5f, -2.5f } },
+            { "dubstep",   { -15.1f, -4.9f, -5.3f, -6.6f } },
+            { "synthwave", { -6.7f, -1.4f, -3.3f, -3.1f } },
+            { "reggae",    { -8.6f, -3.8f, -5.6f, -6.8f } },
+            { "reggaeton", { -7.3f, -1.1f, 1.4f, -4.2f } },
+            { "afrobeats", { -10.2f, -6.8f, -6.0f, -8.1f } },
+            { "bossa",     { -16.7f, -12.7f, -9.4f, -12.6f } },
+            { "ambient",   { -18.3f, -18.3f, -16.2f, -18.2f } },
+            { "cinematic", { -9.6f, -2.4f, -6.9f, -8.6f } },
+            { "country",   { -15.9f, -10.5f, -9.8f, -13.0f } },
     };
 
     const auto it = faders.find (style);
