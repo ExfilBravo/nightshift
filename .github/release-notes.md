@@ -1,6 +1,11 @@
 NightShift is a free music studio for Windows and Mac: patterns and a step sequencer, a piano roll, a mixer, built-in synths and drum kits, and an AI band (drummer, bass, guitar, keys and synth) that writes parts in the style you describe.
 
-## What's new in 0.4.0
+## What's new in 0.4.1
+
+- **Write a song with this vibe is always in sight.** When the bottom panel is short, as it is when NightShift opens, the button now sits beside what the band heard instead of below the panel's edge, with Play it as and How close on one row under it.
+- **The new-plugins note shows once.** NightShift no longer says it found the same plugins every time it starts. It happened with plugins such as Surge XT, CHOWTapeModel and TAL-Chorus-LX, and with any plugin that had been updated.
+
+## New in 0.4.0
 
 - **Give the AI band a song for its vibe.** In the AI tab's Song panel, click **Listen to a song...** (or drop an MP3, WAV, AIFF, FLAC or Ogg file on it). In a few seconds the band hears its tempo, beat, key, chords, sections and sound, then writes a new song of its own with that vibe. You choose how close it stays: Close, Some changes or Loosely. It all happens on your computer and nothing is sent anywhere.
 - **The 808 and 909 in Nightshift Drums.** Two new kits, each drawn as its drum machine: click a drum to play it, and the step lamps follow the beat. They're built in, so there's nothing to download.
