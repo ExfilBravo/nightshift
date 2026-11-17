@@ -66,6 +66,9 @@ public:
     juce::Button& getPlayButton()                   { return playButton; }
     juce::Button& getListenButton()                 { return listenButton; }
     juce::Button& getWriteButton()                  { return writeButton; }
+    juce::Component& getClosenessChooser()          { return closeness; }
+    juce::Component* getPlayAsChooser()             { return playAs.get(); }
+    juce::String getShownSummary() const            { return shownSummary; }
     juce::Component* getIdeaChip (int index)        { return ideaChips[index]; }
     int getNumPlayerChips() const                   { return playerChips.size(); }
 
@@ -96,7 +99,8 @@ private:
     std::unique_ptr<vibes::Vibe> heard;
     vibes::Plan plan;
     juce::int64 vibeSeed = 1;
-    juce::Rectangle<int> summaryArea, playAsLabel, closenessLabel, planArea;
+    juce::Rectangle<int> titleArea, summaryArea, playAsLabel, closenessLabel, planArea;
+    juce::String shownSummary;      // what it heard, in the whole sentences there's room for
 
     enum class Mode { intro, working, listening, heard, made };
     Mode mode() const;

@@ -30,6 +30,34 @@ namespace
         return layout;
     }
 
+    /** How tall a paragraph of the panel's 16 px text is at this width (and a little to spare). */
+    int heightOf (const juce::String& s, int width)
+    {
+        return (int) std::ceil (layoutOf (s, font (16.0f), juce::Colours::white, width).getHeight()) + 4;
+    }
+
+    /** The whole sentences of a paragraph, from its start, that fit in this height: none rather than half
+        a line, and never a sentence cut off. */
+    juce::String sentencesThatFit (const juce::String& s, int width, int height)
+    {
+        juce::String shown;
+
+        for (int from = 0; from < s.length();)
+        {
+            const auto stop = s.indexOf (from, ". ");
+            const int end = stop < 0 ? s.length() : stop + 1;
+            const auto more = s.substring (0, end).trimEnd();
+
+            if (heightOf (more, width) > height)
+                break;
+
+            shown = more;
+            from = end;
+        }
+
+        return shown;
+    }
+
     void styleAsPrimary (juce::TextButton& b)
     {
         b.setColour (juce::TextButton::buttonColourId, accent);
@@ -415,17 +443,69 @@ void SongPanel::resized()
     if (m == Mode::heard)
     {
         // What it heard; play it as; how close; what the new song keeps and changes (when there's room: else it's
-        // Write's tooltip); then write it (beside the choices when even that's short of room)
+        // Write's tooltip); then write it (beside the choices when that's short of room). Shorter still (the editor
+        // as it first opens), Write goes up beside the title and the choices share a row, so it's always in sight,
+        // and what it heard keeps the whole sentences there's room for (a taller panel shows them all)
         introArea = r.withSizeKeepingCentre (std::min (860, r.getWidth()), std::min (380, r.getHeight()));
         auto t = introArea;
-        t.removeFromTop (32);
+        titleArea = t.removeFromTop (32);
 
-        const int summaryHeight = std::min (110, (int) std::ceil (layoutOf (heard->summary(), font (16.0f), text, t.getWidth()).getHeight()) + 4);
-        const int planHeight = (int) std::ceil (layoutOf (aboutPlan(), font (16.0f), textDim, t.getWidth()).getHeight()) + 4;
+        const auto summary = heard->summary();
+        const int summaryHeight = heightOf (summary, t.getWidth());
+        const int planHeight = heightOf (aboutPlan(), t.getWidth());
         const int choices = 32 + 8 + 32;
+        writeButton.setTooltip ("Starts a new project and has the band write and play a new song with this vibe. " + aboutPlan());
+        anotherButton.setVisible (true);
+
+        if (t.getHeight() < summaryHeight + 10 + choices)
+        {
+            const int writeWidth = 250, anotherWidth = 190;
+            const bool both = titleArea.getWidth() - (writeWidth + 10 + anotherWidth) >= 320;
+            auto buttons = titleArea.removeFromRight (both ? writeWidth + 10 + anotherWidth : writeWidth);
+            titleArea.removeFromRight (12);
+            writeButton.setBounds (buttons.removeFromLeft (writeWidth));
+            buttons.removeFromLeft (10);
+            anotherButton.setBounds (buttons);
+            anotherButton.setVisible (both);
+
+            // Side by side, each label just its words wide
+            const int playAsWidth = playAs != nullptr ? playAs->getIdealWidth() : 0;
+            const int playLabelWidth = (int) juce::GlyphArrangement::getStringWidth (font (16.0f), "Play it as") + 14;
+            const int closeLabelWidth = (int) juce::GlyphArrangement::getStringWidth (font (16.0f), "How close") + 14;
+            const bool oneRow = playLabelWidth + playAsWidth + 20 + closeLabelWidth + closeness.getIdealWidth() <= t.getWidth();
+            const int choicesHeight = oneRow ? 32 : choices;
+
+            t.removeFromTop (4);
+            shownSummary = sentencesThatFit (summary, t.getWidth(), t.getHeight() - 10 - choicesHeight);
+            summaryArea = t.removeFromTop (shownSummary.isEmpty() ? 0 : heightOf (shownSummary, t.getWidth()));
+            t.removeFromTop (shownSummary.isEmpty() ? 0 : 10);
+
+            auto row = t.removeFromTop (32);
+            playAsLabel = row.removeFromLeft (oneRow ? playLabelWidth : 112);
+
+            if (playAs != nullptr)
+                playAs->setBounds (row.removeFromLeft (std::min (row.getWidth(), playAsWidth)));
+
+            if (oneRow)
+            {
+                row.removeFromLeft (20);
+            }
+            else
+            {
+                t.removeFromTop (8);
+                row = t.removeFromTop (32);
+            }
+
+            closenessLabel = row.removeFromLeft (oneRow ? closeLabelWidth : 112);
+            closeness.setBounds (row.withWidth (std::min (row.getWidth(), closeness.getIdealWidth())));
+            planArea = {};
+            return;
+        }
+
         const bool roomForPlan = t.getHeight() >= summaryHeight + 10 + choices + 8 + planHeight + 10 + 36;
         const bool buttonsBeside = t.getHeight() < summaryHeight + 10 + choices + 10 + 36;
 
+        shownSummary = summary;
         summaryArea = t.removeFromTop (summaryHeight);
         t.removeFromTop (10);
 
@@ -450,8 +530,6 @@ void SongPanel::resized()
             t.removeFromTop (8);
             planArea = t.removeFromTop (planHeight);
         }
-
-        writeButton.setTooltip ("Starts a new project and has the band write and play a new song with this vibe. " + aboutPlan());
 
         if (buttonsBeside)
         {
@@ -536,12 +614,12 @@ void SongPanel::paint (juce::Graphics& g)
     }
     else if (m == Mode::heard)
     {
-        auto t = introArea;
         g.setColour (text);
         g.setFont (font (21.0f, true));
-        g.drawText ("Heard \"" + heard->name + "\"", t.removeFromTop (30), juce::Justification::centredLeft, true);
+        g.drawText ("Heard \"" + heard->name + "\"", titleArea.withHeight (30), juce::Justification::centredLeft, true);
 
-        layoutOf (heard->summary(), font (16.0f), text, summaryArea.getWidth()).draw (g, summaryArea.toFloat());
+        if (! summaryArea.isEmpty())
+            layoutOf (shownSummary, font (16.0f), text, summaryArea.getWidth()).draw (g, summaryArea.toFloat());
 
         g.setColour (textDim);
         g.setFont (font (16.0f));

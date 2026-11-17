@@ -431,7 +431,9 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
     much low end), and the band's styles it's nearest. It says what it heard, offers its nearest three styles to
     **Play it as**, and **How close** to keep to it (Close: its tempo, key, chords and form as heard; Some changes:
     the tempo moves a little and a chord or two turns to a neighbour; Loosely: the key and the form may change too),
-    with what the new song keeps and changes. **Write a song with this vibe** has the song agent make it: the band
+    with what the new song keeps and changes. In a short panel (the editor as it first opens) **Write a song with
+    this vibe** sits up beside the title and what it heard keeps the whole sentences there's room for, so the
+    button is always in sight. **Write a song with this vibe** has the song agent make it: the band
     writes its own parts, so it's never a copy. The words it writes are the song agent's own ("funk at 104 bpm in
     E minor, 33% swing, verse chords Em7 Em7 A9 Em7, chorus chords A9 A9 Em7 Em7, form intro verse chorus verse
     chorus bridge chorus outro"), and anyone can type them: "verse chords ..." (or "chords ..." for every section)
@@ -859,6 +861,7 @@ Nightshift.exe --instrumenttest <folder>
 Nightshift.exe --instrumentfetch <folder>
 Nightshift.exe --findplugins
 Nightshift.exe --pluginfindtest
+Nightshift.exe --vibepaneltest [--pictures <folder>]
 Nightshift.exe --devices [--probe]
 node tools/analyze.mjs out.wav
 ```
@@ -945,7 +948,10 @@ bars' chords on the bassist's root, their verses and choruses found and their st
 agent's words for a vibe read back as the request they'll be (close: everything as heard; loosely, the tempo and the
 key moving); "verse chords ...", "chords ..." and "form ..." read, saved and played as asked; and every style's ears.
 `--listen song.mp3 [--closeness 0..1] [--seed n] [--as style] [--features]` prints what it hears in a song and the
-song agent's words for one with its vibe.
+song agent's words for one with its vibe. `--vibepaneltest [--pictures <folder>]` shows a long song heard in the Song
+panel at the sizes it gets (the editor at its smallest, as it first opens, the whole height; narrow and wide): Write a
+song with this vibe, Play it as and How close in sight and clickable, what it heard in whole sentences (all of them
+with room), and no text cut, clipped or covered.
 `--trackstest` covers Arrange's
 tracks: none in a new song, old projects' fixed rows loading as their used tracks, Add track (audio tracks named
 and placed), drops (new track at the end or between two, replacing the 808's instrument and hearing the synth

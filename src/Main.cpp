@@ -11360,6 +11360,7 @@ namespace
                 { "Arrange and Steps", "" }, { "a laptop's 1366 x 768", "--size 1366x768" }, { "the piano roll", "--raise piano" },
                 { "the mixer", "--raise mixer" }, { "the mixer with buses", "--buses --raise mixer" },
                 { "AI: Song", "--raise song" }, { "AI: Song, a song heard for its vibe", "--raise song --vibedemo" },
+                { "AI: Song, a song heard, on a laptop's 1366 x 768", "--size 1366x768 --raise song --vibedemo" },
                 { "AI: Song, listening to a song", "--raise song --vibelistening" }, { "AI: Drums", "--raise drummer" }, { "AI: Bass", "--raise bass" },
                 { "AI: Guitar", "--raise guitar" }, { "AI: Keys", "--raise keys" }, { "AI: Synth", "--raise aisynth" },
                 { "AI: Master", "--raise aimaster" }, { "the drummer's conversation", "--drummer panel" },
@@ -13468,6 +13469,117 @@ namespace
                 std::cout << "  " << e.category << " | " << e.name << " | " << e.path << std::endl;
 
             return error.isEmpty() ? 0 : 1;
+        }
+
+        if (args.has ("--vibepaneltest"))
+        {
+            // What it heard of a song, in the AI tab's Song panel at the sizes it gets (the editor at its smallest,
+            // as it first opens, given the whole height; a narrow window and a wide one): Write a song with this
+            // vibe in sight and clickable, Play it as and How close too, nothing on top of them, what it heard in
+            // whole sentences (all of them with room), and no text cut or clipped. The user, 2026-11-16: "I gave it
+            // a song now how do i generate it?" (in the editor as it opens, Write was below the panel's bottom)
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            // A long song, heard: two dozen sections, as a five-minute song with a long build has
+            vibes::Vibe v;
+            v.name = "Caramel";
+            v.seconds = 302.0;
+            v.tempo = 94.0;
+            v.keyRoot = 5;
+            v.mode = "minor";
+            v.brightness = 0.7f;
+            v.grit = 0.6f;
+            v.lowEnd = 0.3f;
+            const char* kinds[] = { "intro", "breakdown", "breakdown", "breakdown", "bridge", "bridge", "bridge", "bridge", "verse", "chorus",
+                                    "bridge", "bridge", "bridge", "breakdown", "breakdown", "chorus", "bridge", "bridge", "bridge", "bridge",
+                                    "bridge", "bridge", "outro" };
+            int bar = 0;
+
+            for (auto* kind : kinds)
+            {
+                vibes::Section s;
+                s.kind = kind;
+                s.label = juce::String::charToString ((juce::juce_wchar) ('A' + (bar / 4) % 6));
+                s.startBar = bar;
+                s.bars = 4;
+                s.energyDb = (bar / 4) % 3 == 0 ? -8.0f : -2.0f;
+                s.chords = juce::StringArray::fromTokens ("Fm Bbm7 Eb9 Ab9", " ", {});
+                v.sections.push_back (s);
+                bar += 4;
+            }
+
+            v.styles = { { "rock", 0.82f, "its sound, its chords" }, { "synthwave", 0.74f, "its tempo" }, { "deathcore", 0.7f, "its sound" } };
+            const auto summary = v.summary();
+
+            Song song;
+            song.loadEmpty();
+            SongPanel panel (song);
+            panel.setVisible (true);        // as in the studio's window (clicks find nothing in a hidden one)
+            panel.showHeard (v);
+
+            auto inSight = [&panel] (juce::Component* c)
+            {
+                if (c == nullptr || ! c->isVisible() || ! panel.getLocalBounds().contains (c->getBounds()))
+                    return false;
+
+                auto* hit = panel.getComponentAt (c->getBounds().getCentre());
+                return hit == c || c->isParentOf (hit);
+            };
+
+            // The panel is the editor less its header, and less the AI tab's list of agents across
+            struct Size { const char* what; int width, height; bool words; };
+            const Size sizes[] { { "the editor at its smallest, the smallest window", 840, 200 - DockPanel::headerHeight, false },
+                                 { "the editor at its smallest, a wide window", 1300, 200 - DockPanel::headerHeight, true },
+                                 { "the editor as it first opens", 1100, 260 - DockPanel::headerHeight, true },
+                                 { "the editor given the whole height", 1300, 700, true } };
+
+            for (auto& size : sizes)
+            {
+                panel.setSize (size.width, size.height);
+                const auto shown = panel.getShownSummary();
+                std::cout << "  " << size.width << " x " << size.height << ": Write at " << panel.getWriteButton().getBounds().toString()
+                          << ", Play it as at " << (panel.getPlayAsChooser() != nullptr ? panel.getPlayAsChooser()->getBounds().toString() : juce::String ("-"))
+                          << ", How close at " << panel.getClosenessChooser().getBounds().toString() << std::endl;
+                juce::Image picture;
+                const auto runs = textaudit::collect (panel, &picture);
+                juce::StringArray problems;
+
+                for (auto& r : runs)
+                    if (! r.fine() || r.veiled)
+                        problems.add ("\"" + r.text.substring (0, 40) + "\"");
+
+                // --pictures <folder>: each size as it looks
+                if (const auto folder = args.valueAfter ("--pictures"); folder.isNotEmpty() && picture.isValid())
+                {
+                    const auto file = juce::File (folder).getChildFile ("vibepanel-" + juce::String (size.width) + "x" + juce::String (size.height) + ".png");
+                    file.deleteFile();
+                    juce::FileOutputStream out (file);
+                    juce::PNGImageFormat().writeImageToStream (picture, out);
+                }
+
+                juce::StringArray hidden;
+
+                if (! inSight (&panel.getWriteButton()))        hidden.add ("Write");
+                if (! inSight (panel.getPlayAsChooser()))       hidden.add ("Play it as");
+                if (! inSight (&panel.getClosenessChooser()))   hidden.add ("How close");
+
+                check (hidden.isEmpty(), juce::String (size.what) + ": Write a song with this vibe, Play it as and How close are in sight and clickable"
+                                             + (hidden.isEmpty() ? juce::String() : " (not: " + hidden.joinIntoString (", ") + ")"));
+                check ((shown.isNotEmpty() || ! size.words) && summary.startsWith (shown) && (shown.isEmpty() || shown == summary || shown.endsWithChar ('.')),
+                       juce::String (size.what) + ": what it heard, in whole sentences (" + juce::String (shown.length()) + " of "
+                           + juce::String (summary.length()) + " characters)");
+                check (problems.isEmpty(), juce::String (size.what) + ": no text cut, clipped, small or covered "
+                                               + (problems.isEmpty() ? juce::String() : "(" + problems.joinIntoString (", ") + ")"));
+            }
+
+            check (panel.getShownSummary() == summary, "given the whole height, it shows all it heard");
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
         }
 
         if (args.has ("--pluginfindtest"))
