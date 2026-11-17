@@ -381,6 +381,22 @@ public:
     void findNewPlugins (std::function<void (const juce::StringArray&)> done);
     bool isFindingPlugins() const               { return findingPlugins; }
 
+    /** How many plugin files the last look for new plugins scanned (a list that's up to date: none). */
+    int getPluginsScannedLastTime() const       { return pluginsScannedLastTime; }
+
+    /** Tests: the one folder the finder looks in (VST3s only), instead of the usual places. */
+    static inline juce::File pluginFolderOverride;
+
+    /** True when the list has this plugin file and nothing of it needs scanning again: listed by
+        the file itself or by a file inside it. A VST3 bundle without a moduleinfo.json (Surge XT,
+        CHOWTapeModel, TAL's) is listed by the module inside it (Contents\x86_64-win\<name>.vst3),
+        never by the bundle the search finds, so JUCE's own check always said "not listed". */
+    static bool isListedAndCurrent (const juce::KnownPluginList&, const juce::String& file, juce::AudioPluginFormat&);
+
+    /** Which plugin a description is, wherever its file is and however new: a plugin found again
+        (a new build of it, moved, or listed by another of its files) isn't a new plugin. */
+    static juce::String pluginKey (const juce::PluginDescription&);
+
     /** Whether this is the studio itself (the real audio device), not a command-line run. */
     bool isStudio() const                       { return liveAudio && ! keepStudioSettings; }
 
@@ -465,7 +481,8 @@ private:
     std::unique_ptr<juce::Thread> pluginFinder;
     std::vector<std::function<void (const juce::StringArray&)>> pluginFinderWaiting;   // message thread only
     bool findingPlugins = false;
-    void pluginsFound (const juce::StringArray&);
+    int pluginsScannedLastTime = 0;
+    void pluginsFound (const juce::StringArray&, int scanned);
     std::unique_ptr<te::Edit> edit;
     std::map<int, Slot> slots;
     std::map<int, BusSlot> busSlots;

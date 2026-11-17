@@ -13,6 +13,7 @@
 #include "Nova.h"
 #include "GuitarSound.h"
 #include <tracktion_engine/playback/graph/tracktion_EditNodeBuilder.h>
+#include <set>
 
 namespace nightshift
 {
@@ -911,13 +912,13 @@ void AudioEngine::findNewPlugins (std::function<void (const juce::StringArray&)>
 
         ~Finder() override      { stopThread (20000); }
 
-        void report (const juce::StringArray& added)
+        void report (const juce::StringArray& added, int scanned)
         {
             // Back on the message thread, unless the engine's gone by then
-            juce::MessageManager::callAsync ([weak = std::weak_ptr<bool> (alive), e = &engine, added]
+            juce::MessageManager::callAsync ([weak = std::weak_ptr<bool> (alive), e = &engine, added, scanned]
             {
                 if (auto stillAlive = weak.lock(); stillAlive && *stillAlive)
-                    e->pluginsFound (added);
+                    e->pluginsFound (added, scanned);
             });
         }
 
@@ -926,6 +927,14 @@ void AudioEngine::findNewPlugins (std::function<void (const juce::StringArray&)>
             // VST3s everywhere; on a Mac, Audio Units too (most Mac instruments come as both)
             auto& list = engine.getKnownPlugins();
             juce::StringArray added;
+            int scanned = 0;
+
+            // The plugins the list already had: found again (a new build, moved, listed by another
+            // of its files), a plugin isn't new, and saying it was put the same note up every start
+            std::set<juce::String> known;
+
+            for (auto& type : list.getTypes())
+                known.insert (pluginKey (type));
 
             for (auto* format : engine.getPluginFormats().getFormats())
             {
@@ -941,6 +950,14 @@ void AudioEngine::findNewPlugins (std::function<void (const juce::StringArray&)>
                 if (kind == "VST3")
                     places.addIfNotAlreadyThere (paths::userVst3());
 
+                if (pluginFolderOverride != juce::File())
+                {
+                    if (kind != "VST3")
+                        continue;
+
+                    places = juce::FileSearchPath (pluginFolderOverride.getFullPathName());
+                }
+
                 for (auto& file : format->searchPathsForPlugins (places, true, true))
                 {
                     if (threadShouldExit())
@@ -952,18 +969,26 @@ void AudioEngine::findNewPlugins (std::function<void (const juce::StringArray&)>
                          && ! (file.startsWith ("AudioUnit:Effects/") || file.startsWith ("AudioUnit:Synths/")))
                         continue;
 
-                    if (list.isListingUpToDate (file, *format) || list.getBlacklistedFiles().contains (file))
+                    if (isListedAndCurrent (list, file, *format) || list.getBlacklistedFiles().contains (file))
                         continue;
 
                     juce::OwnedArray<juce::PluginDescription> found;
                     list.scanAndAddFile (file, true, found, *format);
+                    ++scanned;
 
                     for (auto* d : found)
-                        added.addIfNotAlreadyThere (d->name);
+                        if (known.count (pluginKey (*d)) == 0)
+                            added.addIfNotAlreadyThere (d->name);
                 }
             }
 
-            report (added);
+            // A plugin scanned again (a new build of one listed) takes its old entry's place without
+            // JUCE telling anyone, so the list file never had its new date and every start scanned it
+            // again: tell the list's listeners (the studio writes Plugins.xml, Tracktion its copy)
+            if (scanned > 0)
+                list.sendChangeMessage();
+
+            report (added, scanned);
         }
 
         AudioEngine& engine;
@@ -982,9 +1007,34 @@ void AudioEngine::findNewPlugins (std::function<void (const juce::StringArray&)>
     pluginFinder = std::make_unique<Finder> (*this);
 }
 
-void AudioEngine::pluginsFound (const juce::StringArray& added)
+bool AudioEngine::isListedAndCurrent (const juce::KnownPluginList& list, const juce::String& file, juce::AudioPluginFormat& format)
+{
+    const auto inside = file + juce::File::getSeparatorString();
+    bool listed = false;
+
+    for (auto& type : list.getTypes())
+    {
+        if (! type.fileOrIdentifier.equalsIgnoreCase (file) && ! type.fileOrIdentifier.startsWithIgnoreCase (inside))
+            continue;
+
+        if (format.pluginNeedsRescanning (type))
+            return false;
+
+        listed = true;
+    }
+
+    return listed;
+}
+
+juce::String AudioEngine::pluginKey (const juce::PluginDescription& d)
+{
+    return d.pluginFormatName + "|" + d.name + "|" + juce::String::toHexString (d.uniqueId);
+}
+
+void AudioEngine::pluginsFound (const juce::StringArray& added, int scanned)
 {
     findingPlugins = false;
+    pluginsScannedLastTime = scanned;
     auto waiting = std::move (pluginFinderWaiting);
     pluginFinderWaiting.clear();
 

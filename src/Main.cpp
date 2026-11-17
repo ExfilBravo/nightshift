@@ -13470,6 +13470,128 @@ namespace
             return error.isEmpty() ? 0 : 1;
         }
 
+        if (args.has ("--pluginfindtest"))
+        {
+            // The look for new plugins every start makes: a plugin is new once. Copies of Nightshift
+            // Lofi's VST3s in a folder of their own, Vinyl without its moduleinfo.json (as Surge XT,
+            // CHOWTapeModel and TAL's come, listed by the module inside the bundle): both new the first
+            // time; the next look scans nothing and finds nothing; a new build of Haze is scanned, isn't
+            // new, and its date reaches the list and its listeners (the studio writes Plugins.xml), so
+            // the look after scans nothing; a plugin put there later is new, and only it
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            const auto source = paths::userVst3();
+            const auto haze = source.getChildFile ("Nightshift Haze.vst3");
+            const auto vinyl = source.getChildFile ("Nightshift Vinyl.vst3");
+            const auto crush = source.getChildFile ("Nightshift Crush.vst3");
+
+            if (! haze.isDirectory() || ! vinyl.isDirectory() || ! crush.isDirectory())
+            {
+                std::cout << "SKIP  Nightshift Lofi's Haze, Vinyl and Crush aren't in " << source.getFullPathName() << std::endl;
+                std::cout << "ALL PASSED" << std::endl;
+                return 0;
+            }
+
+            const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                    .getChildFile ("nightshift-pluginfind-" + juce::String::toHexString (juce::Random::getSystemRandom().nextInt64()));
+            folder.createDirectory();
+            auto put = [&folder] (const juce::File& bundle) { return bundle.copyDirectoryTo (folder.getChildFile (bundle.getFileName())); };
+            put (haze);
+            put (vinyl);
+            folder.getChildFile ("Nightshift Vinyl.vst3/Contents/Resources/moduleinfo.json").deleteFile();
+
+            AudioEngine::pluginFolderOverride = folder;
+            {
+                Song song;
+                song.loadEmpty();
+                AudioEngine audio (song, false);
+                auto& list = audio.getKnownPlugins();
+                list.clear();
+                list.clearBlacklistedFiles();
+
+                struct Heard : public juce::ChangeListener
+                {
+                    int times = 0;
+                    void changeListenerCallback (juce::ChangeBroadcaster*) override   { ++times; }
+                } heard;
+
+                list.addChangeListener (&heard);
+
+                auto look = [&audio] (const juce::String& when)
+                {
+                    juce::StringArray found;
+                    bool done = false;
+                    audio.findNewPlugins ([&found, &done] (const juce::StringArray& names) { found = names; done = true; });
+
+                    for (int i = 0; i < 6000 && ! done; ++i)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (200);     // the list's own news
+                    std::cout << "  " << when << ": scanned " << audio.getPluginsScannedLastTime() << ", new: "
+                              << (found.isEmpty() ? juce::String ("none") : found.joinIntoString (", ")) << std::endl;
+                    return found;
+                };
+
+                auto listed = [&list] (const juce::String& name)
+                {
+                    for (auto& type : list.getTypes())
+                        if (type.name == name)
+                            return type;
+
+                    return juce::PluginDescription();
+                };
+
+                const auto first = look ("first look");
+                check (first.size() == 2 && first.contains ("Nightshift Haze") && first.contains ("Nightshift Vinyl")
+                         && audio.getPluginsScannedLastTime() == 2,
+                       "the first look finds both copies new");
+
+                const auto vinylFile = listed ("Nightshift Vinyl").fileOrIdentifier;
+                std::cout << "  Vinyl is listed as " << vinylFile << std::endl;
+               #if JUCE_WINDOWS
+                check (vinylFile.contains ("Contents"),
+                       "Vinyl, without a moduleinfo.json, is listed by the module inside its bundle (as Surge XT is)");
+               #endif
+
+                const auto second = look ("second look");
+                check (second.isEmpty() && audio.getPluginsScannedLastTime() == 0,
+                       "the next look scans nothing and finds nothing new (Vinyl was \"new\" at every start)");
+
+                // A new build of Haze: the bundle made again, so it has a new date
+                folder.getChildFile (haze.getFileName()).deleteRecursively();
+                juce::Thread::sleep (50);
+                put (haze);
+                const auto rebuilt = folder.getChildFile (haze.getFileName()).getLastModificationTime();
+                const auto heardBefore = heard.times;
+                const auto third = look ("after a new build of Haze");
+                check (third.isEmpty() && audio.getPluginsScannedLastTime() == 1,
+                       "a new build of Haze is scanned again, and isn't a new plugin");
+                check (listed ("Nightshift Haze").lastFileModTime == rebuilt && heard.times > heardBefore,
+                       "its new date is in the list, and the list's listeners heard (the studio writes Plugins.xml then)");
+
+                const auto fourth = look ("the look after");
+                check (fourth.isEmpty() && audio.getPluginsScannedLastTime() == 0,
+                       "the look after that scans nothing: the new build's date was kept");
+
+                put (crush);
+                const auto fifth = look ("after Crush is put there");
+                check (fifth.size() == 1 && fifth[0] == "Nightshift Crush" && audio.getPluginsScannedLastTime() == 1,
+                       "a plugin put there later is new, and only it");
+
+                list.removeChangeListener (&heard);
+            }
+
+            AudioEngine::pluginFolderOverride = juce::File();
+            folder.deleteRecursively();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--findplugins"))
         {
             // The new-plugin finder the studio runs at start, on this machine's plugins: what it

@@ -250,7 +250,8 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
 - **Instruments** – sampler (any WAV/AIFF/FLAC/OGG/MP3), **Nova** (below), sampled instruments (below), and
   VST3 instruments (each scanned out of process so a bad plugin can't crash the app). Plugins installed
   since NightShift last looked are found by themselves when the studio opens (just those), and a note in
-  the corner names them. **Find new instruments**, at the bottom of the sidebar's sounds, does the same
+  the corner names them, once: a new build of a plugin it knows, or one it knows in another folder, isn't
+  new. **Find new instruments**, at the bottom of the sidebar's sounds, does the same
   whenever you like (say, just after installing one): it says it's looking, then names the new
   instruments (and effects), opens Plugin instruments and their developers to show them (the start-up look only names them,
   leaving the groups shut), or says nothing new turned up. Pressed while the start-up look is still going,
@@ -857,6 +858,7 @@ Nightshift.exe --keyboardtest
 Nightshift.exe --instrumenttest <folder>
 Nightshift.exe --instrumentfetch <folder>
 Nightshift.exe --findplugins
+Nightshift.exe --pluginfindtest
 Nightshift.exe --devices [--probe]
 node tools/analyze.mjs out.wav
 ```
@@ -1108,7 +1110,10 @@ practising with the song stopped, an export without it, and a bar's count-in wit
 loads every sampled instrument fetched there and plays the piano (in tune, louder when harder);
 `--instrumentfetch <folder>` fetches the piano and orchestra there for real; `--findplugins` finds and
 scans plugins installed since the list was made (asking twice at once, as Find new instruments can
-during the start-up scan: one scan, both told). `--meter 7/8` sets the time
+during the start-up scan: one scan, both told). `--pluginfindtest` checks that a plugin is new once, on
+copies of Nightshift Lofi's VST3s in a folder of their own (one without its moduleinfo.json, which JUCE lists
+by the module inside the bundle, as it does Surge XT and CHOWTapeModel): the next look scans nothing, a new
+build is scanned again but isn't new and its date is kept, and a plugin put there later is new. `--meter 7/8` sets the time
 signature of any run. Nothing in NightShift goes online for its AI: the
 agents run on this computer.
 Command-line runs never write the studio's settings (not even with the real device open) or save their virtual audio device over the
