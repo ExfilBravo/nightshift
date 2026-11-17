@@ -194,7 +194,7 @@ if [ "$TESTS" = "1" ]; then
                  fxstoptest looptest mutetest inspectortest stockfxtest bustest mixertest metertest drumtest drumbartest \
                  offlinedrummertest offlinebasstest basstest offlineguitartest guitartest guitarsoundtest offlinekeystest keystest \
                  offlinesynthtest synthplayertest masterengineertest masteraitest songwritertest songtest machinetest kitimporttest \
-                 synthtest novatest keyboardtest metronometest editingtest arrangeedittest automationtest miditest tempotest texttest namtest genretest feeltest vibetest vibepaneltest plugininstrumenttest pluginfindtest; do
+                 synthtest novatest keyboardtest metronometest editingtest arrangeedittest automationtest miditest tempotest texttest namtest genretest feeltest vibetest vibepaneltest plugininstrumenttest pluginfindtest updatetest; do
         out="$MAC_DIR/.tests/$suite.txt"
         mkdir -p "$MAC_DIR/.tests"
         "$EXE" "--$suite" > "$out" 2>&1 &

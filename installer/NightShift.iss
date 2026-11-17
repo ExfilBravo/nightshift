@@ -107,9 +107,19 @@ Root: HKA; Subkey: "Software\Classes\NightShift.Project\shell\open\command"; Val
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Open NightShift now"; Flags: nowait postinstall skipifsilent
+; NightShift's Check for updates runs this setup quietly with /relaunch=yes, having closed itself: it opens
+; again when the update's in (a quiet install from anywhere else doesn't)
+Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: RelaunchAfterUpdate
 
 [UninstallDelete]
 ; (LICENSE.txt is the setup's own file, so it goes anyway; install.cmd's copy of it too)
 Type: files; Name: "{app}\LICENSE.txt"
 Type: files; Name: "{app}\Nightshift.old*.exe"
 Type: files; Name: "{app}\NightShift-*.ico"
+
+[Code]
+// Asked for by NightShift's Check for updates (/relaunch=yes), and only when quiet
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (CompareText(ExpandConstant('{param:relaunch|no}'), 'yes') = 0);
+end;

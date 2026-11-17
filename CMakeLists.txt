@@ -102,6 +102,7 @@ target_link_libraries(Nightshift PRIVATE
     juce::juce_audio_processors
     juce::juce_audio_utils
     juce::juce_dsp
+    juce::juce_cryptography
     $<$<PLATFORM_ID:Windows>:crypt32>
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)

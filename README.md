@@ -51,6 +51,13 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   **Donate...**, beside the keys and the credits. The page is `donate::url` in `src/ui/Donate.h`:
   [paypal.me/Exfilbravo](https://paypal.me/Exfilbravo), also behind the Sponsor button on GitHub
   (`.github/FUNDING.yml`). Left empty, every Donate (the banner and About's button) is hidden.
+- **Check for updates** – in the ⋯ menu. It asks GitHub for the latest release (only then: NightShift never
+  looks by itself, and all it sends is that request). The newest already: **You are up to date**. A newer one:
+  what's new, with **Install now** and **Not now**. Install now asks to save the song first, downloads the
+  installer for this computer (its progress, Cancel), checks it's the very file GitHub has (its size and
+  SHA-256) and starts it, and NightShift closes: on Windows the setup runs quietly, a window showing its
+  progress, and opens NightShift again when it's done (`/relaunch=yes`, the setup's `[Run]` and `[Code]`); on
+  a Mac the installer opens, to follow its steps. The code is `src/app/Updates.cpp`.
 - **Recording, FL's way** – the Record button in the top bar arms recording (tinted red); then Play (Space)
   records, and Space again stops. Record stays armed after Stop, so Space records the next take too, until
   you click Record off. What it records: what you play (the computer keyboard) on the selected instrument channel,
@@ -862,6 +869,8 @@ Nightshift.exe --instrumentfetch <folder>
 Nightshift.exe --findplugins
 Nightshift.exe --pluginfindtest
 Nightshift.exe --vibepaneltest [--pictures <folder>]
+Nightshift.exe --updatetest
+Nightshift.exe --updatecheck [--download <folder>]
 Nightshift.exe --devices [--probe]
 node tools/analyze.mjs out.wav
 ```
@@ -952,6 +961,13 @@ song agent's words for one with its vibe. `--vibepaneltest [--pictures <folder>]
 panel at the sizes it gets (the editor at its smallest, as it first opens, the whole height; narrow and wide): Write a
 song with this vibe, Play it as and How close in sight and clickable, what it heard in whole sentences (all of them
 with room), and no text cut, clipped or covered.
+`--updatetest` checks Check for updates without the internet: versions compared number by number (0.4.10 after
+0.4.9), GitHub's answer for the latest release read (this computer's installer, its size and SHA-256, the release's
+"What's new" headlines), a release without this computer's installer yet, GitHub's refusals, SHA-256 itself, a file
+checked against a release, the names and addresses it won't download, and the Windows installer's quiet start.
+`--updatecheck [--download <folder>]` asks GitHub for real and says what it found against this NightShift (with
+`--download`, downloads this computer's installer and checks it, never running it); the text check shows both of its
+answers (`--updatefound`, `--uptodate`).
 `--trackstest` covers Arrange's
 tracks: none in a new song, old projects' fixed rows loading as their used tracks, Add track (audio tracks named
 and placed), drops (new track at the end or between two, replacing the 808's instrument and hearing the synth
@@ -1131,6 +1147,7 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
 ## Layout
 
 - `src/model` – the song: channels, patterns, notes, playlist; JSON save/load; snapshot undo.
+- `src/app` – Check for updates (`Updates`: GitHub's latest release, the installer's download, checked and started).
 - `src/audio` – `AudioEngine` mirrors the song into a Tracktion Edit (one track per channel, MIDI clips per
   pattern placement, a track per bus); the drum kit synthesiser, Nova (`Nova`: its parameters, DSP and
   patches; `NovaPresets`: the factory sounds), Nightshift Guitar (`GuitarSound`: the modelled strings, the amps, the

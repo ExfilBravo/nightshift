@@ -28,6 +28,7 @@
 #include "Sidebar.h"
 #include "StartScreen.h"
 #include "Toolbar.h"
+#include "app/Updates.h"
 
 namespace nightshift
 {
@@ -94,6 +95,15 @@ public:
 
     /** About NightShift: what it is, the keys, credits, and Donate (see Donate.h). */
     void showAbout (int screenHeight = 0);      // 0: the screen it opens on (another: a test of a shorter one)
+
+    /** Check for updates (the ... menu): asks GitHub for the latest release (app/Updates.h). The newest
+        already: "You are up to date". A newer one: what's new, and Install now, which asks to save first,
+        downloads the installer (its progress, Cancel), checks it and starts it, and NightShift closes. */
+    void checkForUpdates();
+
+    /** What it says once GitHub has answered: the release it found, or why it couldn't ask (the text
+        check shows it with a made-up release). */
+    void updateChecked (const updates::Release&, const juce::String& error);
     void openPianoRoll (int channelId);
     void openPluginEditor (int channelId);
     void openEffectEditor (int effectId);
@@ -301,6 +311,8 @@ private:
     Toast toast;
     StartScreen startScreen;
     std::unique_ptr<juce::Thread> instrumentFetcher;
+    std::unique_ptr<juce::Thread> updateWorker;     // Check for updates' asking, then its download
+    void installUpdate (const updates::Release&);
     std::map<int, std::unique_ptr<PluginWindow>> pluginWindows, effectWindows;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::TooltipWindow tooltips { this, 700 };

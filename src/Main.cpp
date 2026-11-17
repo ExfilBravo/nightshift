@@ -7820,7 +7820,7 @@ namespace
                 failures += ok ? 0 : 1;
             };
 
-            auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (30); };
+            auto settle = [] { settleMessages (30); };
             auto& bar = main.getDrummerBar();
             auto& panel = main.getGuitar();
             using Panel = MainComponent::Panel;
@@ -8752,7 +8752,7 @@ namespace
                 failures += ok ? 0 : 1;
             };
 
-            auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (30); };
+            auto settle = [] { settleMessages (30); };
             auto& bar = main.getDrummerBar();
             auto& panel = main.getSynthPlayer();
             using Panel = MainComponent::Panel;
@@ -9434,7 +9434,7 @@ namespace
                 failures += ok ? 0 : 1;
             };
 
-            auto settle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil (30); };
+            auto settle = [] { settleMessages (30); };
             auto& bar = main.getDrummerBar();
             auto& panel = main.getKeys();
             using Panel = MainComponent::Panel;
@@ -11381,6 +11381,7 @@ namespace
                 { "the chorus", "--effectpanel nightshiftChorus" }, { "the NAM amp, empty", "--effectpanel nightshiftAmp" },
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
                 { "Save changes?", "--closedialog" }, { "About", "--about 900" },
+                { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
                 { "automation lanes", "--automationdemo" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
@@ -13471,6 +13472,152 @@ namespace
             return error.isEmpty() ? 0 : 1;
         }
 
+        if (args.has ("--updatetest"))
+        {
+            // Check for updates without the internet: versions compared number by number; GitHub's answer for the
+            // latest release read (this computer's installer, its size and checksum, this release's "What's new"
+            // headlines and not an older list's), a release without this computer's installer yet, GitHub's
+            // refusals; SHA-256; a file checked against the release; the files and addresses it won't download;
+            // and how the Windows installer is started
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            using updates::compare;
+            check (compare ("0.4.10", "0.4.9") == 1 && compare ("0.4.9", "0.4.10") == -1 && compare ("1.0", "1.0.0") == 0
+                     && compare ("v0.4.1", "0.4.1") == 0 && compare ("0.4.1", "0.5") == -1 && compare ("2.0.0", "1.99.99") == 1,
+                   "versions compare number by number (0.4.10 after 0.4.9, 1.0 the same as 1.0.0, a v not counted)");
+            check (updates::currentVersion() == JUCE_APPLICATION_VERSION_STRING && updates::currentVersion().containsChar ('.'),
+                   "this NightShift's version is " + updates::currentVersion());
+
+           #if JUCE_MAC
+            const juce::String mine ("NightShift-0.4.2-mac.pkg");
+            const juce::String mineSum ("5f918351aee5eabcc6b6e9963d5c3a849bd256242b440e2c88092472c7577a65");
+            const juce::int64 mineBytes = 58922225;
+           #else
+            const juce::String mine ("NightShift-Setup-0.4.2.exe");
+            const juce::String mineSum ("28701913e5cfb6438c9d5cb3253f1e2e6ebdab98858a94a12df7533f3236261a");
+            const juce::int64 mineBytes = 17946072;
+           #endif
+
+            const juce::String json (R"({"tag_name":"v0.4.2","name":"NightShift 0.4.2","html_url":"https://github.com/ExfilBravo/nightshift/releases/tag/v0.4.2",
+                "body":"NightShift is a free music studio.\r\n\r\n## What's new in 0.4.2\r\n\r\n- **Check for updates.** In the menu.\r\n- **Fewer clicks.** More.\r\n- A plain point\r\n\r\n## New in 0.4.1\r\n\r\n- **Older.** Not this.\r\n",
+                "assets":[{"name":"NightShift-0.4.2-mac.pkg","size":58922225,"digest":"sha256:5F918351AEE5EABCC6B6E9963D5C3A849BD256242B440E2C88092472C7577A65","browser_download_url":"https://github.com/ExfilBravo/nightshift/releases/download/v0.4.2/NightShift-0.4.2-mac.pkg"},
+                          {"name":"NightShift-Setup-0.4.2.exe","size":17946072,"digest":"sha256:28701913e5cfb6438c9d5cb3253f1e2e6ebdab98858a94a12df7533f3236261a","browser_download_url":"https://github.com/ExfilBravo/nightshift/releases/download/v0.4.2/NightShift-Setup-0.4.2.exe"}]})");
+
+            updates::Release r;
+            const auto error = updates::parse (json, r);
+            check (error.isEmpty() && r.version == "0.4.2" && r.title == "NightShift 0.4.2" && r.page.endsWith ("/tag/v0.4.2"),
+                   "GitHub's answer read: version " + r.version + ", \"" + r.title + "\"" + (error.isEmpty() ? juce::String() : " (" + error + ")"));
+            check (r.installer == mine && r.installerUrl.endsWith ("/" + mine) && r.installerBytes == mineBytes && r.sha256 == mineSum,
+                   "this computer's installer: " + r.installer + ", " + juce::String (r.installerBytes) + " bytes, its SHA-256 in lower case");
+            check (r.whatsNew == juce::StringArray { "Check for updates.", "Fewer clicks.", "A plain point" },
+                   "what's new: this release's headlines, not the older list's (" + r.whatsNew.joinIntoString (" | ") + ")");
+
+            updates::Release none;
+            const auto noneError = updates::parse (R"({"tag_name":"v0.4.3","name":"NightShift 0.4.3","assets":[]})", none);
+            check (noneError.isEmpty() && none.version == "0.4.3" && none.installer.isEmpty() && none.whatsNew.isEmpty(),
+                   "a release without this computer's installer yet: found, with none");
+
+            updates::Release refused;
+            const auto limited = updates::parse (R"({"message":"API rate limit exceeded for 192.0.2.1.","documentation_url":"https://docs.github.com"})", refused);
+            check (limited.contains ("rate limit") && updates::parse ("<html>", refused).isNotEmpty(),
+                   "GitHub's refusal is passed on (" + limited + "), and an answer that isn't JSON says so");
+
+            // SHA-256, and a file checked against a release
+            const auto file = juce::File::createTempFile (".bin");
+            file.replaceWithData ("abc", 3);
+            const juce::String abc ("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+            check (updates::sha256Of (file) == abc, "SHA-256 of \"abc\" is the standard's (" + updates::sha256Of (file).substring (0, 16) + "...)");
+
+            updates::Release three;
+            three.installerBytes = 3;
+            three.sha256 = abc;
+            const bool right = updates::isTheInstaller (three, file);
+            three.sha256 = juce::String::repeatedString ("0", 64);
+            const bool wrongSum = ! updates::isTheInstaller (three, file);
+            three.sha256 = {};
+            const bool sizeOnly = updates::isTheInstaller (three, file);
+            three.installerBytes = 4;
+            const bool wrongSize = ! updates::isTheInstaller (three, file);
+            file.deleteFile();
+            check (right && wrongSum && sizeOnly && wrongSize,
+                   "a file is the installer only at its size and checksum (the size alone when GitHub gives no checksum)");
+
+            // What it won't download (each stops before anything's asked for)
+            const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-updatetest");
+            juce::File got;
+            auto odd = r;
+            odd.installer = "..\\" + r.installer;
+            const auto pathInName = updates::download (odd, folder, got);
+            odd = r;
+            odd.installerUrl = "http://example.com/" + r.installer;
+            const auto plainHttp = updates::download (odd, folder, got);
+            odd = r;
+            odd.installer = {};
+            odd.installerUrl = {};
+            const auto missing = updates::download (odd, folder, got);
+            check (pathInName.contains ("won't download") && plainHttp.contains ("won't download") && missing.contains ("no installer"),
+                   "it won't download a file with a path in its name or over plain http, and says when there's no installer");
+            folder.deleteRecursively();
+
+           #if JUCE_WINDOWS
+            const auto arguments = updates::windowsInstallerArguments();
+            check (arguments.contains ("/SILENT") && ! arguments.contains ("/VERYSILENT") && arguments.contains ("/CLOSEAPPLICATIONS")
+                     && arguments.contains ("/relaunch=yes"),
+                   "the Windows installer runs quietly with its progress showing, closes NightShift and opens it again (" + arguments + ")");
+           #endif
+
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--updatecheck"))
+        {
+            // Check for updates for real, over the internet: the latest release GitHub has, against this NightShift;
+            // --download <folder> also downloads this computer's installer there and checks it (it's never run)
+            updates::Release r;
+
+            if (const auto error = updates::fetchLatest (r); error.isNotEmpty())
+            {
+                std::cout << "FAILED  " << error << std::endl;
+                return 1;
+            }
+
+            const auto current = updates::currentVersion();
+            std::cout << "latest: " << r.title << " (" << r.version << "), " << r.page << std::endl
+                      << "what's new: " << r.whatsNew.joinIntoString (" | ") << std::endl
+                      << "this computer's installer: " << (r.installer.isEmpty() ? juce::String ("none yet")
+                                                                                : r.installer + ", " + juce::String (r.installerBytes) + " bytes, sha256 " + r.sha256) << std::endl
+                      << "this NightShift is " << current << ": " << (updates::compare (r.version, current) <= 0 ? juce::String ("You are up to date")
+                                                                                                                : r.title + " is out") << std::endl;
+
+            if (! args.has ("--download"))
+                return 0;
+
+            const juce::File folder (args.valueAfter ("--download"));
+            const auto started = juce::Time::getMillisecondCounter();
+            juce::File installer;
+            int shown = -1;
+            const auto failed = updates::download (r, folder, installer, [&shown] (double done)
+            {
+                if (const int tenth = (int) (done * 10.0); tenth != shown)
+                {
+                    shown = tenth;
+                    std::cout << "  " << tenth * 10 << "%" << std::endl;
+                }
+            });
+
+            std::cout << (failed.isEmpty() ? "downloaded and checked: " + installer.getFullPathName() + ", " + juce::String (installer.getSize())
+                                                 + " bytes, sha256 " + updates::sha256Of (installer)
+                                           : "FAILED  " + failed)
+                      << " (" << (juce::Time::getMillisecondCounter() - started) / 1000.0 << " s)" << std::endl;
+            return failed.isEmpty() ? 0 : 1;
+        }
+
         if (args.has ("--vibepaneltest"))
         {
             // What it heard of a song, in the AI tab's Song panel at the sizes it gets (the editor at its smallest,
@@ -14899,6 +15046,22 @@ namespace
             if (args.has ("--about"))
             {
                 main.showAbout (args.valueAfter ("--about").getIntValue());
+                closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+            }
+
+            // Check for updates' answers, as they look (nothing asked or downloaded): --updatefound a newer
+            // release (a made-up 9.9.9 with two points of what's new), --uptodate this one the newest
+            if (args.has ("--updatefound") || args.has ("--uptodate"))
+            {
+                updates::Release found;
+                found.version = args.has ("--uptodate") ? updates::currentVersion() : juce::String ("9.9.9");
+                found.title = "NightShift " + found.version;
+                found.page = "https://github.com/" + updates::repository + "/releases";
+                found.whatsNew = { "Check for updates, in the ... menu.", "Write a song with this vibe is always in sight." };
+                found.installer = "NightShift-Setup-" + found.version + ".exe";
+                found.installerUrl = found.page + "/download/v" + found.version + "/" + found.installer;
+                found.installerBytes = 1;
+                main.updateChecked (found, {});
                 closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
             }
 

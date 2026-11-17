@@ -638,6 +638,7 @@ MainComponent::~MainComponent()
     keyboardPoll.stopTimer();
     juce::Desktop::getInstance().removeGlobalMouseListener (focusReturner.get());
     instrumentFetcher.reset();
+    updateWorker.reset();
     pluginWindows.clear();
     effectWindows.clear();
 
@@ -2728,9 +2729,201 @@ void MainComponent::showMainMenu()
     menu.addItem ("Find new instruments and effects", [this] { findNewPlugins (true); });
     menu.addItem ("Plugin list and folders...", [this] { scanPlugins(); });
     menu.addSeparator();
+    menu.addItem ("Check for updates...", [this] { checkForUpdates(); });
     menu.addItem ("About NightShift", [this] { showAbout(); });
 
     menu.showMenuAsync ({});
+}
+
+//==============================================================================
+namespace
+{
+    /** Check for updates' work on a thread of its own: asking GitHub, then the download. */
+    struct UpdateWorker : public juce::Thread
+    {
+        explicit UpdateWorker (std::function<void (UpdateWorker&)> j) : juce::Thread ("Updates"), job (std::move (j))   { startThread(); }
+        ~UpdateWorker() override        { stopThread (4000); }
+        void run() override             { job (*this); }
+
+        std::function<void (UpdateWorker&)> job;
+    };
+
+    /** The installer's download: how far, and Cancel. */
+    class UpdateProgressWindow : public juce::AlertWindow
+    {
+    public:
+        UpdateProgressWindow (const juce::String& title, juce::Component* over)
+            : juce::AlertWindow (title, "Downloading the installer from GitHub. It's checked before it runs.", juce::MessageBoxIconType::NoIcon, over)
+        {
+            addProgressBarComponent (*progress);
+            addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        }
+
+        std::shared_ptr<double> progress = std::make_shared<double> (0.0);     // the download writes it, the bar reads it
+    };
+
+    /** A message and OK (Enter or Esc), over the studio: an AlertWindow of its own, open at once, as the other
+        questions are (showMessageBoxAsync opens a moment later, which the text check's picture never waits for). */
+    void tell (juce::Component* over, juce::MessageBoxIconType icon, const juce::String& title, const juce::String& message)
+    {
+        auto* window = new juce::AlertWindow (title, message, icon, over);
+        window->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
+        window->enterModalState (true, nullptr, true);
+    }
+}
+
+void MainComponent::checkForUpdates()
+{
+    if (updateWorker != nullptr)
+        return;
+
+    showToast ("Checking for updates...");
+    juce::Component::SafePointer<MainComponent> self (this);
+
+    updateWorker = std::make_unique<UpdateWorker> ([self] (UpdateWorker& worker)
+    {
+        updates::Release release;
+        const auto error = updates::fetchLatest (release);
+
+        if (worker.threadShouldExit())
+            return;
+
+        juce::MessageManager::callAsync ([self, release, error]
+        {
+            if (self == nullptr)
+                return;
+
+            self->updateWorker.reset();
+            self->updateChecked (release, error);
+        });
+    });
+}
+
+void MainComponent::updateChecked (const updates::Release& release, const juce::String& error)
+{
+    toast.setVisible (false);
+    const auto current = updates::currentVersion();
+
+    if (error.isNotEmpty())
+    {
+        tell (this, juce::MessageBoxIconType::WarningIcon, "Couldn't check for updates", error);
+        return;
+    }
+
+    if (updates::compare (release.version, current) <= 0)
+    {
+        tell (this, juce::MessageBoxIconType::InfoIcon, "You are up to date", "NightShift " + current + " is the newest version.");
+        return;
+    }
+
+    juce::String message ("You have NightShift " + current + ".");
+
+    if (! release.whatsNew.isEmpty())
+    {
+        message << "\n\nWhat's new:";
+
+        for (auto& point : release.whatsNew)
+            message << "\n" << juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xa2  ")) << point;
+    }
+
+    // Out, but the installer for this computer isn't up yet (GitHub is still building it)
+    if (release.installer.isEmpty())
+    {
+        message << "\n\nIts installer for this computer isn't on GitHub yet. Try again in a little while.";
+        auto* window = new juce::AlertWindow (release.title + " is out", message, juce::MessageBoxIconType::InfoIcon, this);
+        window->addButton ("Open its page", 1);
+        window->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
+        window->enterModalState (true, juce::ModalCallbackFunction::create ([page = release.page] (int result)
+        {
+            if (result == 1 && page.startsWithIgnoreCase ("https://"))
+                juce::URL (page).launchInDefaultBrowser();
+        }), true);
+        return;
+    }
+
+   #if JUCE_MAC
+    message << "\n\nInstall now closes NightShift and opens the installer: follow its steps, then open NightShift again.";
+   #else
+    message << "\n\nInstall now closes NightShift, installs " + release.title + " and opens it again.";
+   #endif
+
+    auto* window = new juce::AlertWindow (release.title + " is out", message, juce::MessageBoxIconType::QuestionIcon, this);
+    window->addButton ("Install now", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Not now", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    // Lit, as the start screen's main buttons are
+    if (auto* b = window->getButton ("Install now"))
+    {
+        b->setColour (juce::TextButton::buttonColourId, accent);
+        b->setColour (juce::TextButton::textColourOffId, background);
+    }
+
+    juce::Component::SafePointer<MainComponent> self (this);
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([self, release] (int result)
+    {
+        // The song saved (or let go) first: the installer closes NightShift
+        if (result == 1 && self != nullptr)
+            self->confirmDiscard ([self, release] { if (self != nullptr) self->installUpdate (release); });
+    }), true);
+}
+
+void MainComponent::installUpdate (const updates::Release& release)
+{
+    if (updateWorker != nullptr)
+        return;
+
+    auto* window = new UpdateProgressWindow ("Getting " + release.title, this);
+    auto progress = window->progress;
+    auto cancelled = std::make_shared<std::atomic<bool>> (false);
+    juce::Component::SafePointer<juce::AlertWindow> shown (window);
+    juce::Component::SafePointer<MainComponent> self (this);
+
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([cancelled] (int result)
+    {
+        if (result == 0)        // Cancel (the download's end closes it with 1)
+            cancelled->store (true);
+    }), true);
+
+    updateWorker = std::make_unique<UpdateWorker> ([self, shown, release, progress, cancelled] (UpdateWorker& worker)
+    {
+        juce::File installer;
+        const auto error = updates::download (release, updates::downloadFolder(), installer,
+                                              [progress] (double done) { *progress = done; },
+                                              [&worker, cancelled] { return cancelled->load() || worker.threadShouldExit(); });
+
+        if (worker.threadShouldExit())
+            return;
+
+        juce::MessageManager::callAsync ([self, shown, installer, error, cancelled, title = release.title]
+        {
+            if (shown != nullptr)
+                shown->exitModalState (1);
+
+            if (self == nullptr)
+                return;
+
+            self->updateWorker.reset();
+
+            if (cancelled->load())
+                return;
+
+            if (error.isNotEmpty())
+            {
+                tell (self, juce::MessageBoxIconType::WarningIcon, "Couldn't get " + title, error);
+                return;
+            }
+
+            if (! updates::startInstaller (installer))
+            {
+                tell (self, juce::MessageBoxIconType::WarningIcon, "Couldn't start the installer",
+                      "It's in " + installer.getParentDirectory().getFullPathName() + ": open " + installer.getFileName() + " from there.");
+                return;
+            }
+
+            // The installer has it from here (the song's been saved or let go already)
+            juce::JUCEApplication::getInstance()->quit();
+        });
+    });
 }
 
 namespace
