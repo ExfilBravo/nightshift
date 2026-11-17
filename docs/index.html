@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NightShift – Free DAW for Windows and Mac</title>
 <meta name="description" content="NightShift is a free, open-source DAW for Windows and Mac: step sequencer, piano roll, mixer, synths, drum kits, recording, VST3 and AU plugins, and an AI band that writes parts in the style you describe. No account, no trial, no ads.">
-<link rel="canonical" href="https://michaeldedmondson-design.github.io/nightshift/">
+<link rel="canonical" href="https://exfilbravo.github.io/nightshift/">
 <link rel="icon" type="image/png" href="logo.png">
 <meta name="theme-color" content="#08090e">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="NightShift">
 <meta property="og:title" content="NightShift – Free DAW for Windows and Mac">
 <meta property="og:description" content="A free music studio with patterns, a piano roll, a mixer, synths, drum kits and an AI band that plays your idea in the style you describe.">
-<meta property="og:url" content="https://michaeldedmondson-design.github.io/nightshift/">
-<meta property="og:image" content="https://michaeldedmondson-design.github.io/nightshift/screenshot.png">
+<meta property="og:url" content="https://exfilbravo.github.io/nightshift/">
+<meta property="og:image" content="https://exfilbravo.github.io/nightshift/screenshot.png">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
 {
@@ -24,9 +24,9 @@
   "applicationCategory": "MultimediaApplication",
   "applicationSubCategory": "Digital audio workstation",
   "operatingSystem": "Windows 10, Windows 11, macOS 11 or later",
-  "url": "https://michaeldedmondson-design.github.io/nightshift/",
-  "downloadUrl": "https://github.com/michaeldedmondson-design/nightshift/releases/latest",
-  "screenshot": "https://michaeldedmondson-design.github.io/nightshift/screenshot.png",
+  "url": "https://exfilbravo.github.io/nightshift/",
+  "downloadUrl": "https://github.com/ExfilBravo/nightshift/releases/latest",
+  "screenshot": "https://exfilbravo.github.io/nightshift/screenshot.png",
   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
   "isAccessibleForFree": true,
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
@@ -210,7 +210,7 @@
       <a href="#ai-band">AI band</a>
       <a href="#plugins">Plugins</a>
       <a href="#download">Download</a>
-      <a class="gh" href="https://github.com/michaeldedmondson-design/nightshift">GitHub</a>
+      <a class="gh" href="https://github.com/ExfilBravo/nightshift">GitHub</a>
     </nav>
   </div>
 </header>
@@ -224,17 +224,17 @@
         a piano roll and a mixer, plus an AI band. Describe the song you hear in your head, and it plays your idea.</p>
 
       <div class="downloads">
-        <a class="dl" id="dl-win" href="https://github.com/michaeldedmondson-design/nightshift/releases/latest">
+        <a class="dl" id="dl-win" href="https://github.com/ExfilBravo/nightshift/releases/latest">
           <strong>Download for Windows</strong>
           <small id="dl-win-note">Windows 10 or 11, 64-bit</small>
         </a>
-        <a class="dl" id="dl-mac" href="https://github.com/michaeldedmondson-design/nightshift/releases/latest">
+        <a class="dl" id="dl-mac" href="https://github.com/ExfilBravo/nightshift/releases/latest">
           <strong>Download for Mac</strong>
           <small id="dl-mac-note">Apple Silicon (M1 or newer), macOS 11+</small>
         </a>
       </div>
       <p class="fineprint"><span id="version">The latest version</span>, with the free Lofi, Bass and Drums plugins.
-        <a href="https://github.com/michaeldedmondson-design/nightshift/releases">All versions</a></p>
+        <a href="https://github.com/ExfilBravo/nightshift/releases">All versions</a></p>
     </div>
   </section>
 
@@ -341,10 +341,10 @@
     <div>
       <p><strong style="color:var(--text)">NightShift</strong> is made by NightWriter and is free software under the
         <a href="https://www.gnu.org/licenses/gpl-3.0.html">GNU GPL v3 or later</a>.
-        The source is on <a href="https://github.com/michaeldedmondson-design/nightshift">GitHub</a>, with the
-        <a href="https://github.com/michaeldedmondson-design/nightshift-lofi">Lofi</a>,
-        <a href="https://github.com/michaeldedmondson-design/nightshift-bass">Bass</a> and
-        <a href="https://github.com/michaeldedmondson-design/nightshift-drums">Drums</a> plugins.</p>
+        The source is on <a href="https://github.com/ExfilBravo/nightshift">GitHub</a>, with the
+        <a href="https://github.com/ExfilBravo/nightshift-lofi">Lofi</a>,
+        <a href="https://github.com/ExfilBravo/nightshift-bass">Bass</a> and
+        <a href="https://github.com/ExfilBravo/nightshift-drums">Drums</a> plugins.</p>
       <p>NightShift is free and always will be. If it helps your music, a donation keeps it going. It's entirely up to you.</p>
       <a class="donate" href="https://paypal.me/Exfilbravo">Donate with PayPal</a>
     </div>
@@ -365,7 +365,7 @@
     var mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
     document.getElementById(mac ? "dl-mac" : "dl-win").classList.add("primary");
 
-    fetch("https://api.github.com/repos/michaeldedmondson-design/nightshift/releases/latest")
+    fetch("https://api.github.com/repos/ExfilBravo/nightshift/releases/latest")
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (release) {
         if (!release || !release.assets) return;

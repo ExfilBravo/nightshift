@@ -27,4 +27,4 @@ The studio drum kits, the grand piano and the orchestra are free, and NightShift
 
 ## Source
 
-NightShift is free software under the GNU GPL v3 or later. Its source is in this repository; the plugins' source is in [nightshift-lofi](https://github.com/michaeldedmondson-design/nightshift-lofi), [nightshift-bass](https://github.com/michaeldedmondson-design/nightshift-bass) and [nightshift-drums](https://github.com/michaeldedmondson-design/nightshift-drums).
+NightShift is free software under the GNU GPL v3 or later. Its source is in this repository; the plugins' source is in [nightshift-lofi](https://github.com/ExfilBravo/nightshift-lofi), [nightshift-bass](https://github.com/ExfilBravo/nightshift-bass) and [nightshift-drums](https://github.com/ExfilBravo/nightshift-drums).

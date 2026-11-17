@@ -5,10 +5,10 @@ NightShift is Copyright (C) 2026 NightWriter, free software under the GNU Genera
 version 3 or later (LICENSE.txt beside this file). Its source code, and the source of the NightShift
 plugins, is at:
 
-    https://github.com/michaeldedmondson-design/nightshift
-    https://github.com/michaeldedmondson-design/nightshift-lofi
-    https://github.com/michaeldedmondson-design/nightshift-bass
-    https://github.com/michaeldedmondson-design/nightshift-drums
+    https://github.com/ExfilBravo/nightshift
+    https://github.com/ExfilBravo/nightshift-lofi
+    https://github.com/ExfilBravo/nightshift-bass
+    https://github.com/ExfilBravo/nightshift-drums
 
 NightShift and its plugins are built with the following open-source software. Each one's full licence
 text is in its folder in the source (external/tracktion_engine and external/NeuralAmpModelerCore).

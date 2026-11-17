@@ -4,7 +4,7 @@ NightShift is a free, open-source DAW (digital audio workstation) for Windows an
 studio in the spirit of FL Studio, with a step sequencer, piano roll, playlist, mixer, synths, drum kits,
 recording, VST3 and Audio Unit plugins, and an AI band (drummer, bassist, guitarist, keys and synth player)
 that writes parts in the style you describe. No account, no trial, no ads.
-**Website: [michaeldedmondson-design.github.io/nightshift](https://michaeldedmondson-design.github.io/nightshift/)**
+**Website: [exfilbravo.github.io/nightshift](https://exfilbravo.github.io/nightshift/)**
 
 Built in C++ on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) 3.5 and JUCE.
 
@@ -12,7 +12,7 @@ Built in C++ on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine
 
 ## Download
 
-NightShift is free. Get it from the **[latest release](https://github.com/michaeldedmondson-design/nightshift/releases/latest)**:
+NightShift is free. Get it from the **[latest release](https://github.com/ExfilBravo/nightshift/releases/latest)**:
 
 - **Windows 10 or 11 (64-bit):** `NightShift-Setup-<version>.exe`. Run it: it installs just for you, with
   no admin password. The setup isn't signed (signing costs money), so Windows may say "Windows protected
@@ -24,9 +24,9 @@ NightShift is free. Get it from the **[latest release](https://github.com/michae
 
 Both include the NightShift plugins, which other music apps can use too: **Lofi** (Cassette, Vinyl, Crush,
 Haze), **Bass** (Drive, Split) and **Nightshift Drums**. Their source is in
-[nightshift-lofi](https://github.com/michaeldedmondson-design/nightshift-lofi),
-[nightshift-bass](https://github.com/michaeldedmondson-design/nightshift-bass) and
-[nightshift-drums](https://github.com/michaeldedmondson-design/nightshift-drums). The studio drum kits, the
+[nightshift-lofi](https://github.com/ExfilBravo/nightshift-lofi),
+[nightshift-bass](https://github.com/ExfilBravo/nightshift-bass) and
+[nightshift-drums](https://github.com/ExfilBravo/nightshift-drums). The studio drum kits, the
 grand piano and the orchestra are free downloads NightShift fetches the first time you ask for one; the
 808 and 909 kits and the synth sounds are built in, so you can start straight away.
 
@@ -682,7 +682,7 @@ takes the newest that has both, and when that changes it configures afresh (the 
 remembered in `CMakeCache.txt` and in `juce\tools`, JUCE's own build of juceaide).
 
 ```bash
-git clone --recurse-submodules https://github.com/michaeldedmondson-design/nightshift.git
+git clone --recurse-submodules https://github.com/ExfilBravo/nightshift.git
 ```
 
 The Tracktion Engine (with JUCE) and Neural Amp Modeler's core come in as submodules, in `external/`, at
@@ -690,15 +690,15 @@ the exact commits NightShift is built with. The plugins go beside it, each built
 (`setup.cmd` takes them into the setup when they're built):
 
 ```bash
-git clone https://github.com/michaeldedmondson-design/nightshift-lofi.git
+git clone https://github.com/ExfilBravo/nightshift-lofi.git
 ```
 
 ```bash
-git clone https://github.com/michaeldedmondson-design/nightshift-bass.git
+git clone https://github.com/ExfilBravo/nightshift-bass.git
 ```
 
 ```bash
-git clone https://github.com/michaeldedmondson-design/nightshift-drums.git
+git clone https://github.com/ExfilBravo/nightshift-drums.git
 ```
 
 ```bash
@@ -1180,7 +1180,7 @@ desktop app). Shipping it closed source, free or paid, would need both projects'
 Giving NightShift out under the GPL means: the licence goes with it (the build, install.cmd and the setup
 put it beside the exe as `LICENSE.txt`, and About NightShift says it's free software, with no warranty,
 and opens the licence with **Licence...**); and whoever gets it can get the source, which is on GitHub:
-[github.com/michaeldedmondson-design/nightshift](https://github.com/michaeldedmondson-design/nightshift), with
+[github.com/ExfilBravo/nightshift](https://github.com/ExfilBravo/nightshift), with
 the plugins the setup can install (Lofi, Bass, Drums: JUCE plugins, GPLv3 or later too) in their own
 repositories beside it. `NOTICES.txt`, which the setup and the Mac installer put beside the app, lists every
 third-party library and sound with its licence. Not legal advice: JUCE's LICENSE.md points to
