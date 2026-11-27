@@ -528,6 +528,8 @@ juce::String Playlist::describeInstrument (const Channel& c) const
         case InstrumentType::kit:        return "Drum kit" + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + drumkits::displayName (c.kit);
         case InstrumentType::instrument: return instruments::displayName (c.instrument);
         case InstrumentType::audio:      return "Audio";
+        case InstrumentType::midiOut:    return "Plugged in" + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + c.midiOutDevice
+                                                + ", channel " + juce::String (c.midiOutChannel);
 
         case InstrumentType::plugin:
             if (auto desc = audio.getKnownPlugins().getTypeForIdentifierString (c.pluginId))

@@ -73,6 +73,7 @@ namespace
             case InstrumentType::audio:   return "Audio";
             case InstrumentType::kit:     return "Drums";
             case InstrumentType::instrument: return isGuitar (c) ? "Guitar" : "Instrument";
+            case InstrumentType::midiOut: return "Plugged in";
             case InstrumentType::sampler: break;
         }
 
@@ -1236,6 +1237,7 @@ juce::String ChannelRack::defaultNameFor (const Channel& c) const
         case InstrumentType::instrument:  return instruments::displayName (c.instrument).upToFirstOccurrenceOf (",", false, false);
         case InstrumentType::synth:       return c.synthPreset;
         case InstrumentType::audio:       return c.name;
+        case InstrumentType::midiOut:     return c.midiOutDevice.isNotEmpty() ? c.midiOutDevice : juce::String ("Synth");
 
         case InstrumentType::plugin:
             if (auto desc = audio.getKnownPlugins().getTypeForIdentifierString (c.pluginId))
