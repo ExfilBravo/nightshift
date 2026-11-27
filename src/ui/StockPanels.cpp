@@ -7,6 +7,7 @@
 #include "Widgets.h"
 #include "ParamControls.h"
 #include "TextAudit.h"
+#include "model/SongKey.h"
 
 namespace nightshift
 {
@@ -106,6 +107,11 @@ namespace
         ParamChoice& choice (const char* id, const juce::StringArray& options)
         {
             return *static_cast<ParamChoice*> (adopt (new ParamChoice (param (id), options)));
+        }
+
+        ParamMenu& menuOf (const char* id, const juce::String& caption, const juce::StringArray& names)
+        {
+            return *static_cast<ParamMenu*> (adopt (new ParamMenu (param (id), caption, names)));
         }
 
         /** Spreads controls evenly across an area. */
@@ -1352,9 +1358,223 @@ namespace
     };
 }
 
+namespace
+{
+    //==============================================================================
+    /** Pitch correction: which notes it pulls to (the song's key, every note, or a key of its own), a graph of the
+        last few seconds - what it heard, faint, and what comes out, in its colour, over the key's notes - with the note
+        it hears now and how far off it was, then Speed and Amount and a line on what Speed does. */
+    class TunePanel : public StockPanel
+    {
+    public:
+        explicit TunePanel (NightTune& t) : StockPanel (t, juce::Colour (0xff7ad7c8)), tune (t)
+        {
+            notes = &choice ("notes", { "The song's key", "Every note", "A key of its own" });
+
+            juce::StringArray keys, scales;
+
+            for (int i = 0; i < 12; ++i)
+                keys.add (songkey::noteName (i));
+
+            for (int i = 0; i < songkey::numScales; ++i)
+                scales.add (songkey::scaleName (i));
+
+            key = &menuOf ("root", "Key", keys);
+            scale = &menuOf ("scale", "Scale", scales);
+            speedKnob = &knob ("speed");
+            amountKnob = &knob ("amount");
+            setSize (800, 470);
+        }
+
+        void layout (juce::Rectangle<int> area) override
+        {
+            auto top = area.removeFromTop (32);
+            notes->setBounds (top.removeFromLeft (notes->getIdealWidth()));
+            scale->setBounds (top.removeFromRight (210));
+            top.removeFromRight (8);
+            key->setBounds (top.removeFromRight (150));
+
+            area.removeFromTop (12);
+            display = area.removeFromTop (196);
+            area.removeFromTop (14);
+
+            auto knobs = area.removeFromTop (106);
+            speedKnob->setBounds (knobs.removeFromLeft (120));
+            amountKnob->setBounds (knobs.removeFromLeft (120));
+            explanation = knobs.withTrimmedLeft (16);
+        }
+
+        void tick() override
+        {
+            const bool own = juce::roundToInt (value ("notes")) == 2;
+            key->setDimmed (! own);
+            scale->setDimmed (! own);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            StockPanel::paint (g);
+
+            g.setColour (textDim);
+            g.setFont (font (15.0f));
+            g.drawFittedText ("Speed: slow keeps a singer's slides and vibrato. At the top it snaps at once, the hard robotic sound. "
+                              "Amount: how far it pulls the note in.",
+                              explanation, juce::Justification::centredLeft, 4, 1.0f);
+        }
+
+        void paintDisplay (juce::Graphics& g, juce::Rectangle<float> d) override
+        {
+            auto area = d.reduced (14.0f, 10.0f);
+            NightTune::Frame frames[NightTune::historySize];
+            tune.copyHistory (frames);
+
+            // Which notes the graph shows: around what it's heard lately (else middle C's octave)
+            float sum = 0.0f;
+            int count = 0;
+
+            for (auto& f : frames)
+                if (f.heard >= 0.0f)
+                {
+                    sum += f.heard;
+                    ++count;
+                }
+
+            const float target = count > 0 ? sum / (float) count : 66.0f;
+            centre += (std::round (target) - centre) * (count > 0 ? 0.08f : 0.02f);
+            const float lowest = centre - 6.5f, highest = centre + 6.5f;
+
+            // The top line: what it pulls to, and the delay it adds (made up for)
+            auto heading = area.removeFromTop (20.0f);
+            g.setFont (font (15.0f, true));
+            g.setColour (text);
+            const auto latency = "Adds " + juce::String (tune.getLatencySeconds() * 1000.0, 1) + " ms, lined up";
+            const float latencyWidth = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), latency) + 4.0f;
+            g.drawText ("Pulling to " + tune.describeTarget(), heading.withTrimmedRight (latencyWidth + 12.0f),
+                        juce::Justification::centredLeft, true);
+            g.setColour (textDim);
+            g.setFont (font (15.0f));
+            g.drawText (latency, heading.removeFromRight (latencyWidth), juce::Justification::centredRight, false);
+
+            auto readout = area.removeFromBottom (22.0f);
+            area.removeFromTop (4.0f);
+            auto graph = area.withTrimmedLeft (44.0f);
+            auto toY = [&] (float note) { return juce::jmap (note, lowest, highest, graph.getBottom(), graph.getY()); };
+
+            // A line a note, the key's notes lit and named (where a name has room)
+            const auto allowed = tune.targetNotes();
+            float lastLabel = 1.0e9f;
+            g.setFont (font (15.0f));
+
+            for (int n = (int) std::ceil (lowest); n <= (int) std::floor (highest); ++n)
+            {
+                const float y = toY ((float) n);
+                const bool in = allowed[(size_t) (n % 12)];
+                g.setColour (in ? hairlineStrong : hairline.withAlpha (0.5f));
+                g.fillRect (graph.getX(), y, graph.getWidth(), 1.0f);
+
+                if (in && lastLabel - y >= 17.0f && y - 9.0f >= area.getY() && y + 9.0f <= area.getBottom())
+                {
+                    g.setColour (textDim);
+                    g.drawText (spell (n), juce::Rectangle<float> (area.getX(), y - 9.0f, 40.0f, 18.0f), juce::Justification::centredLeft, false);
+                    lastLabel = y;
+                }
+            }
+
+            // What it heard (faint) and what comes out (its colour), newest at the right
+            auto curve = [&] (bool sung)
+            {
+                juce::Path p;
+                bool drawing = false;
+
+                for (int i = 0; i < NightTune::historySize; ++i)
+                {
+                    const float v = sung ? frames[i].sung : frames[i].heard;
+                    const float x = graph.getX() + graph.getWidth() * (float) i / (float) (NightTune::historySize - 1);
+
+                    if (v < 0.0f || v < lowest - 1.0f || v > highest + 1.0f)
+                    {
+                        drawing = false;
+                        continue;
+                    }
+
+                    const float y = juce::jlimit (graph.getY(), graph.getBottom(), toY (v));
+                    drawing ? p.lineTo (x, y) : p.startNewSubPath (x, y);
+                    drawing = true;
+                }
+
+                return p;
+            };
+
+            {
+                juce::Graphics::ScopedSaveState state (g);
+                g.reduceClipRegion (graph.toNearestInt());
+                g.setColour (textFaint);
+                g.strokePath (curve (false), juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                g.setColour (colour);
+                g.strokePath (curve (true), juce::PathStrokeType (2.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+
+            // The note it hears now, and how far off it was
+            const float heard = tune.lastHeard();
+            const int pulledTo = tune.lastTarget();
+            juce::String now = "Listening for a note";
+
+            if (heard >= 0.0f && pulledTo >= 0)
+            {
+                const int cents = juce::roundToInt ((heard - (float) pulledTo) * 100.0f);
+                now = "Hearing " + spell (pulledTo) + ": " + (std::abs (cents) < 3 ? juce::String ("on pitch")
+                                                                : juce::String (std::abs (cents)) + (cents < 0 ? " cents flat" : " cents sharp"))
+                        + (value ("amount") > 0.0f ? juce::String() : ", left alone");
+            }
+
+            g.setColour (heard >= 0.0f ? text : textDim);
+            g.setFont (font (15.0f, true));
+            g.drawText (now, readout, juce::Justification::centredLeft, true);
+        }
+
+    private:
+        /** A note's name as the key spells it (flats in F, B flat, E flat, A flat and D flat major and their minors,
+            sharps otherwise), with its octave as NightShift counts them (middle C is C5). */
+        juce::String spell (int note)
+        {
+            static const char* const sharps[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+            static const char* const flats[12] { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+            const int from = juce::roundToInt (value ("notes"));
+            int root = -1;
+            bool minor = false;
+
+            if (from == 0)
+            {
+                root = tune.getSongRoot();
+                minor = tune.isSongMinor();
+            }
+            else if (from == 2)
+            {
+                root = juce::roundToInt (value ("root"));
+                const int s = juce::roundToInt (value ("scale"));
+                minor = s == songkey::minor || s == songkey::harmonicMinor || s == songkey::minorPentatonic;
+            }
+
+            const int major = root < 0 ? -1 : (minor ? (root + 3) % 12 : root);      // its relative major's root
+            const bool useFlats = major == 5 || major == 10 || major == 3 || major == 8 || major == 1;
+            return juce::String ((useFlats ? flats : sharps)[((note % 12) + 12) % 12]) + juce::String (note / 12);
+        }
+
+        NightTune& tune;
+        ParamChoice* notes = nullptr;
+        ParamMenu* key = nullptr;
+        ParamMenu* scale = nullptr;
+        ParamKnob* speedKnob = nullptr;
+        ParamKnob* amountKnob = nullptr;
+        juce::Rectangle<int> explanation;
+        float centre = 66.0f;
+    };
+}
+
 std::unique_ptr<juce::Component> createStockPanel (StockEffect& fx, Song& song, AudioEngine& audio)
 {
     if (auto a = dynamic_cast<NightAmp*> (&fx))          return std::make_unique<AmpPanel> (*a, audio);
+    if (auto t = dynamic_cast<NightTune*> (&fx))         return std::make_unique<TunePanel> (*t);
 
     if (auto e = dynamic_cast<NightEQ*> (&fx))           return std::make_unique<EqPanel> (*e);
     if (auto c = dynamic_cast<NightCompressor*> (&fx))   return std::make_unique<CompressorPanel> (*c, song);

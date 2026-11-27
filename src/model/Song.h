@@ -220,17 +220,29 @@ struct CompSegment
 /** Recorded audio in the playlist: a take folder, like Logic's. A single recording is a
     folder with one take. The comp picks which take plays where; gaps are silent. Its
     length is real time, so it keeps its speed when the tempo changes; only its start is
-    in ticks. */
+    in ticks.
+
+    Stretched (Logic's Flex Time, FL's stretched audio clips) it plays faster or slower without
+    its pitch changing, or higher or lower without its length changing. Following the tempo, its
+    beats stay on the song's beats whatever the tempo does. Its own times (length, takes, comp,
+    fades) stay in its audio's seconds either way: Song::audioTickAt says where they land. */
 struct AudioClip
 {
     int channelId = 0;
     int track = 0;                   // playlist row
     int start = 0;                   // ticks
-    double length = 0.0;             // seconds
+    double length = 0.0;             // seconds of its own audio
     std::vector<Take> takes;
     std::vector<CompSegment> comp;
     bool expanded = false;           // take lanes showing in the playlist
     double fadeIn = 0.0, fadeOut = 0.0;   // seconds it takes to come in from silence, and to go back out
+
+    bool followTempo = false;        // its beats stay on the song's when the tempo changes
+    double sourceBpm = 0.0;          // the tempo its audio was played at (a recording's, a loop's); 0: not known
+    double speed = 1.0;              // how much faster than it was played (stretched to fit: 2 is twice as fast)
+    float pitch = 0.0f;              // semitones up (down if negative), its length kept
+
+    static constexpr double slowest = 0.25, fastest = 4.0;     // how far it stretches either way
 
     /** Makes `take` the one heard over [from, to), trimming whatever was there. */
     void setComp (double from, double to, int take);
@@ -663,8 +675,36 @@ public:
     bool splitClip (int index, int tick);
     bool splitAudioClip (int index, int tick);
 
-    /** Where a take folder ends: its length is real time, through the tempo where it plays. */
-    int audioClipEnd (const AudioClip& c) const      { return (int) std::ceil (tickAt (secondsAt (c.start) + c.length) - 1.0e-6); }
+    /** Where a take folder ends: its length is its audio's, through its speed and the tempo where it plays. */
+    int audioClipEnd (const AudioClip& c) const      { return (int) std::ceil (audioTickAt (c, c.length) - 1.0e-6); }
+
+    /** Where `seconds` into a take folder's own audio lands in the song, in ticks, and back. As
+        recorded it's real time from its start (`speed` times faster); following the tempo, its
+        beats (at `sourceBpm`, `speed` times faster) are the song's beats. */
+    double audioTickAt (const AudioClip&, double seconds) const;
+    double audioSecondsAt (const AudioClip&, double tick) const;
+
+    /** Following the tempo: switched on, and its own tempo known. */
+    static bool followsTempo (const AudioClip& c)   { return c.followTempo && c.sourceBpm > 0.0; }
+
+    /** Whether it plays through the time-stretcher: faster or slower than it was played, pitched,
+        or following a tempo somewhere along it that isn't its own. */
+    bool isStretched (const AudioClip&) const;
+
+    /** How much faster than it was played it is at `tick` (1: as played). */
+    double stretchRatioAt (const AudioClip&, double tick) const;
+
+    /** Switches following the tempo on or off. A folder whose tempo isn't known takes the song's
+        where it starts, so it doesn't jump now; one that is, comes back into time with the song. */
+    void setFollowTempo (AudioClip&, bool on) const;
+
+    /** Stretches a take folder to play its audio over [startTick, endTick): faster to fit a shorter
+        stretch, slower a longer one (within AudioClip's slowest and fastest). Returns whether it fit. */
+    bool stretchAudioTo (AudioClip&, int startTick, double endTick) const;
+
+    /** A take folder of a whole audio file at `tick` on a track: a loop, a sample, a recording from
+        elsewhere. A loop whose tempo is known (`bpm` > 0) follows the song's tempo. */
+    AudioClip& addAudioFile (const juce::File&, int channelId, int track, int tick, double seconds, double bpm);
 
     /** Seconds from one tick to another, through the tempo between. */
     double secondsBetween (double fromTick, double toTick) const     { return secondsAt (toTick) - secondsAt (fromTick); }
