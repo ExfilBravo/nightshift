@@ -192,8 +192,7 @@ juce::String ChannelStrip::instrumentName (const Channel& c) const
         case InstrumentType::audio:   return c.input;
         case InstrumentType::kit:     return drumkits::displayName (c.kit);
         case InstrumentType::instrument: return instruments::displayName (c.instrument);
-        case InstrumentType::midiOut: return c.midiOutDevice.isEmpty() ? juce::String ("Not chosen yet")
-                                                                        : c.midiOutDevice + ", channel " + juce::String (c.midiOutChannel);
+        case InstrumentType::midiOut: return c.midiOutDevice.isEmpty() ? juce::String ("Not chosen yet") : c.midiOutDevice;
         case InstrumentType::sampler: break;
     }
 

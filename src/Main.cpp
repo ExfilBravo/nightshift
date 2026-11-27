@@ -129,6 +129,29 @@ namespace
                     song.playlist.push_back ({ p.id, row, 4 * song.ticksPerBar() });
         }
 
+        // Synths plugged in: --midiouts "Synth module,Drum machine" seem plugged in (their messages are
+        // caught), and --midioutchannel adds a channel playing the first, a clip of it in Arrange, selected
+        if (auto outputs = args.valueAfter ("--midiouts"); outputs.isNotEmpty())
+            MidiOutHub::testOutputs = juce::StringArray::fromTokens (outputs, ",", {});
+
+        if (args.has ("--midioutchannel") && ! MidiOutHub::testOutputs.isEmpty())
+        {
+            const auto output = MidiOutHub::testOutputs[0];
+            auto& c = song.addChannel (output, InstrumentType::midiOut);
+            c.midiOutDevice = output;
+            c.midiOutChannel = 2;
+            c.midiProgram = 4;
+            const int id = c.id;
+
+            Track t;
+            t.channelId = id;
+            const int row = song.insertTrack (t);
+            auto& p = song.addPatternFor (id);
+            p.notesFor (id) = { { 0, 192, 60, 100 }, { 192, 192, 64, 90 }, { 384, 384, 67, 80 } };
+            song.playlist.push_back ({ p.id, row, 0 });
+            song.selectedChannelId = id;
+        }
+
         if (auto patternName = args.valueAfter ("--pattern"); patternName.isNotEmpty())
         {
             for (auto& p : song.patterns)
@@ -247,7 +270,8 @@ namespace
           --render <file.wav>                   render the demo song (or --project <file>)
           --snapshot <file.png> [--show playlist,rack,piano] [--raise playlist] [--toggle rack] [--size 1600x940]
                      [--arm <channel names>] [--search <text>] [--opensounds "Plugin effects;Nightshift"] [--lofi] [--settings] [--live]
-                     [--midilight <keyboard>]
+                     [--midilight <keyboard>] [--midiouts "Synth,Drum machine" [--midioutchannel]] [--exportmidi]
+          --midiouttest / --midifiletest        synths plugged in (MIDI out), caught with their timing; .mid files out and in
           --rectest <folder> [--countin] [--monitor]   record from a virtual input and check the take's timing
           --comptest <folder> [--countin] [--monitor]  loop-record takes, comp them, check takes and joins
           --pianotest                           check which channel the piano roll edits, and its picker
@@ -11376,18 +11400,20 @@ namespace
                 { "Master: Loudness", "--masterpage 0" }, { "Master: Tone, punch & width", "--masterpage 1 --shapeexample" },
                 { "the start screen", "--startscreen --recent \"Demo song,Late night beat\"" },
                 { "the start screen after the first time", "--startscreen --asked --recent \"Demo song,Late night beat\"" }, { "Audio settings", "--settings" },
+                { "Audio settings with synths plugged in", "--settings --midiouts \"Synth module,Drum machine,USB MIDI Interface\"" },
                 { "the metronome", "--metronome" }, { "the EQ", "--effectpanel nightshiftEQ" },
                 { "the compressor", "--effectpanel nightshiftCompressor" }, { "the filter", "--effectpanel nightshiftFilter" },
                 { "the reverb", "--effectpanel nightshiftReverb" }, { "the delay", "--effectpanel nightshiftDelay" },
                 { "the chorus", "--effectpanel nightshiftChorus" }, { "the NAM amp, empty", "--effectpanel nightshiftAmp" },
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
-                { "Save changes?", "--closedialog" }, { "About", "--about 900" },
+                { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
                 { "automation lanes", "--automationdemo" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
                 { "a plugin's Inspector", "--moretracks --select \"Surge XT\"" },
                 { "an instrument's Inspector", "--moretracks --select \"Violin Section\"" },
+                { "a synth plugged in's Inspector", "--midiouts \"Synth module\" --midioutchannel --select \"Synth module\"" },
                 { "a sound search", "--search piano" }, { "no drum kits yet", "--nokits --raise drummer" },
                 { "a MIDI keyboard playing", "--midilight \"Keystation 49\"" }, { "the Lofi effects", "--lofi --select Kick" },
                 { "armed to record", "--moretracks --armrecord" }
@@ -12743,9 +12769,9 @@ namespace
                 run (0.1);
                 sent = take();
                 ons = onlyFrom (sent, "Test synth", isOn);
-                check (ons.size() >= 2 && ons[0].message.getNoteNumber() == 62 && ons[1].message.getNoteNumber() == 65 && balanced (sent),
-                       "a held note let go when its pattern changes under it, the new one played, nothing left held"
-                           + listOf (onlyFrom (sent, "Test synth", isNote)));
+                const bool letGo = ons.size() >= 2 && ons[0].message.getNoteNumber() == 62 && ons[1].message.getNoteNumber() == 65 && balanced (sent);
+                check (letGo, "a held note let go when its pattern changes under it, the new one played, nothing left held"
+                                  + (letGo ? juce::String() : listOf (onlyFrom (sent, "Test synth", isNote))));
 
                 pattern.notesFor (keys) = { { 0, 384, 62, 100 } };
                 song.notify (Song::Change::notes);
@@ -12848,6 +12874,41 @@ namespace
                 run (0.1);
                 check (onlyFrom (take(), "Test synth", isOn).empty() && audio.getTrack (keys) != nullptr && ! audio.getTrack (keys)->getClips().isEmpty(),
                        "made a NightShift synth again, Keys plays its clips itself and nothing goes out");
+            }
+
+            // In the studio: Add channel's Synth plugged in, each new one on a MIDI channel of its own
+            // there; a drum kit switched over to one goes on 10
+            {
+                Song studio;
+                studio.loadBlank();
+                AudioEngine studioAudio (studio, false);
+                MainComponent main (studio, studioAudio);
+                auto& rack = main.getRack();
+                const int first = rack.addMidiOutChannel ("Test synth");
+                const int second = rack.addMidiOutChannel ("Test synth");
+                const auto* a = studio.findChannel (first);
+                const auto* b = studio.findChannel (second);
+                check (a != nullptr && b != nullptr && a->type == InstrumentType::midiOut && a->name == "Test synth" && a->midiOutChannel == 1
+                           && b->midiOutChannel == 2 && studio.selectedChannelId == second,
+                       "Add channel > Synth plugged in: Test synth on MIDI channel 1, another on 2, selected");
+
+                auto& padChannel = studio.addChannel ("Night Pad", InstrumentType::synth);
+                padChannel.synthPreset = "Night Pad";
+                const int pad = padChannel.id;
+                studio.notify (Song::Change::channels);
+                rack.playOnMidiOut (pad, "Test synth");
+                const auto* p = studio.findChannel (pad);
+                check (p != nullptr && p->type == InstrumentType::midiOut && p->midiOutChannel == 3 && p->name == "Test synth",
+                       "a NightShift synth's channel played on Test synth instead: on channel 3, the next free there, named after it");
+
+                const int kit = studio.addChannel ("Drums", InstrumentType::kit).id;
+                studio.notify (Song::Change::channels);
+                rack.playOnMidiOut (kit, "Drum machine");
+                const auto* d = studio.findChannel (kit);
+                check (d != nullptr && d->type == InstrumentType::midiOut && d->midiOutDevice == "Drum machine" && d->midiOutChannel == 10
+                           && d->name == "Drum machine",
+                       "a drum kit played on the drum machine instead: on channel 10, named after it");
+                check (studio.undo() && studio.findChannel (kit)->type == InstrumentType::kit, "undone, a kit again");
             }
 
             // The AI drummer on a synth plugged in writes General MIDI's drums
@@ -13116,8 +13177,8 @@ namespace
                         if (auto* c = in.findChannel (id))
                             what.add (c->name + ": type " + juce::String ((int) c->type) + " " + c->synthPreset + c->kit + c->instrument);
 
-                    check (bassChannel != nullptr && bassChannel->type == InstrumentType::synth && bassChannel->synthPreset == "Finger Bass",
-                           "the bass on Finger Bass (" + what.joinIntoString ("; ") + ")");
+                    const bool onBass = bassChannel != nullptr && bassChannel->type == InstrumentType::synth && bassChannel->synthPreset == "Finger Bass";
+                    check (onBass, "the bass on Finger Bass" + (onBass ? juce::String() : " (" + what.joinIntoString ("; ") + ")"));
 
                     bool kitKeys = drumChannel != nullptr && drumChannel->type == InstrumentType::kit && drumChannel->kit.isNotEmpty();
 
@@ -13155,6 +13216,69 @@ namespace
                 juce::String notError;
                 const bool refused = ! midifile::read (notMidi, notError).has_value();
                 check (refused && notError.isNotEmpty(), "a file that isn't one says so: \"" + notError + "\"");
+            }
+
+            // In the studio: Open makes a new project of a .mid, one dropped comes into the song at the
+            // bar it lands on (and Ctrl+Z takes it out), and Export MIDI file asks what, then writes it
+            {
+                Song studio;
+                studio.loadDemo();
+                AudioEngine audio (studio, false);
+                MainComponent main (studio, audio);
+                main.setSize (1600, 940);
+                auto pump = [] { for (int i = 0; i < 10; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (5); };
+                auto closeDialogs = [&pump]
+                {
+                    pump();
+
+                    while (auto* modal = juce::ModalComponentManager::getInstance()->getModalComponent (0))
+                    {
+                        modal->exitModalState (0);
+                        pump();
+                    }
+                };
+
+                pump();
+                main.openMidiFile (file);
+                pump();
+                check (studio.channels.size() == 3 && studio.bpm == 100.0 && studio.meterChanges.size() == 2 && studio.mode == PlayMode::song
+                           && studio.hasUnsavedChanges(),
+                       "Open on song.mid: a new project of its three tracks, at 100 with its 7/8, not saved yet ("
+                           + juce::String ((int) studio.channels.size()) + " channels)");
+
+                const auto before = studio.channels.size();
+                const auto otherFile = folder.getChildFile ("other.mid");
+                main.addMidiFile (otherFile, 4 * studio.ticksPerBar());
+                pump();
+                check (studio.channels.size() == before + 3 && studio.bpm == 100.0, "another dropped on bar 5: its three tracks come in, the song keeps its tempo");
+                check (studio.undo() && studio.channels.size() == before, "and Ctrl+Z takes them out again");
+
+                main.exportMidi();
+                pump();
+                auto* dialog = dynamic_cast<juce::AlertWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (0));
+                auto* what = dialog != nullptr ? dialog->getComboBoxComponent ("what") : nullptr;
+                check (what != nullptr && what->getNumItems() == 4 && what->getItemText (0) == "The whole song, as Arrange plays it"
+                           && what->getSelectedItemIndex() == 0,
+                       "Export MIDI file asks what it should hold: the whole song (chosen, in Song mode) or one of its patterns"
+                           + (what != nullptr ? " (" + juce::String (what->getNumItems()) + " choices)" : juce::String()));
+                closeDialogs();
+
+                const auto exported = folder.getChildFile ("exported.mid");
+                main.saveMidiFile (exported, 0);
+                closeDialogs();
+                juce::String exportError;
+                const auto back = midifile::read (exported, exportError);
+                check (back.has_value() && back->parts.size() == 3 && back->meterChanges.size() == 2
+                           && [&]
+                              {
+                                  size_t count = 0;
+
+                                  for (auto& part : back->parts)
+                                      count += part.notes.size();
+
+                                  return count == midifile::notesAsPlayed (studio, 0, true).size();
+                              }(),
+                       "and writes the song's notes, every one, with its time signatures");
             }
 
             folder.deleteRecursively();
@@ -15707,11 +15831,20 @@ namespace
                 }
             }
 
-            // The Audio settings window (F10) on its own
+            // The Audio settings window (F10) on its own; with --midiouts, the first output 12 ms early
+            // and the second sent the tempo
             std::unique_ptr<AudioSettings> settings;
 
             if (args.has ("--settings"))
+            {
+                if (MidiOutHub::testOutputs.size() >= 2)
+                {
+                    audio.setMidiOutSettings (MidiOutHub::testOutputs[0], { -12, false });
+                    audio.setMidiOutSettings (MidiOutHub::testOutputs[1], { 0, true });
+                }
+
                 settings = std::make_unique<AudioSettings> (audio);
+            }
 
             // The metronome's panel on its own (--metronome odd: 7/8 as 2+2+3, triplets, beat 6 off);
             // --armrecord arms Record
@@ -15785,6 +15918,13 @@ namespace
             {
                 song.notify (Song::Change::transport);      // a change, so there's something unsaved
                 main.confirmDiscard ([] {});
+                closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+            }
+
+            // Export MIDI file's question: the whole song or a pattern (as it looks; nothing is saved)
+            if (args.has ("--exportmidi"))
+            {
+                main.exportMidi();
                 closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
             }
 
@@ -16019,7 +16159,7 @@ public:
             window->main->openProjectFile (file);
     }
 
-    /** The .nsproj a launch (or an Explorer double-click) asked for, if any. A relative path
+    /** The .nsproj (or .mid) a launch (or an Explorer double-click) asked for, if any. A relative path
         is resolved against this process's working directory; a hand-over from a second
         instance can't know that directory, so it passes false and takes absolute paths only. */
     static juce::File projectFileFrom (const juce::String& commandLine, bool resolveRelative)
@@ -16028,7 +16168,8 @@ public:
         {
             const auto path = token.unquoted();
 
-            if (! path.endsWithIgnoreCase (".nsproj"))
+            // A project, or a MIDI file to make one of
+            if (! (path.endsWithIgnoreCase (".nsproj") || path.endsWithIgnoreCase (".mid") || path.endsWithIgnoreCase (".midi")))
                 continue;
 
             juce::File file;

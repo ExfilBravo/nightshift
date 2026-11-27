@@ -44,7 +44,31 @@ private:
     juce::Rectangle<int> midiTitleArea, midiHintArea;
     void refreshMidiInputs();
     int midiHeight() const              { return 34 + juce::jmax (1, midiSwitches.size()) * 26 + 46; }
-    int wantedHeight() const            { return selector.getHeight() + optionsHeight + midiHeight(); }
+
+    // Synths plugged in (MIDI out): a row each, its timing and whether it gets the tempo
+    struct OutputRow : public juce::Component
+    {
+        OutputRow (AudioEngine&, const juce::String& name);
+        void resized() override;
+        void paint (juce::Graphics&) override;
+        void apply();
+
+        /** "On time", "12 ms early", "5 ms late". */
+        static juce::String describe (int ms);
+
+        AudioEngine& audio;
+        const juce::String name;
+        juce::Slider timing;
+        juce::ToggleButton tempo { "Send tempo" };
+        juce::Rectangle<int> nameArea, valueArea;
+    };
+
+    juce::OwnedArray<OutputRow> outputRows;
+    juce::StringArray outputNames;
+    juce::Rectangle<int> outTitleArea, outHintArea;
+    void refreshMidiOutputs();
+    int midiOutHeight() const           { return 34 + juce::jmax (1, outputRows.size()) * 32 + 46; }
+    int wantedHeight() const            { return selector.getHeight() + optionsHeight + midiHeight() + midiOutHeight(); }
 
     void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster*) override;

@@ -218,6 +218,34 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   knob on NightShift's effects or Nova, choose *Link to a knob on your MIDI controller...*, and move the knob: it
   drives that control from then on (one knob per control, one control per knob; Escape stops waiting). Links are
   saved with the song, and the same menu forgets one.
+- **Synths plugged in (MIDI out)** – a channel can play a synth, drum machine or sound module plugged in over MIDI
+  instead of one of NightShift's sounds: **Add channel** (or Arrange's **Add track**) > *Synth plugged in (MIDI
+  out)* > the output, or right-click any instrument's channel > *Play it on a synth plugged in*. Its patterns and
+  clips, the piano roll's notes, the AI players' parts and whatever you play on a keyboard (one plugged in, or the
+  computer's) go out of that output on its MIDI channel, in time with the song: each note leaves as its moment is
+  heard, after the interface's and the mix's own delays. A new one takes the first MIDI channel no other channel
+  uses on that output; a drum kit switched over goes on 10, General MIDI's drums, and the AI drummer writes General
+  MIDI's keys for it. The channel's menu (its name in Steps, or its instrument in the Inspector) picks the output,
+  the MIDI channel and the sound to ask the synth for (General MIDI's 128, sent when chosen and as playing
+  starts), plays a test note, or goes back to a NightShift sound. **Audio settings** (F10) lists every MIDI output
+  under *MIDI out: synths plugged in*, each with its **timing** (up to 100 ms early, for a synth that's slow to
+  sound or one you hear back through NightShift: NightShift looks that far ahead, round the loop too; or up to
+  50 ms late) and **Send tempo**: MIDI clock with start, continue, stop and the song position, so an arpeggiator
+  or a drum machine plays in time, through tempo changes, starting again each time the loop comes round. A muted
+  channel sends nothing, and stopping lets go of every note it was playing. A synth plugged in isn't in an export
+  (record it on an audio track to keep its sound).
+- **MIDI files** – **Open** (Ctrl+O) takes a `.mid` as well as a project, and so does NightShift opened with one: a
+  new project of its tracks, each a channel on a sound that suits its General MIDI program (a piano on the grand
+  piano when it's here, a bass on a bass, a guitar on Nightshift Guitar, drums on a drum kit, General MIDI's drums
+  on the kit's own keys), named after its track (or its program), its notes in a pattern placed in Arrange from the
+  bar it starts, with the file's tempo and time signature and their changes (one NightShift hasn't plays as the
+  nearest that keeps the beat, 3/8 as 6/8, and it says so). Drop a `.mid` on the window and its tracks come into the
+  song the same way, from the bar it lands on in Arrange (a song with no notes yet takes its tempo too); Ctrl+Z takes
+  them out. A track of several channels comes in as a channel each (a type 0 file is all in one track). **Export
+  MIDI file...** in the ⋯ menu writes the whole song's notes as Arrange plays them (split clips and swing as they
+  sound; muted channels and tracks left out, as an export of the sound leaves them out) or one pattern's, with the
+  tempo (a glide a 16th at a time) and time signatures: a track per channel, named after it, on a MIDI channel of
+  its own (drums on 10, a synth plugged in on its own), its program first when it has one.
 - **Tempo and time signature changes** (Logic's tempo and signature tracks; Song mode plays them) – right-click
   Arrange's ruler: *Change the tempo here...* (jumping to it there, or gliding to it from the tempo before) or
   *Change the time signature from bar N* (from that bar's start; the bar before ends there, short if it has to). The
@@ -825,12 +853,15 @@ Nightshift.exe --editingtest
 Nightshift.exe --arrangeedittest
 Nightshift.exe --automationtest
 Nightshift.exe --miditest
+Nightshift.exe --midiouttest
+Nightshift.exe --midifiletest
 Nightshift.exe --mididevices
 Nightshift.exe --tempotest
 Nightshift.exe --texttest
 Nightshift.exe --namtest
 Nightshift.exe --snapshot ui.png --effectpanel nightshiftAmp [--nammodel example|<file.nam>] [--namcabinet <file.wav>]
 Nightshift.exe --snapshot ui.png [--about [screen height]] [--settings] [--midilight <keyboard>] [--tempodemo] [--textaudit [--alltext]]
+Nightshift.exe --snapshot ui.png [--midiouts "Synth module,Drum machine" [--midioutchannel]] [--settings] [--exportmidi]
 Nightshift.exe --trackstest
 Nightshift.exe --closetest
 Nightshift.exe --startscreentest
@@ -905,6 +936,24 @@ MIDI learn (knobs on a volume, a pan, the master and a filter's cutoff on MIDI c
 with their channel), then MIDI into the engine's own input routed as a keyboard's is: Lead's synth sounds and dies
 away, and the routing follows a new selection. Where the system has a loopback JUCE can see, or can make a virtual
 port (a Mac), it sends real MIDI through that and records from it too; otherwise it says it skipped that part.
+`--midiouttest` checks synths plugged in with two made-up outputs whose messages are caught with their times: a
+channel's one-bar pattern out on MIDI channel 2 (C, E and G at their velocities), each note heard where the song has it
+to the microsecond (beat 2 at +500 ms, round the loop at +2000) and sent the moment it's heard, the graph's latency
+after its block; 30 ms earlier (the next pass's downbeat sent before the loop comes round) and 20 ms later; the drum
+machine's clock (a song position and start, a clock every 20.833 ms at 120, a start again as the loop comes round, stop);
+a key from a keyboard plugged in (the engine's input) and the computer's straight out, a test note, a program first as
+playing starts, a muted channel silent, a held note let go when its pattern changes under it and when it's stopped;
+Song mode through a tempo halving (the clock's beat twice as long) and played from bar 2 (song position 16 and
+continue); saving; a channel made a NightShift synth again playing its own clips; the AI drummer's General MIDI keys;
+and in the studio Add channel's synth plugged in (channels 1 and 2 on one output, a kit switched over going on 10,
+undone). `--midifiletest` writes a song to a .mid and reads it back note for note (tempo jumps and a glide, in time to
+0.003 ms over ten bars; 7/8 and back; a split clip's second half; programs and names; a synth plugged in on its own
+channel), brings it back in as channels playing the same notes, exports one pattern, reads another program's file (480
+to the beat, every channel in one track, 3/8 as 6/8, a release by a silent note-on, a note never let go) onto Finger
+Bass and a drum kit's own keys, turns down a file that isn't one, then in the studio opens a .mid as a new project, drops
+one on bar 5 (and undoes it) and exports through Export MIDI file. `--snapshot ... --settings --midiouts "Synth,Drum
+machine"` shows Audio settings with made-up outputs (the first 12 ms early, the second sent the tempo), `--midioutchannel`
+adds a channel playing the first, and `--exportmidi` shows Export MIDI file's question.
 `--mididevices` lists the MIDI inputs and outputs JUCE and the engine see. `--snapshot ... --midilight <name>` shows
 the top bar's MIDI light lit for a keyboard of that name; `--about 800` shows About as a screen 800 high fits it
 (scrolling). `--tempotest` checks tempo and time signature changes: the song's timing through a jump and a glide
@@ -918,7 +967,7 @@ the text check, which reads back every piece of text as it's drawn and lists any
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
 behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by
 something at least half opaque (the studio dimmed behind the start screen, a row label under an automation lane) isn't
-there to be read, so it isn't checked. `--texttest` runs it over 51 views (every tab, AI agent, Nova page, effect
+there to be read, so it isn't checked. `--texttest` runs it over 59 views (every tab, AI agent, Nova page, effect
 window and dialog, the start screen the first time and after it, a laptop's 1366 x 768) and fails on any
 of those; the user's own words (a channel's name, a sound's, a project's folder) may be cut short to fit, ours never.
 Sizes are Segoe UI's (a stand-in font's are measured by its letters). Where Segoe UI is installed, texttest also checks
@@ -1153,7 +1202,10 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
   patches; `NovaPresets`: the factory sounds), Nightshift Guitar (`GuitarSound`: the modelled strings, the amps, the
   eight sounds), the SFZ player for sampled instruments (`Sfz`, `Instruments`),
   mastering (`Mastering`: the targets, the true-peak `Maximizer`, measuring a file, working out the push) and
-  the master limiter plugin around it (`MasterLimiter`, with the loudness meter); `fx` holds
+  the master limiter plugin around it (`MasterLimiter`, with the loudness meter); synths plugged in (`MidiOut`: each
+  output's notes planned from the song, the node at the end of the graph that sends them in time and the clock, the
+  silent instrument that hands on what a keyboard plays) and MIDI files (`MidiFiles`: the notes as the song plays them,
+  a .mid written and read, a file's parts brought in as channels); `fx` holds
   the stock effects (Tracktion plugins) and their DSP building blocks. Drum kits: `Kits` (the SFZ reader and
   player, fetching), `DrumGizmo` (mixing a studio kit to stereo), `Machines` (the 808 and 909),
   `KitImport` (a kit from a folder), `DrumSynth` (what the synthesised drums are made of), `ZipReader`
