@@ -60,6 +60,13 @@ public:
     /** A sample double-clicked (or Enter on it while searching): a sampler channel playing it. */
     std::function<void (const juce::String& path)> onAddSample;
 
+    /** Samples' card (the first time it opens with no packs yet), its Free sample packs... row or its right-click menu:
+        the list of free sample packs. */
+    std::function<void()> onGetPacks;
+
+    /** A pack arrived (or went): Samples lists the free packs' folder, looked through again. */
+    void packsChanged();
+
     /** Samples' folders, top to bottom: the user's Downloads and Music, then the ones they added. */
     juce::Array<juce::File> getSampleFolders() const;
 
@@ -117,9 +124,9 @@ public:
 
 private:
     // (a sample folder opens like a developer; a note is a line of words, nothing to click)
-    enum class Kind { pattern, group, kit, synth, plugin, scan, effect, drumkit, instrument, developer, sampleFolder, sample, note };
+    enum class Kind { pattern, group, kit, synth, plugin, scan, effect, drumkit, instrument, developer, sampleFolder, sample, note, card };
     static constexpr int getKitsRow = 1, importKitRow = 2, getInstrumentsRow = 3;  // scan rows' ids: fetch the studio kits, a kit from a folder, fetch the instruments
-    static constexpr int addSampleFolderRow = 4;                                    // and add a folder to Samples
+    static constexpr int addSampleFolderRow = 4, getPacksRow = 5;                   // and add a folder to Samples, the free sample packs
     static constexpr int samplesGroup = 7;
 
     struct Row
@@ -144,6 +151,7 @@ private:
     juce::StringArray sampleFoldersOpen;    // Samples' folders shown open, by full path: none when NightShift opens
     samples::Library sampleLibrary;
     juce::File previewShown;                // the sample shown as playing
+    bool packsCardShown = false;            // Samples' "Get free sample packs" card has been shown since NightShift opened
     int patternScroll = 0, soundScroll = 0, hoveredPattern = -1, hoveredSound = -1;
     int highlightedSound = -1, pressedSound = -1, pressedPattern = -1;
     bool addHovered = false, dragging = false;

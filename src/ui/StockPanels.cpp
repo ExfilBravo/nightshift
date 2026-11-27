@@ -7,6 +7,7 @@
 #include "Widgets.h"
 #include "ParamControls.h"
 #include "TextAudit.h"
+#include "app/Tone3000.h"
 #include "model/SongKey.h"
 
 namespace nightshift
@@ -1144,14 +1145,70 @@ namespace
     };
 
     //==============================================================================
+    /** Words that open a web page when clicked ("Powered by TONE3000"), underlined while the mouse is over them. */
+    class WebLink : public juce::Component,
+                    public juce::SettableTooltipClient
+    {
+    public:
+        WebLink (const juce::String& shown, const juce::String& address) : words (shown), url (address)
+        {
+            setMouseCursor (juce::MouseCursor::PointingHandCursor);
+            setTooltip (address);
+        }
+
+        int getIdealWidth() const   { return (int) std::ceil (juce::GlyphArrangement::getStringWidth (font (15.0f), words)) + 8; }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.setColour (isMouseOver() ? text : textDim);
+            g.setFont (font (15.0f));
+            g.drawText (words, getLocalBounds(), juce::Justification::centredLeft, true);
+
+            if (isMouseOver())
+                g.fillRect (0.0f, getHeight() * 0.5f + 9.0f, (float) getIdealWidth() - 8.0f, 1.0f);
+        }
+
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            if (getLocalBounds().contains (e.getPosition()))
+                juce::URL (url).launchInDefaultBrowser();
+        }
+
+        void mouseEnter (const juce::MouseEvent&) override  { repaint(); }
+        void mouseExit (const juce::MouseEvent&) override   { repaint(); }
+
+    private:
+        juce::String words, url;
+    };
+
+    //==============================================================================
     /** The NAM amp: what's loaded (the amp and its cabinet, or how to get one), the two files to load, the switches,
+        a tone picked on TONE3000 (its Select flow in the browser; its name, creator and licence shown and kept),
         input calibration (matching the amp's input level from the interface's) and a slimmable model's size, and
         input, gate and output. */
     class AmpPanel : public StockPanel
     {
     public:
-        AmpPanel (NightAmp& a, AudioEngine& engine) : StockPanel (a, juce::Colour (0xffff8f5a)), amp (a), interfaceLevel (engine), sizeControl (a, colour)
+        AmpPanel (NightAmp& a, AudioEngine& engine)
+            : StockPanel (a, juce::Colour (0xffff8f5a)), amp (a), audio (engine), interfaceLevel (engine), sizeControl (a, colour)
         {
+            // TONE3000: picked on its own site, in the browser ("Powered by TONE3000", as its rules ask)
+            findTone.setFilled (false);
+            findTone.setFramed (true);
+            findTone.setComponentID ("findTone");
+            findTone.onClick = [this] { findOnTone3000(); };
+            addAndMakeVisible (findTone);
+            poweredBy.setComponentID ("poweredBy");
+            addAndMakeVisible (poweredBy);
+            signOut.setFilled (false);
+            signOut.setFramed (false);
+            signOut.setComponentID ("signOut");
+            signOut.setLabel ("Sign out of TONE3000");
+            signOut.setTooltip ("NightShift forgets your TONE3000 sign-in on this computer (TONE3000 has no way for an app to cancel it there: "
+                                "sign out on its website too if you like)");
+            signOut.onClick = [this] { signOutOfTone3000(); };
+            addChildComponent (signOut);
+
             for (auto id : { "input", "gate", "output" })
                 knobs.push_back (&knob (id));
 
@@ -1178,8 +1235,14 @@ namespace
             loadCabinet.setLabel ("Load cabinet...");
             loadCabinet.setTooltip ("Pick a speaker cabinet's impulse response (.wav), for a model of the amp alone");
             loadCabinet.onClick = [this] { choose (true); };
-            setSize (680, 476);
+            refreshToneRow();
+            setSize (680, 540);
             tick();     // the size control showing from the start for a slimmable model
+        }
+
+        ~AmpPanel() override
+        {
+            picker.reset();
         }
 
         void layout (juce::Rectangle<int> area) override
@@ -1194,6 +1257,15 @@ namespace
             cabinetOn->setBounds (buttons.removeFromRight (120).withSizeKeepingCentre (120, 30));
             buttons.removeFromRight (10);
             evenOut->setBounds (buttons.removeFromRight (200).withSizeKeepingCentre (200, 30));
+
+            // TONE3000, and what it's doing (or has to say) under it
+            area.removeFromTop (10);
+            auto tone = area.removeFromTop (36);
+            findTone.setBounds (tone.removeFromLeft (findTone.getIdealWidth (36)));
+            tone.removeFromLeft (14);
+            poweredBy.setBounds (tone.removeFromLeft (poweredBy.getIdealWidth()));
+            signOut.setBounds (tone.removeFromRight (signOut.getIdealWidth (36)));
+            toneStatusArea = area.removeFromTop (26);
 
             // Matching the amp's input, then (a slimmable model) its size
             area.removeFromTop (10);
@@ -1265,27 +1337,43 @@ namespace
             }
             else
             {
+                // A tone picked on TONE3000 is named, and credited, as TONE3000 has it
                 const auto about = amp.describeModel();
+                const auto source = amp.getToneSource();
+                const auto dot = juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  "));
                 g.setColour (text);
                 g.setFont (font (21.0f, true));
                 {
                     textaudit::TheirWords theirs;   // the model's name, as its maker gave it
-                    g.drawText (about.name, area.removeFromTop (30.0f), juce::Justification::centredLeft, true);
+                    g.drawText (source.isEmpty() || source.title.isEmpty() ? about.name : source.title, area.removeFromTop (30.0f),
+                                juce::Justification::centredLeft, true);
                 }
 
                 juce::StringArray facts;
 
                 if (about.gear.isNotEmpty())        facts.add (about.gear);
                 if (about.toneType.isNotEmpty())    facts.add (about.toneType.substring (0, 1).toUpperCase() + about.toneType.substring (1));
-                if (about.modeledBy.isNotEmpty())   facts.add ("captured by " + about.modeledBy);
+
+                if (! source.isEmpty() && source.creator.isNotEmpty())
+                    facts.add ("by " + source.creator);
+                else if (about.modeledBy.isNotEmpty())
+                    facts.add ("captured by " + about.modeledBy);
+
                 if (about.sampleRate > 0.0)         facts.add ("trained at " + juce::String (about.sampleRate / 1000.0, 1).trimCharactersAtEnd ("0").trimCharactersAtEnd (".") + " kHz");
 
                 g.setColour (textDim);
                 g.setFont (font (16.0f));
                 {
                     textaudit::TheirWords theirs;
-                    g.drawText (facts.joinIntoString (juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  "))), area.removeFromTop (24.0f),
-                                juce::Justification::centredLeft, true);
+                    g.drawText (facts.joinIntoString (dot), area.removeFromTop (24.0f), juce::Justification::centredLeft, true);
+                }
+
+                if (! source.isEmpty())
+                {
+                    textaudit::TheirWords theirs;   // (the model's name is its creator's)
+                    g.drawText ("From TONE3000" + dot + tone3000::licenceName (source.licence)
+                                    + (source.model.isNotEmpty() && source.model != source.title ? dot + source.model : juce::String()),
+                                area.removeFromTop (24.0f), juce::Justification::centredLeft, true);
                 }
 
                 g.setColour (amp.hasCabinet() ? textDim : textFaint);
@@ -1326,8 +1414,22 @@ namespace
             }
         }
 
+        void paint (juce::Graphics& g) override
+        {
+            StockPanel::paint (g);
+
+            // What TONE3000 is doing, or has to say
+            g.setColour (toneProblem ? danger : textFaint);
+            g.setFont (font (15.0f));
+            g.drawText (toneStatus, toneStatusArea, juce::Justification::centredLeft, true);
+        }
+
+        /** What the line under TONE3000's button says now (tests). */
+        juce::String getToneStatus() const      { return toneStatus; }
+
     private:
         NightAmp& amp;
+        AudioEngine& audio;
         std::vector<juce::Component*> knobs;
         ParamToggle* evenOut = nullptr;
         ParamToggle* cabinetOn = nullptr;
@@ -1335,8 +1437,161 @@ namespace
         InterfaceLevelField interfaceLevel;
         AmpSizeControl sizeControl;
         IconButton loadAmp { "Load amp", icons::plusLine() }, loadCabinet { "Load cabinet", icons::plusLine() };
+        IconButton findTone { "Find a tone on TONE3000", icons::search() }, signOut { "Sign out of TONE3000", icons::close() };
+        WebLink poweredBy { "Powered by TONE3000", tone3000::website };
+        std::unique_ptr<tone3000::Picker> picker;
+        juce::String toneStatus;
+        bool toneProblem = false, gettingAgain = false;
+        juce::Rectangle<int> toneStatusArea;
         std::unique_ptr<juce::FileChooser> chooser;
         float level = -100.0f;
+
+        bool signedIn() const                   { return audio.getOptions().tone3000Token.isNotEmpty(); }
+
+        // A TONE3000 model that's gone from this computer, which the kept sign-in can fetch again
+        bool canGetAgain() const                { return ! amp.hasModel() && ! amp.getToneSource().isEmpty() && signedIn() && tone3000::hasKey(); }
+
+        void refreshToneRow()
+        {
+            findTone.setLabel (picker != nullptr ? "Stop waiting for TONE3000"
+                               : ! tone3000::hasKey() ? "Open TONE3000's website"
+                               : canGetAgain() ? "Get it again from TONE3000" : "Find a tone on TONE3000");
+            findTone.setTooltip (! tone3000::hasKey() ? "This build of NightShift has no TONE3000 key, so it opens tone3000.com in your browser instead"
+                                                      : "Pick an amp, pedal or rig on TONE3000 in your browser (signed in to TONE3000); NightShift downloads "
+                                                        "its models and loads it here, with its creator and licence");
+            findTone.setEnabled (! gettingAgain);
+            signOut.setVisible (signedIn() && picker == nullptr);
+
+            if (toneStatus.isEmpty() && ! tone3000::hasKey())
+                toneStatus = "This build of NightShift has no TONE3000 key: it can only open TONE3000's website";
+
+            resized();
+            repaint();
+        }
+
+        void findOnTone3000()
+        {
+            // Pressed again while it waits: stop waiting
+            if (picker != nullptr)
+            {
+                picker.reset();
+                toneStatus = {};
+                refreshToneRow();
+                return;
+            }
+
+            if (! tone3000::hasKey())
+            {
+                juce::URL (tone3000::website).launchInDefaultBrowser();
+                return;
+            }
+
+            if (canGetAgain())
+            {
+                getAgain();
+                return;
+            }
+
+            picker = std::make_unique<tone3000::Picker> ([safe = juce::Component::SafePointer<AmpPanel> (this)] (const tone3000::Picker::Result& r)
+            {
+                if (safe != nullptr)
+                    safe->picked (r);
+            });
+
+            juce::String problem;
+            toneProblem = ! picker->start (problem);
+            toneStatus = toneProblem ? problem : juce::String ("Pick a tone on TONE3000 in your browser: NightShift loads it here");
+
+            if (toneProblem)
+                picker.reset();
+
+            refreshToneRow();
+        }
+
+        void picked (const tone3000::Picker::Result& r)
+        {
+            picker.reset();
+
+            // The newest sign-in, kept on this computer (never in a log)
+            if (r.refreshToken.isNotEmpty())
+            {
+                auto options = audio.getOptions();
+                options.tone3000Token = r.refreshToken;
+                audio.setOptions (options);
+            }
+
+            toneStatus = {};
+            toneProblem = false;
+
+            if (r.ok)
+            {
+                if (const auto problem = amp.loadModel (r.files.front()); problem.isEmpty())
+                {
+                    amp.setToneSource ({ r.tone.id, r.tone.title, r.tone.creator, r.tone.licence, r.tone.url, r.models.front().name });
+
+                    if (r.files.size() > 1)
+                        toneStatus = juce::String ((int) r.files.size()) + " models came with it: Load amp... opens their folder";
+                }
+                else
+                {
+                    toneStatus = problem;
+                    toneProblem = true;
+                }
+            }
+            else if (! r.cancelled)
+            {
+                toneStatus = r.problem;
+                toneProblem = true;
+            }
+
+            refreshToneRow();
+        }
+
+        void getAgain()
+        {
+            gettingAgain = true;
+            toneStatus = "Getting it again from TONE3000...";
+            toneProblem = false;
+            refreshToneRow();
+
+            const auto source = amp.getToneSource();
+            auto token = audio.getOptions().tone3000Token;
+
+            juce::Thread::launch ([safe = juce::Component::SafePointer<AmpPanel> (this), source, token]() mutable
+            {
+                juce::File file;
+                const auto problem = tone3000::getAgain (source.toneId, source.model, token, file);
+
+                juce::MessageManager::callAsync ([safe, source, token, file, problem]
+                {
+                    if (safe == nullptr)
+                        return;
+
+                    auto options = safe->audio.getOptions();
+                    options.tone3000Token = token;
+                    safe->audio.setOptions (options);
+                    safe->gettingAgain = false;
+                    safe->toneStatus = problem.isNotEmpty() ? problem : safe->amp.loadModel (file);
+                    safe->toneProblem = safe->toneStatus.isNotEmpty();
+
+                    if (! safe->toneProblem)
+                        safe->amp.setToneSource (source);
+
+                    safe->refreshToneRow();
+                });
+            });
+        }
+
+        void signOutOfTone3000()
+        {
+            // TONE3000 has no way for an app to cancel a sign-in: NightShift forgets it
+            auto options = audio.getOptions();
+            options.tone3000Token = {};
+            audio.setOptions (options);
+            toneStatus = "Signed out: NightShift has forgotten your TONE3000 sign-in on this computer";
+            toneProblem = false;
+            refreshToneRow();
+        }
 
         void choose (bool forCabinet)
         {
@@ -1350,9 +1605,26 @@ namespace
                                   [this, forCabinet, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& c)
                                   {
                                       if (const auto f = c.getResult(); f.existsAsFile())
-                                          forCabinet ? amp.loadCabinet (f) : amp.loadModel (f);
+                                      {
+                                          if (forCabinet)
+                                          {
+                                              amp.loadCabinet (f);
+                                          }
+                                          else
+                                          {
+                                              // Another of a TONE3000 tone's models keeps its credit; any other file has none
+                                              auto source = amp.getToneSource();
+                                              const bool sameTone = ! source.isEmpty() && f.getParentDirectory() == amp.getModelFile().getParentDirectory();
 
-                                      repaint();
+                                              if (amp.loadModel (f).isEmpty())
+                                              {
+                                                  source.model = f.getFileNameWithoutExtension();
+                                                  amp.setToneSource (sameTone ? source : NightAmp::ToneSource());
+                                              }
+                                          }
+                                      }
+
+                                      refreshToneRow();
                                   });
         }
     };

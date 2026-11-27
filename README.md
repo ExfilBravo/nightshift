@@ -160,6 +160,20 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   (snapped): on the audio track under it, on an empty track, or on a new audio track named after it (under the last
   track, or under any other), its length shown before you let go; **drag it into Steps** (or double-click it) for a
   sampler channel playing it. Right-click a sample for Play, Add to Steps and Show in Explorer (Finder on a Mac).
+  **Free sample packs**: the first time Samples opens with no packs yet, a card at its top, **Get free sample packs**
+  (shown once; after, **Free sample packs...** at its foot or its right-click menu), opens a list of packs, each with
+  what's in it, its size and its licence or credit, ticked to get it (NightShift's own ticked, the big libraries not).
+  **Download** fetches the ticked ones in the background (progress, Cancel; a pack cut short carries on next time),
+  checks each against the size and SHA-256 written into NightShift (as Check for updates checks its installer: a file
+  that isn't the pack as made is deleted) and unpacks it into NightShift's own folder (`%LOCALAPPDATA%\Nightshift\Packs`,
+  a Mac's Application Support; never Documents or Music, which ransomware protection may close), only what's inside the
+  pack's own folder. Samples then lists it as **Free packs**. Nothing downloads until Download is clicked. The packs:
+  **NightShift Sounds 1** (CC0, made by NightShift: drum hits from its 808, 909 and kit, notes of every Nova sound
+  named with their note, and four-bar loops of the AI band in sixteen styles, each part on its own with its tempo and
+  key in its name, so it follows the song's tempo; FLAC), and in the same list the **Studio drum kits** (DrumGizmo,
+  CC BY 4.0) and the **Piano and orchestra** (Salamander CC BY 3.0, VSCO 2 CE CC0), fetched NightShift's own way with
+  their progress at the foot of the window. Once they're here Samples lists them too (**Drum kits**, **Piano and
+  orchestra**), each folder's tooltip giving its credit.
 - **Inspector** (as in Logic) – down the right: the selected channel's strip beside the master's. A channel
   strip shows its name and type, its instrument (click: a plugin's window, or the sample / preset menu) or an
   audio track's input, arm and MON, every effect in its chain, its sends and output, pan, a fader with its
@@ -206,6 +220,18 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   song saved before keeps the sound it had (matching off). A model that comes in sizes (NAM's "slimmable" models, as
   its A2) shows **Size**: a smaller one takes less of the computer (A2's small size runs about 3 times faster than its
   whole one) and sounds a little less like the amp; a new model starts whole, and the size is kept with the song.
+  **Find a tone on TONE3000** (Powered by TONE3000, [tone3000.com](https://www.tone3000.com), beside it): TONE3000's own
+  Select flow opens in your browser; you sign in to TONE3000 there and pick an amp, pedal or rig, and NightShift
+  downloads that tone's models into its own folder (`%LOCALAPPDATA%\Nightshift\TONE3000`) and loads the first (the rest
+  beside it: Load amp... opens there). The panel names the tone, its creator and its licence ("From TONE3000 · CC BY:
+  credit the creator"), all kept with the song. Nothing of TONE3000's catalog is fetched or kept before you pick.
+  Sign-in is OAuth 2.0 with PKCE (S256) and a state check, the browser's answer caught by a one-shot listener on
+  `http://127.0.0.1:<free port>/callback` (RFC 8252's loopback redirect: nothing to register with the system); the app
+  uses only TONE3000's publishable key, never a secret one. The sign-in (a refresh token) is kept in NightShift's
+  settings on this computer, never in a log; **Sign out of TONE3000** forgets it (TONE3000 has no way for an app to
+  cancel one: sign out on its website too if you like). A song whose TONE3000 model has gone from this computer gets it
+  again from TONE3000 with that sign-in (**Get it again from TONE3000**). A build without a key opens tone3000.com
+  instead, and says so.
 - **Pitch Correction** (a stock effect) – for singing or a guitar: it hears the note being played (the YIN method, from
   60 Hz to 1.4 kHz, every 2.5 ms) and pulls it to the nearest note of the key: **The song's key** (heard from the song's
   own notes with Krumhansl and Kessler's key profiles; every note until it has some), **Every note**, or **A key of its
@@ -834,7 +860,12 @@ git clone --recurse-submodules https://github.com/ExfilBravo/nightshift.git
 The Tracktion Engine (with JUCE) and Neural Amp Modeler's core come in as submodules, in `external/`, at
 the exact commits NightShift is built with. LAME (the MP3 encoder) comes the first time the build is configured:
 CMake fetches its 3.100 release into `external/` and checks its SHA-256 (so that first build needs the internet;
-put `lame-3.100.tar.gz` in `external/` by hand to build offline). The plugins go beside it, each built with its own `build.cmd`
+put `lame-3.100.tar.gz` in `external/` by hand to build offline). The NAM amp's TONE3000 picker takes the app's
+TONE3000 publishable key (its OAuth client_id, which TONE3000 says is safe in an app) from `tone3000-key.txt` beside
+`CMakeLists.txt`, a line `publishable_key=...` (lines starting `#` are comments). CMake refuses a secret key (one
+starting `t3k_cs_`), never prints the key, and writes it into a header only `src/app/Tone3000.cpp` includes, so a new
+key builds that one file. Without the file NightShift still builds: the amp's button then opens tone3000.com and says
+this build has no key. The plugins go beside it, each built with its own `build.cmd`
 (`setup.cmd` takes them into the setup when they're built):
 
 ```bash
@@ -1000,6 +1031,11 @@ Nightshift.exe --snapshot ui.png [--emptysong] [--moretracks] [--dragover x,y [-
 Nightshift.exe --stepstest
 Nightshift.exe --sidebartest
 Nightshift.exe --samplestest
+Nightshift.exe --packstest
+Nightshift.exe --tone3000test
+Nightshift.exe --makesounds <folder> [--only drums|synths|loops]
+Nightshift.exe --snapshot ui.png --packs
+Nightshift.exe --snapshot ui.png --effectpanel nightshiftAmp [--tonesource "Clean Twin;ampfan;cc-by;Clean Twin standard"] [--t3ksignedin] [--t3knokey]
 Nightshift.exe --snapshot ui.png --sampledemo [--opensounds "Samples;Downloads;Drum Pack;Kicks;Kick 10"] [--search tone] [--dragover x,y --dragsound "sample:Loop 120 bpm"]
 Nightshift.exe --fxtest
 Nightshift.exe --savetest
@@ -1147,7 +1183,7 @@ the text check, which reads back every piece of text as it's drawn and lists any
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
 behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by
 something at least half opaque (the studio dimmed behind the start screen, a row label under an automation lane) isn't
-there to be read, so it isn't checked. `--texttest` runs it over 77 views (every tab, AI agent, Nova page, effect
+there to be read, so it isn't checked. `--texttest` runs it over 81 views (every tab, AI agent, Nova page, effect
 window and dialog, the start screen the first time and after it, a laptop's 1366 x 768, Samples, stretched clips, the
 Export window for each kind, frozen channels and the question before their notes change) and fails on any
 of those; the user's own words (a channel's name, a sound's, a project's folder) may be cut short to fit, ours never.
@@ -1283,6 +1319,23 @@ audio track it's dropped on, an empty track taking it, one undo, a missing file 
 tone from bar 3, a FLAC and an Ogg dropped too and heard (`--samplestest --mp3 <file>` drops an MP3 as well).
 Command-line runs never read the real Downloads and Music: Samples lists two empty folders in their place. `--snapshot ... --sampledemo` shows Samples with the suite's sounds in it (and a folder added); a sample named in
 `--opensounds` is clicked, so it shows playing.
+`--packstest` checks the free sample packs against a pack it makes and serves on 127.0.0.1 (as GitHub serves the real
+one): the card shown the first time Samples opens with no packs (and opening the packs' window, as Free sample packs...
+does), not again; a download whose SHA-256 isn't the pack's refused and deleted; one stopped part way installing nothing;
+one downloaded, checked and unpacked into NightShift's own folder (its sounds in their folders and its licence, nothing
+from outside its top folder, the zip gone); Samples listing it as Free packs, with no card once a pack is here; and the
+packs' window (each pack's words, size and licence or credit readable, NightShift's own ticked and the big libraries
+not, Download fetching in the background and starting the studio drum kits their own way).
+`--tone3000test` checks picking a tone on TONE3000 against a pretend TONE3000 on 127.0.0.1 with a key of its own (never
+the build's): PKCE (RFC 7636's example challenge; 64-character verifiers), the Select flow's address (client_id, S256,
+state, prompt=select_tone, format=nam, the loopback redirect), an answer with another state turned away while it waits
+on, TONE3000's own taken (the browser told to go back to NightShift), the code exchanged with the verifier whose S256 is
+the challenge, the tone and models fetched and downloaded with the access token, the model in the amp with its creator,
+name and licence kept (and in the song, opened again) and shown, refreshing (the newest refresh token kept, a stale one
+refused), a model fetched again, Sign out of TONE3000, and a build with no key (the button opens the website and says
+why; a secret key is never used). `--makesounds <folder>` makes NightShift Sounds 1 (its folder, its zip, and the
+zip's size and SHA-256 for `src/audio/Packs.cpp`); `--snapshot ... --packs` shows the packs' window, and
+`--tonesource`, `--t3ksignedin` and `--t3knokey` the amp's TONE3000 states.
 `--fxtest` loads the Nightshift Lofi VST3s from where they're installed and checks where effects sit in each
 chain, that Crush changes a kick, bypass, order, removal, and that a setting survives saving and reloading.
 `--snapshot ... --lofi` shows them in the sidebar, with two on Kick and Vinyl on the master.
@@ -1414,7 +1467,10 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
 
 - `src/model` – the song: channels, patterns, notes, playlist; JSON save/load; snapshot undo; the song's key heard
   from its notes (`SongKey`).
-- `src/app` – Check for updates (`Updates`: GitHub's latest release, the installer's download, checked and started).
+- `src/app` – Check for updates (`Updates`: GitHub's latest release, the installer's download, checked and started);
+  the NAM amp's TONE3000 picker (`Tone3000`: OAuth with PKCE, the loopback listener, the API calls); the free pack's
+  maker (`SoundsMaker`, `--makesounds`). The packs themselves are `src/audio/Packs` (what's offered, the download checked
+  and unpacked) and `src/ui/PacksPanel` (their window).
 - `src/audio` – `AudioEngine` mirrors the song into a Tracktion Edit (one track per channel, MIDI clips per
   pattern placement, a track per bus); the drum kit synthesiser, Nova (`Nova`: its parameters, DSP and
   patches; `NovaPresets`: the factory sounds), Nightshift Guitar (`GuitarSound`: the modelled strings, the amps, the
@@ -1488,7 +1544,15 @@ The grand piano is the Salamander Grand Piano by Alexander Holm, licensed
 [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) (its SFZ mapping by the sfzinstruments project); the
 orchestra is the Versilian Studios Chamber Orchestra 2 Community Edition, released under
 [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Both are downloaded on request. Nova's factory
-sounds are Nightshift's own.
+sounds are Nightshift's own. NightShift Sounds 1, the free pack Samples offers, is made by NightShift alone (its
+808 and 909, its kit, Nova, NightShift Guitar and the AI band; `Nightshift --makesounds <folder>`) and given away under
+[CC0](https://creativecommons.org/publicdomain/zero/1.0/) (its `LICENSE.txt`); it's downloaded on request from this
+repository's GitHub release `sounds-v1`.
+
+The NAM amp's tone picker is **Powered by TONE3000** ([tone3000.com](https://www.tone3000.com)), through its API
+([tone3000.com/api](https://www.tone3000.com/api)): browsing and picking are TONE3000's own pages, signed in to
+TONE3000, and a tone's models are downloaded only when you pick it. Each tone keeps its creator's name and the licence
+they chose, which the amp shows and keeps with the song. TONE3000's tones aren't part of NightShift.
 
 The AI drummer's feel (its swing, how far ahead or behind each drum sits, how loosely, and where each step of a bar
 lands and how hard) is learned from the [Groove MIDI Dataset](https://magenta.tensorflow.org/datasets/groove) by Jon

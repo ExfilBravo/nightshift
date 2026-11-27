@@ -49,5 +49,11 @@ Sounds NightShift downloads when you ask for them (they are not part of the down
   AVL Drumkits by Glen MacArthur ........................................... CC BY-SA 3.0
   Salamander Grand Piano by Alexander Holm (SFZ by sfzinstruments) ......... CC BY 3.0
   Versilian Studios Chamber Orchestra 2 Community Edition .................. CC0
+  NightShift Sounds 1 (drum hits, synth notes and loops made by NightShift) .. CC0
 
 The 808 and 909 kits and Nova's factory sounds are NightShift's own.
+
+Amp tones from TONE3000 (Powered by TONE3000: https://www.tone3000.com). The NAM amp's Find a tone on
+TONE3000 picks a tone on TONE3000's own site and downloads its models only when you ask; each tone
+keeps the licence its creator chose (shown in the amp with the creator's name). TONE3000's tones are
+not part of NightShift.

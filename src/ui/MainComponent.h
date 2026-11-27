@@ -216,6 +216,10 @@ public:
     /** Downloads the piano and orchestra in the background, the corner saying how far it's got. */
     void getInstruments();
     bool isFetchingInstruments() const      { return instrumentFetcher != nullptr; }
+
+    /** The free sample packs' window (Samples' card, its Free sample packs... row and menu). */
+    void showPacks();
+    juce::Component::SafePointer<juce::DialogWindow> packsWindow;
     juce::String importDrumKitFrom (const juce::File& folder);
 
     /** Double-click a pattern clip: the pattern in the piano roll, on the channel playing

@@ -3,6 +3,7 @@
 
 #include "MainComponent.h"
 #include "ExportWindow.h"
+#include "PacksPanel.h"
 #include "FreezeGuard.h"
 #include "audio/Freeze.h"
 #include "audio/Mp3Encoder.h"
@@ -354,6 +355,7 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     sidebar.onAddSynth = [this] (const juce::String& preset) { openSynth (rack.addSynthChannel (preset)); };
     sidebar.onAddPlugin = [this] (const juce::PluginDescription& d) { rack.addPluginChannel (d); showEditorTab (Panel::rack); };
     sidebar.onAddSample = [this] (const juce::String& path) { rack.addSamplerChannel (path); showEditorTab (Panel::rack); };
+    sidebar.onGetPacks = [this] { showPacks(); };
     sidebar.onAddEffect = [this] (const juce::PluginDescription& d)
     {
         // On the selected channel (the master if there isn't one); the Inspector shows it
@@ -2051,6 +2053,38 @@ void MainComponent::getInstruments()
 
     showToast ("Getting the piano and orchestra (2.9 GB, once)...");
     instrumentFetcher = std::make_unique<Fetcher> (*this);
+}
+
+void MainComponent::showPacks()
+{
+    if (packsWindow != nullptr)
+    {
+        packsWindow->toFront (true);
+        return;
+    }
+
+    auto content = std::make_unique<PacksPanel>();
+
+    // The big libraries come NightShift's own way, their progress at the foot of the window
+    content->onGetLibrary = [this] (const juce::String& library)
+    {
+        if (library == "instruments")
+            getInstruments();
+        else if (sidebar.onGetKits != nullptr)
+            sidebar.onGetKits();
+    };
+
+    content->onInstalled = [this] { sidebar.packsChanged(); };
+
+    juce::DialogWindow::LaunchOptions launch;
+    launch.dialogTitle = "Free sample packs";
+    launch.dialogBackgroundColour = theme::panel;
+    launch.useNativeTitleBar = true;
+    launch.resizable = false;
+    launch.componentToCentreAround = this;
+    launch.escapeKeyTriggersCloseButton = true;
+    launch.content.setOwned (content.release());
+    packsWindow = launch.launchAsync();
 }
 
 void MainComponent::importDrumKit()
