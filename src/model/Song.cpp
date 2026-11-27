@@ -289,10 +289,105 @@ namespace
     double secondsPerTick (double bpm)      { return 60.0 / (ticksPerBeat * bpm); }
 }
 
+double Song::bezierBpm (double x1, double y1, double x2, double y2, double c, double x)
+{
+    // tracktion_Bezier.h's getBezierPoint and getBezierYFromX, step for step (in ticks where it has
+    // beats: the same curve, scaled along)
+    if (x1 == x2 || y1 == y2 || x <= x1)
+        return y1;
+
+    if (x >= x2)
+        return y2;
+
+    double xb, yb;
+
+    if (y2 > y1)
+    {
+        const double run = x2 - x1, rise = y2 - y1;
+        const double xc = x1 + run / 2, yc = y1 + rise / 2;
+        xb = xc - run / 2 * -c;
+        yb = yc + rise / 2 * -c;
+    }
+    else
+    {
+        const double run = x2 - x1, rise = y1 - y2;
+        const double xc = x1 + run / 2, yc = y2 + rise / 2;
+        xb = xc - run / 2 * -c;
+        yb = yc - rise / 2 * -c;
+    }
+
+    // x along the curve is a quadratic in t: solved for t, then y at t
+    const double a = x1 - 2 * xb + x2, b = -2 * x1 + 2 * xb, k = x1 - x;
+    double t;
+
+    if (a == 0)
+    {
+        t = -k / b;
+    }
+    else
+    {
+        t = (-b + std::sqrt (b * b - 4 * a * k)) / (2 * a);
+
+        if (t < 0.0 || t > 1.0)
+            t = (-b - std::sqrt (b * b - 4 * a * k)) / (2 * a);
+    }
+
+    return std::pow (1 - t, 2) * y1 + 2 * t * (1 - t) * yb + std::pow (t, 2) * y2;
+}
+
+double Song::glideBpm (double from, double fromBpm, double to, double toBpm, float curve, double at)
+{
+    if (to <= from || at <= from)
+        return fromBpm;
+
+    if (at >= to)
+        return toBpm;
+
+    return curve == 0.0f ? fromBpm + (toBpm - fromBpm) * (at - from) / (to - from)
+                         : bezierBpm (from, fromBpm, to, toBpm, 0.5 * juce::jlimit (-1.0f, 1.0f, curve), at);
+}
+
+float Song::glideCurveThrough (double from, double fromBpm, double to, double toBpm, double at, double bpm)
+{
+    if (to <= from || at <= from || at >= to || toBpm == fromBpm)
+        return 0.0f;
+
+    // How far along the change it has got at `at`: less the more it eases in, so the curve is
+    // found by halving the range it's in
+    auto along = [&] (float curve) { return (glideBpm (from, fromBpm, to, toBpm, curve, at) - fromBpm) / (toBpm - fromBpm); };
+    const double wanted = (bpm - fromBpm) / (toBpm - fromBpm);
+
+    if (wanted >= along (-1.0f))
+        return -1.0f;
+
+    if (wanted <= along (1.0f))
+        return 1.0f;
+
+    float lo = -1.0f, hi = 1.0f;
+
+    for (int i = 0; i < 40; ++i)
+    {
+        const float mid = 0.5f * (lo + hi);
+        (along (mid) > wanted ? lo : hi) = mid;
+    }
+
+    return 0.5f * (lo + hi);
+}
+
+float Song::tracktionCurve (const TempoChange& change)
+{
+    if (! change.glide)
+        return 1.0f;
+
+    constexpr float hair = 1.0f / 2048.0f;
+    const float c = 0.5f * juce::jlimit (-1.0f, 1.0f, change.curve);
+    return std::abs (c) >= hair ? c : (c < 0.0f ? -hair : hair);
+}
+
 // The tempo as Tracktion plays it (tracktion::tempo::Sequence), so what's drawn is where things
 // sound: held until the next change, which jumps (the held tempo goes through a float there); or
 // a glide in steps of a quarter of its beat (the start's time signature unit), at most 100, each
-// at the straight line's tempo where it starts
+// at the tempo its curve has where it starts
 static std::vector<TempoPiece> tempoPieces (const Song& song)
 {
     std::vector<TempoPiece> pieces;
@@ -312,9 +407,13 @@ static std::vector<TempoPiece> tempoPieces (const Song& song)
         if (next.glide)
         {
             const int steps = (int) std::clamp (4.0 * (to - from) / beatTicks, 1.0, 100.0);
+            const double curve = Song::tracktionCurve (next);
 
             for (int k = 0; k < steps; ++k)
-                pieces.push_back ({ from + (to - from) * k / steps, fromBpm + (next.bpm - fromBpm) * k / steps });
+            {
+                const double at = from + (to - from) * k / steps;
+                pieces.push_back ({ at, Song::bezierBpm (from, fromBpm, to, next.bpm, curve, at) });
+            }
         }
         else
         {
@@ -386,14 +485,14 @@ double Song::bpmAt (double tick) const
     const int index = tempoChangeAt (tick);
     const double held = index < 0 ? bpm : tempoChanges[(size_t) index].bpm;
 
-    // Gliding to the next change: on the straight line between the two
+    // Gliding to the next change: on the straight line between the two, or its curve
     if (const auto next = (size_t) (index + 1); next < tempoChanges.size() && tempoChanges[next].glide)
     {
+        const auto& to = tempoChanges[next];
         const double from = index < 0 ? 0.0 : tempoChanges[(size_t) index].tick;
-        const double to = tempoChanges[next].tick;
 
-        if (to > from && tick > from)
-            return held + (tempoChanges[next].bpm - held) * std::min (1.0, (tick - from) / (to - from));
+        if (to.tick > from && tick > from)
+            return glideBpm (from, held, to.tick, to.bpm, to.curve, tick);
     }
 
     return held;
@@ -502,9 +601,10 @@ int Song::gridStep (int grid, double tick) const
     return std::max (1, grid);
 }
 
-void Song::setTempoAt (int tick, double newBpm, bool glide)
+void Song::setTempoAt (int tick, double newBpm, bool glide, float curve)
 {
     newBpm = juce::jlimit (20.0, 400.0, newBpm);
+    curve = juce::jlimit (-1.0f, 1.0f, curve);
 
     if (tick <= 0)
     {
@@ -518,11 +618,12 @@ void Song::setTempoAt (int tick, double newBpm, bool glide)
         {
             t.bpm = newBpm;
             t.glide = glide;
+            t.curve = curve;
             return;
         }
     }
 
-    tempoChanges.push_back ({ tick, newBpm, glide });
+    tempoChanges.push_back ({ tick, newBpm, glide, curve });
     tidyTimeline();
 }
 
@@ -555,10 +656,79 @@ void Song::removeMeterChange (int index)
     tidyTimeline();
 }
 
+void Song::setMeterOver (int from, int to, int beats, int unit)
+{
+    from = std::max (0, from);
+
+    if (to <= from)
+        return;
+
+    // What plays from `to` now, to put back after
+    const auto after = meterAt (to);
+    const bool changeAtEnd = std::any_of (meterChanges.begin(), meterChanges.end(), [to] (auto& m) { return m.tick == to; });
+    std::erase_if (meterChanges, [from, to] (auto& m) { return m.tick > from && m.tick < to; });
+
+    if (from == 0)
+    {
+        // The start's time signature: what was made in the old one stays in it
+        if (beats != meterBeats || unit != meterUnit)
+        {
+            for (auto& p : patterns)
+            {
+                if (p.meterBeats <= 0 || p.meterUnit <= 0)
+                {
+                    p.meterBeats = meterBeats;
+                    p.meterUnit = meterUnit;
+                }
+            }
+
+            meterBeats = beats;
+            meterUnit = unit;
+        }
+    }
+    else
+    {
+        setMeterAt (from, beats, unit);
+    }
+
+    if (! changeAtEnd && (after.beats != beats || after.unit != unit))
+        meterChanges.push_back ({ to, after.beats, after.unit });
+
+    tidyTimeline();
+
+    // A pattern now in the start's own time signature needs none of its own
+    for (auto& p : patterns)
+        if (p.meterBeats == meterBeats && p.meterUnit == meterUnit)
+            p.meterBeats = p.meterUnit = 0;
+}
+
+void Song::fitMeterToClip (int patternId, int start)
+{
+    const auto* p = findPattern (patternId);
+
+    if (p == nullptr || p->meterBeats <= 0 || p->meterUnit <= 0)
+        return;
+
+    const int beats = p->meterBeats, unit = p->meterUnit;
+    const int end = start + patternLength (*p);
+    const auto there = meterAt (start);
+    const bool inside = std::any_of (meterChanges.begin(), meterChanges.end(), [start, end] (auto& m) { return m.tick > start && m.tick < end; });
+
+    if (there.beats == beats && there.unit == unit && there.start <= start && ! inside
+         && (start - there.start) % there.barTicks() == 0)
+        return;
+
+    setMeterOver (start, end, beats, unit);
+}
+
 void Song::tidyTimeline()
 {
     auto byTick = [] (auto& a, auto& b) { return a.tick < b.tick; };
     std::erase_if (tempoChanges, [] (auto& t) { return t.tick <= 0; });
+
+    for (auto& t : tempoChanges)
+        t.curve = std::isfinite (t.curve) ? juce::jlimit (-1.0f, 1.0f, t.curve) : 0.0f;
+
     std::stable_sort (tempoChanges.begin(), tempoChanges.end(), byTick);
     tempoChanges.erase (std::unique (tempoChanges.begin(), tempoChanges.end(), [] (auto& a, auto& b) { return a.tick == b.tick; }),
                         tempoChanges.end());
@@ -1725,13 +1895,14 @@ juce::var Song::toVar() const
     root->setProperty ("bpm", bpm);
     root->setProperty ("meter", juce::Array<juce::var> { meterBeats, meterUnit });
 
-    // Along the song: [tick, bpm, glide] and [tick, beats, unit]
+    // Along the song: [tick, bpm, glide] (and a glide's curve after, when it has one) and [tick, beats, unit]
     if (! tempoChanges.empty())
     {
         juce::Array<juce::var> list;
 
         for (auto& t : tempoChanges)
-            list.add (juce::Array<juce::var> { t.tick, t.bpm, t.glide });
+            list.add (t.curve != 0.0f ? juce::Array<juce::var> { t.tick, t.bpm, t.glide, t.curve }
+                                      : juce::Array<juce::var> { t.tick, t.bpm, t.glide });
 
         root->setProperty ("tempoChanges", list);
     }
@@ -1993,7 +2164,8 @@ void Song::fromVar (const juce::var& v)
     if (auto* list = v.getProperty ("tempoChanges", {}).getArray())
         for (auto& t : *list)
             if (t.size() >= 2 && (int) t[0] > 0)
-                tempoChanges.push_back ({ (int) t[0], juce::jlimit (20.0, 400.0, (double) t[1]), t.size() >= 3 && (bool) t[2] });
+                tempoChanges.push_back ({ (int) t[0], juce::jlimit (20.0, 400.0, (double) t[1]), t.size() >= 3 && (bool) t[2],
+                                          t.size() >= 4 ? juce::jlimit (-1.0f, 1.0f, (float) (double) t[3]) : 0.0f });
 
     if (auto* list = v.getProperty ("meterChanges", {}).getArray())
         for (auto& m : *list)

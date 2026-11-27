@@ -4,6 +4,7 @@
 #include "OfflineDrummer.h"
 #include "Genres.h"
 #include "LearnedFeel.h"
+#include "Theory.h"
 #include "audio/Kits.h"
 
 namespace nightshift::drummer::offline
@@ -113,6 +114,25 @@ namespace
         int perBeat = 4;                    // 16ths a counted beat (a quarter in x/4, a group's average otherwise)
         bool fourFour() const               { return beats == 4 && unit == 4; }
         bool compound = false;
+
+        /** Whether `step` of a bar of `gridSteps` (finer for rolls and triplets) starts a counted beat:
+            a group's start, so 7/8's accents fall on 1, 3 and 5 (2+2+3), not every fourth 16th. */
+        bool onBeat (int step, int gridSteps) const
+        {
+            if (gridSteps <= 0 || (step * steps) % gridSteps != 0)
+                return false;
+
+            const int at = step * steps / gridSteps;
+            return std::find (groupStarts.begin(), groupStarts.end(), at) != groupStarts.end();
+        }
+
+        /** Where the bar's last `n` groups start, on a grid of `gridSteps`: where a fill of n beats
+            begins (in 7/8, the last group's three eighths, or its last two groups' five). */
+        int lastGroups (int n, int gridSteps) const
+        {
+            const int index = juce::jlimit (0, (int) groupStarts.size() - 1, (int) groupStarts.size() - n);
+            return groupStarts.empty() ? 0 : groupStarts[(size_t) index] * gridSteps / std::max (1, steps);
+        }
     };
 
     Frame frameFor (int beats, int unit)
@@ -121,36 +141,10 @@ namespace
         f.beats = beats;
         f.unit = unit;
         f.steps = juce::jmax (2, beats * 16 / unit);
-        std::vector<int> groups;
+        f.compound = unit == 8 && beats % 3 == 0;
 
-        if (unit == 4 || unit == 2)
-        {
-            const int each = 16 / unit;
-
-            for (int b = 0; b < beats; ++b)
-                groups.push_back (each);
-        }
-        else if (unit == 8 && beats % 3 == 0)
-        {
-            f.compound = true;
-
-            for (int b = 0; b < beats / 3; ++b)
-                groups.push_back (6);
-        }
-        else
-        {
-            // Odd eighths (or sixteenths): twos with a three at the end (7/8 = 2+2+3)
-            const int each = 16 / unit;
-            int left = beats;
-
-            while (left > 0)
-            {
-                const int g = left == 3 || left == 5 ? 3 : 2;
-                groups.push_back (g * each);
-                left -= g;
-            }
-        }
-
+        // Quarters, dotted quarters, or odd eighths (and sixteenths) as the metronome groups them (7/8 = 2+2+3)
+        const auto groups = theory::meterGroups (beats, unit);
         int at = 0;
 
         for (auto g : groups)
@@ -174,6 +168,18 @@ namespace
     bool isGroupStart (const Frame& f, int step)
     {
         return std::find (f.groupStarts.begin(), f.groupStarts.end(), step) != f.groupStarts.end();
+    }
+
+    // Where the counted beats start on a bar's grid (finer for rolls): each group's start, so 7/8's
+    // quarter-note pulses fall on 1, 3 and 5 (2+2+3), not every fourth 16th
+    std::vector<int> beatSteps (const Frame& f, const Grid& g)
+    {
+        std::vector<int> at;
+
+        for (auto s : f.groupStarts)
+            at.push_back (s * g.steps / std::max (1, f.steps));
+
+        return at;
     }
 
     //==============================================================================
@@ -257,9 +263,10 @@ namespace
 
     void metalFill (Grid& g, Context& c, bool intoBreakdown)
     {
-        const int s = g.steps, beat = c.frame.perBeat;
-        const int length = c.energy > 0.7f || intoBreakdown ? beat * 2 : (c.busy < 0.35f ? beat : beat * 2);
-        const int from = s - length;
+        // The last beat or two, as the bar's beats fall (7/8's last three eighths, or its last five)
+        const int s = g.steps;
+        const int from = c.frame.lastGroups (c.energy > 0.7f || intoBreakdown ? 2 : (c.busy < 0.35f ? 1 : 2), s);
+        const int length = s - from;
         g.clearAll (from, s);
 
         const int kind = c.pick (4);
@@ -318,7 +325,7 @@ namespace
         }
         else
         {
-            for (int t = 0; t < g.steps; t += c.frame.perBeat)
+            for (int t : beatSteps (c.frame, g))
                 g.hit ("china", t, t == 0 ? '9' : '7');
 
             c.note = "half-time, the kick locked to a " + shape + " chug, the china riding the quarters";
@@ -404,7 +411,7 @@ namespace
         {
             // A build: the floor tom in 8ths over the kick, a crash at the top of each bar
             for (int t = 0; t < g.steps; t += 2)
-                g.hit ("tom_floor", t, t % beat == 0 ? '8' : '6');
+                g.hit ("tom_floor", t, c.frame.onBeat (t, g.steps) ? '8' : '6');
 
             for (auto s : f.groupStarts)
                 g.hit ("kick", s, '8');
@@ -434,7 +441,7 @@ namespace
             g.clear ("kick", f.halfBackbeat, f.halfBackbeat + 1);
             g.hit ("snare", f.halfBackbeat, '9');
 
-            for (int t = 0; t < g.steps; t += beat)
+            for (int t : beatSteps (c.frame, g))
                 g.hit ("china", t, '6');
 
             c.note = "a " + juce::String (length) + "-step kick cycle over the 4/4, snare holding half-time, so the riff keeps crossing the bar line";
@@ -446,7 +453,7 @@ namespace
         {
             if (c.req.gallops || c.chance (0.4f))
             {
-                for (int t = 0; t < g.steps; t += beat)
+                for (int t : beatSteps (c.frame, g))
                 {
                     g.hit ("kick", t, '9');
                     g.hit ("kick", t + beat / 2, '7');
@@ -457,20 +464,20 @@ namespace
                     g.hit ("snare", s, '9');
 
                 for (int t = 0; t < g.steps; t += 2)
-                    g.hit (c.kind == "chorus" ? "crash" : "hat_closed", t, t % beat == 0 ? '8' : '6');
+                    g.hit (c.kind == "chorus" ? "crash" : "hat_closed", t, c.frame.onBeat (t, g.steps) ? '8' : '6');
 
                 c.note = "gallops on the kick (an 8th and two 16ths), snare on the backbeat";
             }
             else
             {
-                for (int t = 0; t < g.steps; t += beat)
+                for (int t : beatSteps (c.frame, g))
                 {
                     g.hit ("kick", t, '9');
                     g.hit ("snare", t + beat / 2, '8');
                 }
 
                 for (int t = 0; t < g.steps; t += 2)
-                    g.hit (c.kind == "chorus" ? "crash" : "ride", t, t % beat == 0 ? '8' : '6');
+                    g.hit (c.kind == "chorus" ? "crash" : "ride", t, c.frame.onBeat (t, g.steps) ? '8' : '6');
 
                 c.note = "the skank beat: kick on the beats, snare on every offbeat 8th";
             }
@@ -486,9 +493,9 @@ namespace
             const bool sixteenths = c.energy + c.req.busyKick * 0.5f > 0.55f || c.chance (0.4f);
 
             for (int t = 0; t < g.steps; t += sixteenths ? 1 : 2)
-                g.hit ("kick", t, t % beat == 0 ? '9' : '7');
+                g.hit ("kick", t, c.frame.onBeat (t, g.steps) ? '9' : '7');
 
-            for (int t = 0; t < g.steps; t += beat)
+            for (int t : beatSteps (c.frame, g))
                 g.hit (t == 0 || c.chance (0.75f) ? "crash" : "china", t, '8');
 
             const auto where = half ? std::vector<int> { f.halfBackbeat } : f.backbeats;
@@ -518,7 +525,7 @@ namespace
                 g.hit ("snare", s, '9');
             }
 
-            for (int t = 0; t < g.steps; t += beat)
+            for (int t : beatSteps (c.frame, g))
                 g.hit ("ride_bell", t, '7');
 
             c.note = "the ride bell on the quarters, the kick following a " + shape + " riff";
@@ -534,7 +541,7 @@ namespace
             const bool sixteenths = c.busy + c.req.busyKick > 0.45f;
 
             for (int t = 0; t < g.steps; t += sixteenths ? 1 : 2)
-                g.hit ("kick", t, t % beat == 0 ? '9' : '7');
+                g.hit ("kick", t, c.frame.onBeat (t, g.steps) ? '9' : '7');
 
             for (auto s : snares)
             {
@@ -545,14 +552,14 @@ namespace
             const bool ride = c.chance (0.4f);
 
             for (int t = 0; t < g.steps; t += 2)
-                g.hit (ride ? "ride" : "hat_closed", t, t % beat == 0 ? '8' : '6');
+                g.hit (ride ? "ride" : "hat_closed", t, c.frame.onBeat (t, g.steps) ? '8' : '6');
 
             c.note = juce::String ("the double kick driving in ") + (sixteenths ? "16ths" : "8ths") + " under the snare on 2 and 4, "
                      + (ride ? "ride" : "hats") + " in 8ths";
         }
         else if (choice == 1)
         {
-            for (int t = 0; t < g.steps; t += beat)
+            for (int t : beatSteps (c.frame, g))
             {
                 g.hit ("kick", t, '9');
                 g.hit ("snare", t + beat / 2, '8');
@@ -574,7 +581,7 @@ namespace
             g.hit ("snare", f.halfBackbeat, '9');
 
             for (int t = 0; t < g.steps; t += 2)
-                g.hit ("hat_closed", t, t % beat == 0 ? '8' : '5');
+                g.hit ("hat_closed", t, c.frame.onBeat (t, g.steps) ? '8' : '5');
 
             c.note = "half-time, the kick syncopated to a " + shape + " riff, hats in 8ths";
         }
@@ -617,7 +624,6 @@ namespace
         const auto& f = c.frame;
         const auto st = c.id();
         Grid g (f.steps);
-        const int beat = f.perBeat;
         const int snare = f.fourFour() ? 8 : f.halfBackbeat;
 
         if (st == "boombap" || st == "hiphop")
@@ -636,7 +642,7 @@ namespace
                 g.hit ("snare", s, '8');
 
             for (int t = 0; t < g.steps; t += 2)
-                g.hit ("hat_closed", t, t % beat == 0 ? '6' : '4');
+                g.hit ("hat_closed", t, c.frame.onBeat (t, g.steps) ? '6' : '4');
 
             if (c.busy + c.req.busyHats * 0.5f > 0.5f)
                 for (int t = 1; t < g.steps; t += 2)
@@ -732,9 +738,10 @@ namespace
 
     void rockFill (Grid& g, Context& c)
     {
-        const int s = g.steps, beat = c.frame.perBeat;
-        const int length = c.energy > 0.6f || c.busy > 0.6f ? beat * 2 : beat;
-        const int from = s - length;
+        // The last beat or two, as the bar's beats fall (7/8's last three eighths, or its last five)
+        const int s = g.steps;
+        const int from = c.frame.lastGroups (c.energy > 0.6f || c.busy > 0.6f ? 2 : 1, s);
+        const int length = s - from;
         g.clearAll (from, s);
         const bool punky = c.id() == "poppunk" || c.id() == "punk";
 
@@ -742,7 +749,7 @@ namespace
         {
             // The snare in 16ths, flammed on the beats, getting louder
             for (int t = from, i = 0; t < s; ++t, ++i)
-                g.hit ("snare", t, t % beat == 0 ? 'f' : vel (5 + (i * 4) / length));
+                g.hit ("snare", t, c.frame.onBeat (t, g.steps) ? 'f' : vel (5 + (i * 4) / length));
 
             c.note << ", snare rolls into each part";
             return;
@@ -753,7 +760,7 @@ namespace
         for (int t = from, i = 0; t < s; ++t, ++i)
             g.hit (around[juce::jlimit (0, 3, (i * 4) / length)], t, vel (6 + (i % 2 == 0 ? 2 : 0)));
 
-        g.hit ("kick", s - beat, '8');
+        g.hit ("kick", c.frame.lastGroups (1, s), '8');
         c.note << ", fills round the toms into each part";
     }
 
@@ -789,14 +796,14 @@ namespace
         if (st == "poppunk" && (c.kind == "verse" || loud) && ! c.halfTime && (loud || c.chance (0.5f)))
         {
             // The skate beat: kick on every beat, snare on every offbeat 8th, a crash or ride with it
-            for (int t = 0; t < g.steps; t += beat)
+            for (int t : beatSteps (c.frame, g))
             {
                 g.hit ("kick", t, '9');
                 g.hit ("snare", t + beat / 2, '8');
             }
 
             for (int t = 0; t < g.steps; t += 2)
-                g.hit (loud ? "crash" : "ride", t, t % beat == 0 ? '8' : '6');
+                g.hit (loud ? "crash" : "ride", t, c.frame.onBeat (t, g.steps) ? '8' : '6');
 
             c.note = "the skate beat: kick on every beat, snare on every offbeat, " + juce::String (loud ? "crash" : "ride") + " in 8ths";
             return g;
@@ -806,7 +813,7 @@ namespace
         {
             // A tom groove: the floor tom in 8ths with the snare on the backbeat
             for (int t = 0; t < g.steps; t += 2)
-                g.hit ("tom_floor", t, t % beat == 0 ? '8' : '6');
+                g.hit ("tom_floor", t, c.frame.onBeat (t, g.steps) ? '8' : '6');
 
             for (auto s : snares)
                 g.hit ("snare", s, '9');
@@ -840,7 +847,7 @@ namespace
         const bool sixteenths = c.busy + c.req.busyHats * 0.6f > 0.75f && top == "hat_closed";
 
         for (int t = 0; t < g.steps; t += sixteenths ? 1 : 2)
-            g.hit (top, t, t % beat == 0 ? '8' : (t % 2 == 0 ? '6' : '4'));
+            g.hit (top, t, c.frame.onBeat (t, g.steps) ? '8' : (t % 2 == 0 ? '6' : '4'));
 
         if (c.req.ghostNotes)
             for (int t = 3; t < g.steps; t += 4)
@@ -924,7 +931,6 @@ namespace
             return jazzBar (c);
 
         Grid g (f.steps);
-        const int beat = f.perBeat;
         const bool soul = st == "neosoul";
 
         // Lofi and neo-soul: a lazy kick round the beat, the snare (or a rim click) late on 2 and
@@ -946,7 +952,7 @@ namespace
 
         for (int t = 0; t < g.steps; t += 2)
             if (! c.chance (0.08f))
-                g.hit ("hat_closed", t, vel (t % beat == 0 ? 5 : 3 + c.pick (2)));
+                g.hit ("hat_closed", t, vel (c.frame.onBeat (t, g.steps) ? 5 : 3 + c.pick (2)));
 
         if (soul || c.busy + c.req.busyHats * 0.5f > 0.55f)
             for (int t = 1; t < g.steps; t += 2)
@@ -980,8 +986,8 @@ namespace
     void jazzFill (Grid& g, Context& c)
     {
         // Triplets on the snare and toms through the last beat (or two)
-        const int beatSteps = 3;
-        const int length = c.busy > 0.5f ? beatSteps * 2 : beatSteps;
+        const int beatLength = 3;
+        const int length = c.busy > 0.5f ? beatLength * 2 : beatLength;
         const int from = g.steps - length;
         g.clearAll (from, g.steps);
         static const char* const around[] { "snare", "snare", "tom_high", "tom_mid", "tom_floor", "snare" };
@@ -1011,7 +1017,6 @@ namespace
     {
         const auto& f = c.frame;
         Grid g (f.steps);
-        const int beat = f.perBeat;
         const auto backbeats = snareSteps (c);
         const bool disco = funkDisco (c);
         const bool linear = ! disco && c.kind != "intro" && c.busy + c.req.busyHats * 0.3f > 0.65f && c.chance (0.6f);
@@ -1085,18 +1090,18 @@ namespace
         if (disco)
         {
             for (int s = 0; s < g.steps; s += 2)
-                g.hit (s % beat == 0 ? "hat_pedal" : "hat_open", s, s % beat == 0 ? '5' : '7');
+                g.hit (c.frame.onBeat (s, g.steps) ? "hat_pedal" : "hat_open", s, c.frame.onBeat (s, g.steps) ? '5' : '7');
         }
         else if (linear)
         {
             for (int s = 0; s < g.steps; ++s)
                 if (! g.on ("kick", s) && ! g.on ("snare", s))
-                    g.hit ("hat_closed", s, vel (s % beat == 0 ? 6 : s % 2 == 0 ? 5 : 3));
+                    g.hit ("hat_closed", s, vel (c.frame.onBeat (s, g.steps) ? 6 : s % 2 == 0 ? 5 : 3));
         }
         else
         {
             for (int s = 0; s < g.steps; s += sixteenths && ! bridge ? 1 : 2)
-                g.hit ("hat_closed", s, vel (s % beat == 0 ? 6 : s % 2 == 0 ? 5 : 3));
+                g.hit ("hat_closed", s, vel (c.frame.onBeat (s, g.steps) ? 6 : s % 2 == 0 ? 5 : 3));
 
             // The bark: an open hat on an offbeat, choked by the next hat
             if (c.kind != "intro" && c.chance (0.75f))
@@ -1118,9 +1123,10 @@ namespace
 
     void funkFill (Grid& g, Context& c)
     {
-        // 16ths round the kit, the snare accents leading into the toms, a flam to start
-        const int length = c.busy > 0.5f || c.energy > 0.6f ? c.frame.perBeat * 2 : c.frame.perBeat;
-        const int from = g.steps - length;
+        // 16ths round the kit, the snare accents leading into the toms, a flam to start: the last beat or two
+        // as the bar's beats fall
+        const int from = c.frame.lastGroups (c.busy > 0.5f || c.energy > 0.6f ? 2 : 1, g.steps);
+        const int length = g.steps - from;
         g.clearAll (from, g.steps);
         static const char* const around[] { "snare", "snare", "snare", "tom_high", "tom_high", "tom_mid", "tom_floor", "tom_floor" };
         static const char hits[] { 'f', 'g', '6', '6', '5', '6', '7', '8' };
@@ -1289,7 +1295,7 @@ namespace
             }
 
             for (int s = 0; s < g.steps; s += half)
-                g.hit (drop ? "ride" : "hat_closed", s, s % beat == 0 ? '5' : '4');
+                g.hit (drop ? "ride" : "hat_closed", s, c.frame.onBeat (s, g.steps) ? '5' : '4');
 
             c.note = breakdown ? "the hats alone under the breakdown" : "the two-step: the kick on 1 and the and of 3, the snare on 2 and 4";
             return g;
@@ -1346,7 +1352,7 @@ namespace
                     g.hit ("snare", s, '9');
 
             for (int s = 0; s < g.steps; s += half)
-                g.hit ("hat_closed", s, s % beat == 0 ? '5' : '3');
+                g.hit ("hat_closed", s, c.frame.onBeat (s, g.steps) ? '5' : '3');
 
             if (drop)
                 offbeats ("hat_open", '4');
@@ -1401,11 +1407,11 @@ namespace
     void electronicFill (Grid& g, Context& c, const juce::String& nextKind)
     {
         const int s = g.steps;
-        const int beat = c.frame.perBeat;
+        const int from = c.frame.lastGroups (1, s);          // the bar's last beat, as its beats fall
 
         if (nextKind == "drop" || (c.id() == "edm" && nextKind == "chorus"))
         {
-            g.clearAll (s - beat, s);
+            g.clearAll (from, s);
             return;
         }
 
@@ -1415,8 +1421,8 @@ namespace
             return;
         }
 
-        for (int t = s - beat; t < s; ++t)
-            g.hit ("snare", t, vel (5 + 3 * (t - (s - beat)) / std::max (1, beat - 1)));
+        for (int t = from; t < s; ++t)
+            g.hit ("snare", t, vel (5 + 3 * (t - from) / std::max (1, s - from - 1)));
     }
 
     //==============================================================================
@@ -1455,7 +1461,7 @@ namespace
                         g.hit ("clap", s, '7');
 
             for (int s = 0; s < g.steps; s += half)
-                g.hit ("hat_closed", s, s % beat == 0 ? '4' : '3');
+                g.hit ("hat_closed", s, c.frame.onBeat (s, g.steps) ? '4' : '3');
 
             c.note = "the dembow: the kick every beat, the snare on the a of 1, the and of 2, the a of 3, the and of 4";
             return g;
@@ -1482,7 +1488,7 @@ namespace
 
             // The shaker: sixteenths, leaning off the beat
             for (int s = 0; s < g.steps; ++s)
-                g.hit ("hat_closed", s, s % beat == 0 ? '3' : s % half == 0 ? '5' : '2');
+                g.hit ("hat_closed", s, c.frame.onBeat (s, g.steps) ? '3' : s % half == 0 ? '5' : '2');
 
             c.note = "afrobeats: the kick on 1, the a of 2 and the and of 3, the clap on 2 and 4, a shaker leaning off the beat";
             return g;
@@ -1490,7 +1496,7 @@ namespace
 
         // Reggae: the hats in (swung) eighths, the one drop on 3; the chorus rockers
         for (int s = 0; s < g.steps; s += half)
-            g.hit ("hat_closed", s, s % beat == 0 ? '4' : '3');
+            g.hit ("hat_closed", s, c.frame.onBeat (s, g.steps) ? '4' : '3');
 
         if (! intro)
         {
@@ -1531,7 +1537,7 @@ namespace
         const bool chorus = c.kind == "chorus" || c.kind == "hook";
 
         for (int s = 0; s < g.steps; s += half)
-            g.hit (chorus ? "ride" : "hat_closed", s, s % f.perBeat == 0 ? '4' : '2');
+            g.hit (chorus ? "ride" : "hat_closed", s, c.frame.onBeat (s, g.steps) ? '4' : '2');
 
         if (f.fourFour())
         {
@@ -1643,7 +1649,7 @@ namespace
                 g.hit ("snare", s, '8');
 
             for (int s = 0; s < g.steps; s += half)
-                g.hit ("hat_closed", s, s % f.perBeat == 0 ? '5' : '3');
+                g.hit ("hat_closed", s, c.frame.onBeat (s, g.steps) ? '5' : '3');
 
             c.note = "two-beat: the kick on 1 and 3, the snare on 2 and 4";
         }
@@ -1674,7 +1680,7 @@ namespace
         // (A notch under what a studio kit needs: the Nightshift 808's side-stick and hats are bright, and
         // a Mac without the studio kits kept its quiet verse only 4 dB under the chorus)
         for (int s = 0; s < g.steps; s += eighth)
-            g.hit (cymbal, s, s % f.perBeat == 0 ? '3' : '1');
+            g.hit (cymbal, s, c.frame.onBeat (s, g.steps) ? '3' : '1');
 
         if (c.kind == "intro")
         {
@@ -1864,7 +1870,7 @@ namespace
 
             // Disco's and house's kick, on every beat
             if (c.req.fourOnFloor && ! c.soft)
-                for (int s = 0; s < g.steps; s += c.frame.perBeat)
+                for (int s : beatSteps (c.frame, g))
                     if (! g.on ("kick", s))
                         g.hit ("kick", s, '8');
 
@@ -2034,40 +2040,101 @@ Result write (const juce::String& prompt, const Song& song, const agents::Reques
     style = &played;
 
     juce::Random rng (seed);
-    const int beats = req.meterBeats > 0 ? req.meterBeats : song.meterBeats;
+    const int beats = req.meterBeats > 0 ? req.meterBeats : song.meterBeats;      // the whole song's
     const int unit = req.meterUnit > 0 ? req.meterUnit : song.meterUnit;
-    const auto frame = frameFor (beats, unit);
 
     // The style's usual song, with anything asked for added where it goes (an intro first, an
     // outro last, the rest before the outro)
+    auto addTo = [] (juce::StringArray& form, const juce::String& k)
+    {
+        if (! form.contains (k))
+            form.insert (k == "intro" ? 0 : form.size() - (! form.isEmpty() && form[form.size() - 1] == "outro" && k != "outro" ? 1 : 0), k);
+    };
+
     if (req.addToForm)
     {
         auto full = formFor (style->id);
 
         for (auto& k : req.sections)
-            if (! full.contains (k))
-                full.insert (k == "intro" ? 0 : full.size() - (full[full.size() - 1] == "outro" && k != "outro" ? 1 : 0), k);
+            addTo (full, k);
 
         req.sections = full;
         req.addToForm = false;
     }
 
     auto form = req.sections.isEmpty() ? formFor (style->id) : req.sections;
+
+    // A section asked for in a time signature of its own is in the song ("funk with a breakdown in 7/8")
+    for (auto& [kind, meter] : req.meterIn)
+        addTo (form, kind);
+
     const int defaultBars = req.bars > 0 ? req.bars : 8;
 
-    // A half-time request, or a style that lives there (trap, drill, deathcore's breakdowns)
-    Context c { req, *style, frame, rng };
-    c.energy = req.energy;
-    c.busy = req.busy;
-    c.tempo = req.tempo > 0 ? req.tempo : (songIsBlank ? style->usual : song.bpm);
+    // Each section's time signature and bars: its own asked for ("a bridge in 7/8"), else the whole song's.
+    // In a song whose time signature already changes (and none asked for), laid out from bar 1 as Put in
+    // Arrange lays them, each section the song's time signature where it starts, ending where that changes
+    std::map<juce::String, std::pair<int, int>> meterOfKind;
+    std::map<juce::String, int> barsOfKind;
+    {
+        const bool followSong = req.meterBeats <= 0 && req.meterIn.empty() && ! song.meterChanges.empty();
+        int at = 0;
+
+        for (auto& kind : form)
+        {
+            if (meterOfKind.count (kind) > 0)
+                continue;
+
+            auto meter = agents::meterFor (req, kind, { beats, unit });
+            int bars = kind == "intro" || kind == "outro" ? std::min (4, defaultBars) : defaultBars;
+
+            if (followSong)
+            {
+                const auto there = song.meterAt (at);
+                meter = { there.beats, there.unit };
+
+                for (auto& change : song.meterChanges)
+                    if (change.tick > at)
+                    {
+                        if (at + bars * there.barTicks() > change.tick)
+                            bars = std::max (1, (change.tick - at + there.barTicks() - 1) / there.barTicks());
+
+                        break;
+                    }
+            }
+
+            meterOfKind[kind] = meter;
+            barsOfKind[kind] = bars;
+            at += bars * meter.first * ticksPerBeat * 4 / meter.second;
+        }
+    }
+
+    // Sections in more than one time signature: each says its own
+    const bool ownMeters = std::any_of (meterOfKind.begin(), meterOfKind.end(), [&] (auto& m) { return m.second != std::pair<int, int> { beats, unit }; });
+
+    // A frame for each time signature (the bar as the drummer counts it), each section's generators in its own
+    std::map<std::pair<int, int>, Frame> frames;
+
+    frames.emplace (std::pair<int, int> { beats, unit }, frameFor (beats, unit));
+
+    for (auto& [kind, meter] : meterOfKind)
+        if (frames.count (meter) == 0)
+            frames.emplace (meter, frameFor (meter.first, meter.second));
 
     juce::StringArray notes;
     std::optional<Grid> previousMain;
     auto& groove = result.groove;
+    int phase = 0;              // a polymetric cycle (djent's) carries on from section to section
 
     for (int i = 0; i < form.size(); ++i)
     {
         const auto kind = form[i];
+        const auto meter = meterOfKind.count (kind) > 0 ? meterOfKind[kind] : std::pair<int, int> { beats, unit };
+
+        // A half-time request, or a style that lives there (trap, drill, deathcore's breakdowns)
+        Context c { req, *style, frames.at (meter), rng };
+        c.busy = req.busy;
+        c.tempo = req.tempo > 0 ? req.tempo : (songIsBlank ? style->usual : song.bpm);
+        c.phase = phase;
         c.kind = kind;
         c.soft = req.softIn.contains (kind);
         c.heavy = req.heavyIn.contains (kind);
@@ -2081,13 +2148,18 @@ Result write (const juce::String& prompt, const Song& song, const agents::Reques
         else if (c.heavy)
             c.energy = std::max (c.energy, 0.9f);
 
-        const int bars = kind == "intro" || kind == "outro" ? std::min (4, defaultBars) : defaultBars;
+        const int bars = barsOfKind.count (kind) > 0 ? barsOfKind[kind] : (kind == "intro" || kind == "outro" ? std::min (4, defaultBars) : defaultBars);
         const auto nextKind = i + 1 < form.size() ? form[i + 1] : juce::String();
-        Grid kept (frame.steps);
+        Grid kept (c.frame.steps);
         groove.sections.push_back (writeSection (c, sectionName (kind, style->id), bars, i == form.size() - 1, nextKind,
                                                  previousMain.has_value() ? &*previousMain : nullptr, kept, notes,
                                                  req.heavyIn.contains (nextKind)));
+
+        if (ownMeters)
+            std::tie (groove.sections.back().meterBeats, groove.sections.back().meterUnit) = meter;
+
         previousMain = kept;
+        phase = c.phase;
         groove.arrangement.add (groove.sections.back().name);
     }
 
@@ -2189,10 +2261,17 @@ Result write (const juce::String& prompt, const Song& song, const agents::Reques
     const double tempo = groove.tempo > 0 ? groove.tempo : song.bpm;
     groove.title = juce::String (style->name) + ", " + juce::String (juce::roundToInt (tempo));
 
-    // What it did, the way a drummer would say it
+    // What it did, the way a drummer would say it (and the sections in a time signature of their own: "in 4/4, the
+    // Bridge in 7/8")
+    juce::String others;
+
+    for (auto& s : groove.sections)
+        if (s.meterBeats > 0 && (s.meterBeats != beats || s.meterUnit != unit))
+            others << ", the " << s.name << " in " << meterText (s.meterBeats, s.meterUnit);
+
     juce::String reply = (req.artist.isNotEmpty() ? "In the style of " + req.artist + ": " : juce::String())
                          + juce::String (style->name) + " at " + juce::String (juce::roundToInt (tempo)) + " bpm in "
-                         + juce::String (beats) + "/" + juce::String (unit) + ". ";
+                         + juce::String (beats) + "/" + juce::String (unit) + others + ". ";
 
     if (const auto* g = agents::findGenre (req.genre); g != nullptr && ! g->own)
         reply << g->name << " isn't something the band plays yet, so this is " << juce::String (style->name).toLowerCase() << ". ";
@@ -2253,6 +2332,10 @@ juce::var toJson (const Groove& g)
     {
         auto* section = new juce::DynamicObject();
         section->setProperty ("name", s.name);
+
+        if (s.meterBeats > 0 && s.meterUnit > 0)
+            section->setProperty ("meter", meterText (s.meterBeats, s.meterUnit));
+
         juce::Array<juce::var> bars;
 
         for (auto& b : s.bars)

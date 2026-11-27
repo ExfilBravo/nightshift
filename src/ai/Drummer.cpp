@@ -17,6 +17,45 @@ namespace
     }
 }
 
+std::pair<int, int> meterOf (const Groove& g, const Section& s, std::pair<int, int> otherwise)
+{
+    if (s.meterBeats > 0 && s.meterUnit > 0)
+        return { s.meterBeats, s.meterUnit };
+
+    if (g.meterBeats > 0 && g.meterUnit > 0)
+        return { g.meterBeats, g.meterUnit };
+
+    return otherwise;
+}
+
+juce::String meterText (int beats, int unit)
+{
+    return beats > 0 && unit > 0 ? juce::String (beats) + "/" + juce::String (unit) : juce::String();
+}
+
+std::pair<int, int> meterFromText (const juce::String& text)
+{
+    for (auto [beats, unit] : Song::meters())
+        if (text.trim() == meterText (beats, unit))
+            return { beats, unit };
+
+    return { 0, 0 };
+}
+
+double swung (double pos, double barStart, float swing, bool sixteenths)
+{
+    const double beats = (pos - barStart) / ticksPerBeat;
+    const double frac = beats - std::floor (beats);
+
+    if (! sixteenths && std::abs (frac - 0.5) < 1.0e-6)
+        return pos + swing * ticksPerBeat / 6.0;
+
+    if (sixteenths && (std::abs (frac - 0.25) < 1.0e-6 || std::abs (frac - 0.75) < 1.0e-6))
+        return pos + swing * ticksPerBeat / 12.0;
+
+    return pos;
+}
+
 juce::StringArray kitNamesFor (const Channel& channel)
 {
     juce::StringArray names;
@@ -76,6 +115,9 @@ std::optional<Groove> Groove::fromJson (const juce::var& v)
 
             for (int n = 2; names.count (section.name) > 0; ++n)
                 section.name = base + " " + juce::String (n);
+
+            // Its own time signature, where it has one
+            std::tie (section.meterBeats, section.meterUnit) = meterFromText (s.getProperty ("meter", {}).toString());
 
             if (auto* bars = s.getProperty ("bars", {}).getArray())
             {
@@ -162,18 +204,21 @@ void render (Song& song, int channelId, const Groove& g, std::function<int (cons
         return;
 
     auto& d = c->drummer;
-    const int barTicks = song.ticksPerBar();
     const double ticksPerMs = song.bpm / 60.0 * ticksPerBeat / 1000.0;
     const float swing = d.swing >= 0.0f ? d.swing : g.swing;
     std::set<int> used;
 
-    // The feel learned from real drummers, where it has one: each step's own timing and accent (its steps are a
-    // 4/4 bar's, so in quarter-note meters only, repeating every four beats)
-    const auto* learned = song.meterUnit == 4 ? learnedFeel (g.learned) : nullptr;
-
     for (size_t s = 0; s < g.sections.size(); ++s)
     {
         const auto& section = g.sections[s];
+
+        // Its bars as long as its time signature's (a 7/8 bridge's 336 ticks)
+        const auto [beats, unit] = meterOf (g, section, { song.meterBeats, song.meterUnit });
+        const int barTicks = beats * ticksPerBeat * 4 / unit;
+
+        // The feel learned from real drummers, where it has one: each step's own timing and accent (its steps are
+        // a 4/4 bar's, so in quarter-note meters only, repeating every four beats)
+        const auto* learned = unit == 4 ? learnedFeel (g.learned) : nullptr;
 
         // The section's pattern: the one it had, else a new one
         Pattern* pattern = nullptr;
@@ -190,6 +235,12 @@ void render (Song& song, int channelId, const Groove& g, std::function<int (cons
         }
 
         used.insert (pattern->id);
+
+        // In its section's time signature: its own where that isn't the song's at the start
+        const bool startsMeter = beats == song.meterBeats && unit == song.meterUnit;
+        pattern->meterBeats = startsMeter ? 0 : beats;
+        pattern->meterUnit = startsMeter ? 0 : unit;
+
         auto& notes = pattern->notesFor (channelId);
         notes.clear();
 
@@ -232,17 +283,10 @@ void render (Song& song, int channelId, const Groove& g, std::function<int (cons
                     if (hit == '.' || hit == '-' || hit == '0')
                         continue;
 
-                    double pos = (double) b * barTicks + i * stepTicks;
                     const auto& step = steps[(size_t) i];
 
-                    // Swing: the off-beat 8ths (or 16ths) late, up to a triplet
-                    const double beats = pos / ticksPerBeat;
-                    const double frac = beats - std::floor (beats);
-
-                    if (! g.swingSixteenths && std::abs (frac - 0.5) < 1.0e-6)
-                        pos += swing * ticksPerBeat / 6.0;
-                    else if (g.swingSixteenths && (std::abs (frac - 0.25) < 1.0e-6 || std::abs (frac - 0.75) < 1.0e-6))
-                        pos += swing * ticksPerBeat / 12.0;
+                    // Swing: the off-beat 8ths (or 16ths) of the bar late, up to a triplet
+                    double pos = swung ((double) b * barTicks + i * stepTicks, (double) b * barTicks, swing, g.swingSixteenths);
 
                     // Feel, the same every time it's played: the drum's push, the step's learned timing, then a little wander
                     juce::Random random ((juce::int64) (s * 1000003 + b * 10007 + (size_t) i * 101) ^ lane.voice.hashCode64());
@@ -308,12 +352,18 @@ void placeInArrange (Song& song, int channelId, const Groove& g)
 
     const int row = song.trackForChannel (c->id, 0, total);
     int start = 0;
+    const auto meters = song.meterChanges;
+    const int startBeats = song.meterBeats, startUnit = song.meterUnit;
 
     for (auto [patternId, length] : clips)
     {
         song.playlist.push_back ({ patternId, row, start });
+        song.fitMeterToClip (patternId, start);         // a section in a time signature of its own: the bars there in it
         start += length;
     }
+
+    if (song.meterChanges != meters || song.meterBeats != startBeats || song.meterUnit != startUnit)
+        song.notify (Song::Change::transport);
 
     song.notify (Song::Change::playlist);
 }

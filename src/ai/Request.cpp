@@ -3,6 +3,7 @@
 
 #include "Request.h"
 #include "Genres.h"
+#include "model/Song.h"
 
 namespace nightshift::agents
 {
@@ -137,6 +138,18 @@ juce::var Request::toVar() const
         chords->setProperty (kind.isEmpty() ? juce::String ("all") : kind, listOf (names));
 
     o->setProperty ("chords", juce::var (chords));
+
+    // Sections' own time signatures: { "bridge": "7/8" }
+    if (! meterIn.empty())
+    {
+        auto* meters = new juce::DynamicObject();
+
+        for (auto& [kind, m] : meterIn)
+            meters->setProperty (kind, juce::String (m.first) + "/" + juce::String (m.second));
+
+        o->setProperty ("meterIn", juce::var (meters));
+    }
+
     return juce::var (o);
 }
 
@@ -205,7 +218,30 @@ Request Request::fromVar (const juce::var& v)
                     names.add (name.toString());
             }
 
+    if (auto* meters = v.getProperty ("meterIn", {}).getDynamicObject())
+        for (auto& p : meters->getProperties())
+        {
+            const auto m = p.value.toString();
+            const int beats = m.upToFirstOccurrenceOf ("/", false, false).getIntValue();
+            const int unit = m.fromFirstOccurrenceOf ("/", false, false).getIntValue();
+
+            for (auto [b, u] : Song::meters())
+                if (b == beats && u == unit)
+                    r.meterIn[p.name.toString()] = { b, u };
+        }
+
     return r;
+}
+
+std::pair<int, int> meterFor (const Request& r, const juce::String& kind, std::pair<int, int> otherwise)
+{
+    if (auto it = r.meterIn.find (kind); it != r.meterIn.end())
+        return it->second;
+
+    if (r.meterBeats > 0 && r.meterUnit > 0)
+        return { r.meterBeats, r.meterUnit };
+
+    return otherwise;
 }
 
 //==============================================================================
@@ -316,6 +352,157 @@ namespace
             }
 
         r.understood.addArray (said);
+        juce::String kept (" ");
+
+        for (int i = 0; i < tokens.size(); ++i)
+            if (! gone[(size_t) i])
+                kept << tokens[i] << " ";
+
+        return kept;
+    }
+
+    // Sections in their own time signature: "verses in 4/4 and a bridge in 7/8", "the bridge goes to 7/8",
+    // "a 7/8 bridge", "in 7/8 for the bridge". Each such phrase goes into the request and out of the text
+    // (its time signature isn't the whole song's, nor does naming a section this way make a song of that
+    // section alone); a section word a feel word goes with ("soft verses in 4/4") stays, for that reader
+    juce::String takeSectionMeters (juce::String text, Request& r)
+    {
+        text = text.replace (" pre - choruses ", " prechoruses ").replace (" pre choruses ", " prechoruses ")
+                   .replace (" pre - chorus ", " prechorus ").replace (" pre chorus ", " prechorus ")
+                   .replace (" middle eight ", " bridge ");
+
+        static const std::pair<const char*, const char*> kinds[] {
+            { "verse", "verse" }, { "verses", "verse" }, { "chorus", "chorus" }, { "choruses", "chorus" }, { "refrain", "chorus" },
+            { "intro", "intro" }, { "intros", "intro" }, { "outro", "outro" }, { "outros", "outro" }, { "bridge", "bridge" },
+            { "bridges", "bridge" }, { "breakdown", "breakdown" }, { "breakdowns", "breakdown" }, { "prechorus", "prechorus" },
+            { "prechoruses", "prechorus" }, { "hook", "hook" }, { "hooks", "hook" }, { "drop", "drop" }, { "drops", "drop" } };
+        static const juce::StringArray fillers { "in", "is", "are", "goes", "go", "going", "to", "into", "switches", "switch", "changes", "change",
+                                                 "moves", "move", "shifts", "shift", "all", "played", "written", "of" };
+        static const juce::StringArray articles { "a", "an", "the", "its", "both" };
+        static const juce::StringArray feels { "soft", "softer", "quiet", "quieter", "gentle", "calm", "sparse", "clean", "ambient", "mellow",
+                                               "light", "stripped", "heavy", "heavier", "huge", "big", "bigger", "loud", "louder", "crushing",
+                                               "massive", "full", "halftime", "half", "time", "-" };
+
+        auto kindOf = [] (const juce::String& t) -> juce::String
+        {
+            for (auto& [w, k] : kinds)
+                if (t == w)
+                    return k;
+
+            return {};
+        };
+
+        auto tokens = juce::StringArray::fromTokens (text, " ", "");
+        tokens.removeEmptyStrings();
+        std::vector<bool> gone ((size_t) tokens.size(), false);
+
+        for (int i = 0; i < tokens.size(); ++i)
+        {
+            if (! tokens[i].containsChar ('/'))
+                continue;
+
+            const int beats = tokens[i].upToFirstOccurrenceOf ("/", false, false).getIntValue();
+            const int unit = tokens[i].fromFirstOccurrenceOf ("/", false, false).getIntValue();
+            const auto& known = Song::meters();
+
+            if (std::find (known.begin(), known.end(), std::pair<int, int> { beats, unit }) == known.end())
+                continue;
+
+            // The sections it's for: before it ("bridge in 7/8", "verses and choruses in 4/4"), else after it
+            // ("a 7/8 bridge", "in 7/8 for the bridge")
+            std::vector<int> at;            // where their words are
+            int first = i, last = i;
+
+            {
+                int j = i - 1;
+
+                for (int skipped = 0; j >= 0 && skipped < 4 && fillers.contains (tokens[j]); --j, ++skipped)
+                    first = j;
+
+                // (article)* kind, then "and" (article)* kind, again and again
+                while (j >= 0 && kindOf (tokens[j]).isNotEmpty())
+                {
+                    at.push_back (j);
+                    int k = j - 1;
+
+                    while (k >= 0 && articles.contains (tokens[k]))
+                        --k;
+
+                    if (k >= 1 && (tokens[k] == "and" || tokens[k] == "&"))
+                    {
+                        int before = k - 1;
+
+                        while (before >= 0 && articles.contains (tokens[before]))
+                            --before;
+
+                        if (before >= 0 && kindOf (tokens[before]).isNotEmpty())
+                        {
+                            j = before;
+                            continue;
+                        }
+                    }
+
+                    break;
+                }
+
+                if (! at.empty())
+                    first = at.back();
+            }
+
+            if (at.empty())
+            {
+                first = i;
+                int j = i + 1;
+
+                for (int skipped = 0; j < tokens.size() && skipped < 3 && (tokens[j] == "for" || tokens[j] == "on" || tokens[j] == "over"
+                                                                            || tokens[j] == "during" || articles.contains (tokens[j])); ++j, ++skipped) {}
+
+                while (j < tokens.size() && kindOf (tokens[j]).isNotEmpty())
+                {
+                    at.push_back (j);
+                    last = j;
+                    int k = j + 1;
+
+                    if (k < tokens.size() && (tokens[k] == "and" || tokens[k] == "&"))
+                    {
+                        ++k;
+
+                        while (k < tokens.size() && articles.contains (tokens[k]))
+                            ++k;
+
+                        if (k < tokens.size() && kindOf (tokens[k]).isNotEmpty())
+                        {
+                            j = k;
+                            continue;
+                        }
+                    }
+
+                    break;
+                }
+            }
+
+            if (at.empty())
+                continue;                       // the whole song's: read with the rest
+
+            juce::StringArray said;
+
+            for (auto k : at)
+            {
+                const auto kind = kindOf (tokens[k]);
+                r.meterIn[kind] = { beats, unit };
+                said.insert (0, kind);
+            }
+
+            r.understood.add (said.joinIntoString (" and ") + " in " + tokens[i]);
+
+            // Out of the text, but a section word a feel word goes with ("soft verses in 4/4") is left for that
+            for (int k = std::min (first, i); k <= std::max (last, i); ++k)
+            {
+                const bool feltSection = kindOf (tokens[k]).isNotEmpty() && k > 0 && feels.contains (tokens[k - 1]);
+                gone[(size_t) k] = ! feltSection;
+            }
+        }
+
         juce::String kept (" ");
 
         for (int i = 0; i < tokens.size(); ++i)
@@ -466,7 +653,7 @@ namespace
 juce::String withoutSectionFeel (const juce::String& words)
 {
     Request ignored;
-    return takeSectionFeel (spaced (words), ignored);
+    return takeSectionFeel (takeSectionMeters (spaced (words), ignored), ignored);
 }
 
 Request Request::parse (const juce::String& words, const Request* previous)
@@ -544,7 +731,7 @@ Request Request::parse (const juce::String& words, const Request* previous)
 
     // The words read from here on: with the genre's feel after them, and how sections are played
     // taken out (a soft verse isn't a softer song all through, or a song of verses alone)
-    const auto text = takeChords (takeSectionFeel (byGenre ? spaced (words + ", " + byName.feel()) : said, r), r);
+    const auto text = takeChords (takeSectionFeel (takeSectionMeters (byGenre ? spaced (words + ", " + byName.feel()) : said, r), r), r);
     const auto tokens = juce::StringArray::fromTokens (text, " ", "");
 
     // Tempo: "150 bpm", "150bpm", "at 150", "tempo 150"

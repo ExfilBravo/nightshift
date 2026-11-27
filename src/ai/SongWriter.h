@@ -22,14 +22,17 @@ namespace nightshift::songwriter
     juce::StringArray formFor (const juce::String& style, const juce::String& words);
 
     /** The words the drummer gets: the request without its own section words, then the sections
-        to write (each once, in the order they first come), and longer sections for a fast style. */
+        to write (each once, in the order they first come), and longer sections for a fast style;
+        how sections are played and their own time signatures said again on their own after. */
     juce::String drummerWords (const juce::String& words, const juce::String& style);
 
     /** The order the drummer's sections are played in: the style's form, a verse and chorus (or
-        whatever the form repeats) added before the outro until it's at least `minimumSeconds`. */
+        whatever the form repeats) added before the outro until it's at least `minimumSeconds`.
+        `secondsPerBar` is a bar of the groove's time signature, else of `barMeter`; a section in a
+        time signature of its own lasts as long as its bars do. */
     juce::StringArray arrange (const drummer::Groove&, const juce::String& style, const juce::String& words,
-                               double secondsPerBar, double minimumSeconds = 125.0);
+                               double secondsPerBar, double minimumSeconds = 125.0, std::pair<int, int> barMeter = { 4, 4 });
 
     /** How long an order lasts. */
-    double lengthOf (const drummer::Groove&, const juce::StringArray& order, double secondsPerBar);
+    double lengthOf (const drummer::Groove&, const juce::StringArray& order, double secondsPerBar, std::pair<int, int> barMeter = { 4, 4 });
 }

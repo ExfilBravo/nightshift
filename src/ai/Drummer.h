@@ -28,6 +28,7 @@ namespace nightshift::drummer
     {
         juce::String name;
         std::vector<Bar> bars;
+        int meterBeats = 0, meterUnit = 0;      // its own time signature ("a bridge in 7/8"), else 0: the groove's
     };
 
     struct Groove
@@ -49,6 +50,18 @@ namespace nightshift::drummer
         static std::optional<Groove> fromJson (const juce::var&);
     };
 
+    /** A section's time signature: its own, else the groove's, else `otherwise` (the song's). */
+    std::pair<int, int> meterOf (const Groove&, const Section&, std::pair<int, int> otherwise);
+
+    /** "7/8" for a time signature, and back ({ 0, 0 } for one Song::meters() hasn't). */
+    juce::String meterText (int beats, int unit);
+    std::pair<int, int> meterFromText (const juce::String&);
+
+    /** Where a note at `pos` ticks in a bar of `barTicks` (from its start) is played with swing: an
+        off-beat 8th (or 16th) of the bar late, up to a triplet. In the bar, so a bar in an odd time
+        signature (7/8's 3.5 beats) starts the next on its one again. */
+    double swung (double pos, double barStart, float swing, bool sixteenths);
+
     /** The kits a channel's drummer can name: every kit for a kit channel, none for General MIDI. */
     juce::StringArray kitNamesFor (const Channel&);
 
@@ -57,10 +70,12 @@ namespace nightshift::drummer
 
     /** Plays a groove into patterns for the channel (one per section, made or reused), with
         the drummer's feel controls. `keyFor` maps a voice to a note (-1: the kit lacks it).
-        Changes the song's time signature or tempo first if the groove asks. */
+        Changes the song's time signature or tempo first if the groove asks. A section in a time
+        signature of its own plays into a pattern in it. */
     void render (Song&, int channelId, const Groove&, std::function<int (const juce::String&)> keyFor);
 
-    /** Lays the groove's sections out in Arrange on a free row, in the arrangement's order. */
+    /** Lays the groove's sections out in Arrange on a free row, in the arrangement's order; where
+        a section is in a time signature of its own, the song's bars there are too. */
     void placeInArrange (Song&, int channelId, const Groove&);
 
     /** The note each drum plays on a channel: its kit's key, or General MIDI's on a drum plugin. */

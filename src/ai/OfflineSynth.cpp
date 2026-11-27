@@ -1594,14 +1594,11 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
     const auto& defaults = defaultsFor (style->id);
     juce::Random rng (seed);
     const auto key = theory::keyFrom (bassLine.key);
-    const int beats = g.meterBeats > 0 ? g.meterBeats : song.meterBeats;
-    const int unit = g.meterUnit > 0 ? g.meterUnit : song.meterUnit;
 
     Ctx c { req, *style, rng, key };
     c.role = role;
     c.sound = playing;
     c.legato = isLegato (playing);
-    c.n16 = juce::jmax (1, beats * 16 / unit);
 
     std::vector<std::vector<Chord>> chords;
 
@@ -1632,6 +1629,10 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
         c.energy = energyOf (c);
         const bool lastSection = si + 1 == g.sections.size();
         const keys::Section* keysSection = nullptr;
+
+        // In the drummer's section's time signature (its own where it has one, else the song's): 16ths a bar
+        const auto [beats, unit] = drummer::meterOf (g, ds, { song.meterBeats, song.meterUnit });
+        c.n16 = juce::jmax (1, beats * 16 / unit);
 
         if (keysPart != nullptr)
             for (auto& ks : keysPart->sections)
@@ -1743,6 +1744,8 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
         c.last = bestLast;
         Section section;
         section.name = ds.name;
+        section.meterBeats = ds.meterBeats;         // in the drummer's section's own time signature, where it has one
+        section.meterUnit = ds.meterUnit;
 
         for (size_t b = 0; b < best.size(); ++b)
         {
