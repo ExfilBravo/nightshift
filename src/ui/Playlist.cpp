@@ -6,6 +6,7 @@
 #include "Theme.h"
 #include "TrackIcons.h"
 #include "Widgets.h"
+#include "audio/Samples.h"
 #include "audio/Kits.h"
 #include "audio/Instruments.h"
 
@@ -3886,6 +3887,31 @@ Playlist::DropTarget Playlist::dropTargetAt (juce::Point<int> p, const juce::Str
 
         return t;
     }
+
+    // A sample from the sidebar's Samples: an audio clip of it starting where it's let go (snapped, as a pattern),
+    // on the audio track under it, on an empty track, or on a new audio track (under the last track, or just under
+    // any other)
+    if (description.startsWith (juce::String (soundDragPrefix) + "sample:"))
+    {
+        if (! juce::File (description.fromFirstOccurrenceOf ("sample:", false, false)).existsAsFile())
+            return t;
+
+        const auto mods = juce::ModifierKeys::getCurrentModifiers();
+        t.tick = p.x >= gridArea.getX() ? snapped (xToTick ((float) p.x), mods, -1) : snapped (scrollTicks, mods, 1);
+        t.kind = DropTarget::Kind::newTrack;
+        t.row = std::min (row + 1, song.numTracks());
+
+        if (row < song.numTracks())
+        {
+            if (auto c = song.findChannel (song.trackChannel (row)); c != nullptr && c->type == InstrumentType::audio)
+                t = { DropTarget::Kind::clip, row, t.tick };
+            else if (c == nullptr && song.isTrackEmpty (row))
+                t = { DropTarget::Kind::assign, row, t.tick };
+        }
+
+        return t;
+    }
+
     const bool isEffect = description.startsWith (juce::String (soundDragPrefix) + "effect:");
     const bool isChannel = description.startsWith (channelDragPrefix);
 
@@ -3949,10 +3975,21 @@ void Playlist::setDrop (DropTarget target, const juce::String& description)
         what = nameOfSound (description);
     }
 
-    // Where a pattern would start: bar 5, or bar 5 beat 3 off the bar
+    // A sample: drawn where it would land, as long as it plays (its length read once, as it comes over)
+    const bool sample = description.startsWith (juce::String (soundDragPrefix) + "sample:");
+    const auto samplePath = sample && target.kind != DropTarget::Kind::none ? description.fromFirstOccurrenceOf ("sample:", false, false) : juce::String();
+    const bool sampleChanged = samplePath != dropSample;
+
+    if (sampleChanged)
+    {
+        dropSample = samplePath;
+        dropSampleSeconds = samplePath.isNotEmpty() ? samples::lengthInSeconds (juce::File (samplePath)) : 0.0;
+    }
+
+    // Where a pattern or a sample would start: bar 5, or bar 5 beat 3 off the bar
     juce::String when;
 
-    if (patternId != 0)
+    if (patternId != 0 || sample)
     {
         when = " at " + describeTick (target.tick).replace (", beat", " beat");
     }
@@ -3963,12 +4000,13 @@ void Playlist::setDrop (DropTarget target, const juce::String& description)
     {
         case DropTarget::Kind::newTrack:
             label = patternId != 0 ? what + " on a new track" + when
-                                   : "New track" + (what.isNotEmpty() ? ": " + what : juce::String());
+                  : sample ? what + " on a new audio track" + when
+                           : "New track" + (what.isNotEmpty() ? ": " + what : juce::String());
             break;
 
         case DropTarget::Kind::clip:     label = what + " on " + trackInfo (target.row).name + when; break;
         case DropTarget::Kind::replace:  label = "Play " + trackInfo (target.row).name + " with " + what + " instead"; break;
-        case DropTarget::Kind::assign:   label = "Put " + what + " on this track"; break;
+        case DropTarget::Kind::assign:   label = "Put " + what + " on this track" + (sample ? when : juce::String()); break;
 
         case DropTarget::Kind::effect:
         {
@@ -3983,7 +4021,8 @@ void Playlist::setDrop (DropTarget target, const juce::String& description)
             break;
     }
 
-    if (target.kind != drop.kind || target.row != drop.row || target.tick != drop.tick || label != dropLabel || patternId != dropPatternId)
+    if (target.kind != drop.kind || target.row != drop.row || target.tick != drop.tick || label != dropLabel || patternId != dropPatternId
+         || sampleChanged)
     {
         drop = target;
         dropLabel = label;
@@ -4045,6 +4084,63 @@ void Playlist::itemDropped (const SourceDetails& details)
         if (const int channelId = song.trackChannel (row); channelId != 0)
             selectChannel (channelId);
 
+        return;
+    }
+
+    // A sample from the sidebar: an audio clip of the whole file where it was let go, on the audio track there or a
+    // new one named after it (not armed: it plays the sample); one undo takes it all away
+    if (d.startsWith (juce::String (soundDragPrefix) + "sample:"))
+    {
+        const juce::File file (d.fromFirstOccurrenceOf ("sample:", false, false));
+        const double seconds = samples::lengthInSeconds (file);
+
+        if (seconds <= 0.0)
+            return;
+
+        song.checkpoint();
+        int row = target.row, channelId = 0;
+
+        if (target.kind == DropTarget::Kind::clip)
+        {
+            channelId = song.trackChannel (row);
+        }
+        else
+        {
+            // A second "Kick 01" is "Kick 01 2"
+            const auto base = file.getFileNameWithoutExtension();
+            auto name = base;
+
+            for (int n = 2; std::any_of (song.channels.begin(), song.channels.end(), [&name] (const Channel& c) { return c.name == name; }); ++n)
+                name = base + " " + juce::String (n);
+
+            auto& c = song.addChannel (name, InstrumentType::audio);
+            c.input = audio.getInputNames()[0];
+            channelId = c.id;
+
+            if (target.kind == DropTarget::Kind::assign && juce::isPositiveAndBelow (row, song.numTracks()))
+            {
+                song.tracks[(size_t) row].channelId = channelId;
+            }
+            else
+            {
+                Track t;
+                t.channelId = channelId;
+                row = song.insertTrack (t, target.row);
+            }
+        }
+
+        AudioClip clip;
+        clip.channelId = channelId;
+        clip.track = row;
+        clip.start = target.tick;
+        clip.length = seconds;
+        clip.takes.push_back ({ file.getFullPathName(), 0.0, 0.0, seconds });
+        clip.comp.push_back ({ 0.0, seconds, 0 });
+        song.audioClips.push_back (clip);
+        song.selectedChannelId = channelId;
+        song.notify (Song::Change::channels);
+        song.notify (Song::Change::playlist);
+        selectChannel (channelId);
         return;
     }
 
@@ -4141,10 +4237,10 @@ void Playlist::paintDrop (juce::Graphics& g)
 
     float labelY;
 
-    if (dropPatternId != 0)
+    if (dropPatternId != 0 || dropSample.isNotEmpty())
     {
-        // A pattern: the track it lands on lit faintly (a new one: its line), and the clip
-        // itself, see-through, where it would go
+        // A pattern or a sample: the track it lands on lit faintly (a new one: its line), and the
+        // clip itself, see-through, where it would go
         const float top = rowToY (drop.row);
 
         if (drop.kind == DropTarget::Kind::newTrack)
@@ -4161,14 +4257,28 @@ void Playlist::paintDrop (juce::Graphics& g)
         }
 
         const PlaylistClip ghost { dropPatternId, drop.row, drop.tick };
-        const auto r = clipBounds (ghost);
+        juce::Rectangle<float> r;
 
+        if (dropPatternId != 0)
         {
+            r = clipBounds (ghost);
             juce::Graphics::ScopedSaveState state (g);
             g.reduceClipRegion (gridArea);
             g.beginTransparencyLayer (0.75f);
             paintClip (g, ghost, false, false);
             g.endTransparencyLayer();
+            g.setColour (accentCool);
+            g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 2.0f);
+        }
+        else
+        {
+            // A sample: a see-through clip as long as it plays
+            const float from = tickToX (drop.tick), to = tickToX (song.tickAt (song.secondsAt (drop.tick) + dropSampleSeconds));
+            r = { from, top + 3.0f, std::max (12.0f, to - from), (float) rowHeight - 6.0f };
+            juce::Graphics::ScopedSaveState state (g);
+            g.reduceClipRegion (gridArea);
+            g.setColour (accentCool.withAlpha (0.2f));
+            g.fillRoundedRectangle (r, 6.0f);
             g.setColour (accentCool);
             g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 2.0f);
         }

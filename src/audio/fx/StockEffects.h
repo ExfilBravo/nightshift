@@ -237,7 +237,13 @@ private:
     and a noise gate (as NAM's own plugin has); after, output gain, and each model's loudness evened out to -18 dB so
     swapping amps doesn't jump in level. A model trained at another sample rate than the song's runs at its own rate
     between two resamplers (NAM's). The files' paths are kept in the effect's state, so a song opens with its amp.
-    Mono in (both sides mixed), the same out of both. */
+    Mono in (both sides mixed), the same out of both.
+
+    Input calibration, as NAM's plugin has it: a model that says how loud its amp was played when it was captured
+    (input_level_dbu, the level of a sine at 0 dBFS there) is played as loud from the audio interface, whose own
+    level (the same, for its input) is one setting for every amp (setInterfaceLevel). The input gain gains the
+    difference, the interface's level less the model's. A "slimmable" model comes in sizes: smaller ones take less
+    of the computer and sound a little less like the amp (setSize; kept with the song). */
 class NightAmp : public StockEffect
 {
 public:
@@ -272,10 +278,28 @@ public:
         juce::String name, gear, toneType, modeledBy;
         double sampleRate = 0.0;
         bool levelled = false;      // it says how loud it is, so it can be evened out
+        bool hasInputLevel = false; // it says how loud its amp was played (input calibration)
+        double inputLevelDbu = 0.0;
     };
 
     Description describeModel() const                       { return description; }
     static Description describe (const juce::File& namFile);
+
+    /** The audio interface's input level for every amp: the dBu a sine peaking at 0 dBFS has at its input (its
+        manual's maximum input level). NAM's plugin starts it at 12; the studio sets it from its options. */
+    static void setInterfaceLevel (double dBu);
+    static double getInterfaceLevel();
+    static constexpr double defaultInterfaceLevel = 12.0;
+
+    /** What input calibration adds to the input gain now, in dB: the interface's level less the model's, when
+        Match input level is on and the model says its level; else 0. */
+    float calibrationDb() const;
+
+    /** The sizes the model comes in (1 when it isn't slimmable, or there's no model), and the one it runs at:
+        0 the smallest, numSizes() - 1 the whole model (where a new model starts). The size is kept in the state. */
+    int numSizes() const;
+    int getSize() const;
+    void setSize (int index);
 
     /** What's wrong with the files, or empty: the model's problem (missing, not a model), then the cabinet's. */
     juce::String getProblem() const                         { return (modelProblem + "\n" + cabinetProblem).trim(); }
@@ -293,7 +317,7 @@ private:
     juce::dsp::Convolution cabinet;
     bool cabinetLoaded = false;
 
-    Param *input, *output, *gate, *evenOut, *cabinetOn;
+    Param *input, *output, *gate, *evenOut, *cabinetOn, *calibrate;
     int maxBlock = 512;
     bool initialised = false;
     std::vector<float> mono, amped;
@@ -303,6 +327,11 @@ private:
     std::atomic<float> outputDb { -100.0f };
     Description description;
     juce::String modelProblem, cabinetProblem;
+
+    // The model's input level, for the audio thread (set as a model comes in and goes)
+    std::atomic<bool> modelHasInputLevel { false };
+    std::atomic<float> modelInputLevelDbu { 0.0f };
+    static std::atomic<double> interfaceLevel;
 
     void prepare() override;
     void configure (Model&) const;

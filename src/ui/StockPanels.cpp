@@ -984,18 +984,180 @@ namespace
 namespace
 {
     //==============================================================================
+    /** The audio interface's input level, one setting for every NAM amp (kept with the app, not the song): a field
+        dragged up and down in half-dB steps (Shift finer), stepped by the wheel; double-click for 12. */
+    class InterfaceLevelField : public juce::Component,
+                                public juce::SettableTooltipClient
+    {
+    public:
+        explicit InterfaceLevelField (AudioEngine& a) : audio (a)
+        {
+            setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+            setTooltip ("How loud a sound your audio interface's input takes: its manual's maximum input level, in dBu "
+                        "(12 if you don't know it). Every amp uses it to match its input. Drag up and down; double-click for 12");
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            auto r = getLocalBounds().toFloat();
+            g.setColour (isMouseOverOrDragging() ? titleBar : panelLight);
+            g.fillRoundedRectangle (r, 6.0f);
+            g.setColour (hairline);
+            g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+
+            auto area = getLocalBounds().reduced (10, 0);
+            g.setColour (textDim);
+            g.setFont (font (15.0f));
+            g.drawText ("Your interface", area, juce::Justification::centredLeft, true);
+            g.setColour (text);
+            g.setFont (monoFont (15.0f, true));
+            g.drawText (juce::String (NightAmp::getInterfaceLevel(), 1) + " dBu", area, juce::Justification::centredRight, true);
+        }
+
+        void mouseDown (const juce::MouseEvent&) override          { start = NightAmp::getInterfaceLevel(); }
+        void mouseDrag (const juce::MouseEvent& e) override        { set (start - e.getDistanceFromDragStartY() * (e.mods.isShiftDown() ? 0.02 : 0.1)); }
+        void mouseDoubleClick (const juce::MouseEvent&) override   { set (NightAmp::defaultInterfaceLevel); }
+        void mouseEnter (const juce::MouseEvent&) override         { repaint(); }
+        void mouseExit (const juce::MouseEvent&) override          { repaint(); }
+
+        void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+        {
+            set (NightAmp::getInterfaceLevel() + (w.deltaY > 0 ? 0.5 : -0.5));
+        }
+
+        /** In half dB (a tenth with Shift's finer drag), kept with the app; every amp hears it at once. */
+        void set (double dBu)
+        {
+            auto options = audio.getOptions();
+            options.interfaceInputDbu = juce::jlimit (-20.0, 40.0, std::round (dBu * 10.0) / 10.0);
+
+            if (options.interfaceInputDbu != audio.getOptions().interfaceInputDbu)
+                audio.setOptions (options);
+
+            repaint();
+        }
+
+    private:
+        AudioEngine& audio;
+        double start = 0.0;
+    };
+
+    //==============================================================================
+    /** A slimmable model's size: a step for each, the smallest at the left, the whole model at the right; the words
+        say which. Click or drag along it, or use the wheel. */
+    class AmpSizeControl : public juce::Component,
+                           public juce::SettableTooltipClient
+    {
+    public:
+        AmpSizeControl (NightAmp& a, juce::Colour c) : amp (a), colour (c)
+        {
+            setMouseCursor (juce::MouseCursor::PointingHandCursor);
+            setTooltip ("This amp comes in sizes. A smaller one takes less of your computer and sounds a little less like "
+                        "the amp; full size sounds the most like it");
+        }
+
+        static juce::String describe (int size, int sizes)
+        {
+            return size >= sizes - 1 ? juce::String ("Full size") : "Size " + juce::String (size + 1) + " of " + juce::String (sizes);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            const int sizes = amp.numSizes(), size = amp.getSize();
+            auto area = getLocalBounds();
+
+            g.setColour (textDim);
+            g.setFont (font (15.0f));
+            g.drawText ("Size", area.removeFromLeft (labelWidth), juce::Justification::centredLeft, true);
+
+            g.setColour (text);
+            g.setFont (font (15.0f, true));
+            g.drawText (describe (size, sizes), area.removeFromRight (wordsWidth), juce::Justification::centredRight, true);
+
+            // The steps: a line through them, each a dot, the ones up to the size picked lit
+            const auto line = steps();
+            g.setColour (hairlineStrong);
+            g.fillRoundedRectangle (line.getX(), line.getCentreY() - 1.5f, line.getWidth(), 3.0f, 1.5f);
+
+            for (int i = 0; i < sizes; ++i)
+            {
+                const auto centre = stepCentre (i, sizes);
+                g.setColour (i <= size ? colour : panelLight);
+                g.fillEllipse (juce::Rectangle<float> (i == size ? 14.0f : 9.0f, i == size ? 14.0f : 9.0f).withCentre (centre));
+
+                if (i > size)
+                {
+                    g.setColour (hairlineStrong);
+                    g.drawEllipse (juce::Rectangle<float> (9.0f, 9.0f).withCentre (centre), 1.0f);
+                }
+            }
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override    { pick (e.position.x); }
+        void mouseDrag (const juce::MouseEvent& e) override    { pick (e.position.x); }
+
+        void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+        {
+            amp.setSize (amp.getSize() + (w.deltaY > 0 ? 1 : -1));
+            repaint();
+        }
+
+        static constexpr int labelWidth = 40, wordsWidth = 92;
+
+    private:
+        NightAmp& amp;
+        juce::Colour colour;
+
+        juce::Rectangle<float> steps() const
+        {
+            return getLocalBounds().toFloat().withTrimmedLeft ((float) labelWidth + 8.0f).withTrimmedRight ((float) wordsWidth + 10.0f);
+        }
+
+        juce::Point<float> stepCentre (int i, int sizes) const
+        {
+            const auto line = steps();
+            return { sizes > 1 ? line.getX() + line.getWidth() * (float) i / (float) (sizes - 1) : line.getCentreX(), line.getCentreY() };
+        }
+
+        void pick (float x)
+        {
+            const int sizes = amp.numSizes();
+            const auto line = steps();
+
+            if (sizes < 2 || line.getWidth() <= 0.0f)
+                return;
+
+            const int index = juce::roundToInt ((x - line.getX()) / line.getWidth() * (float) (sizes - 1));
+
+            if (juce::jlimit (0, sizes - 1, index) != amp.getSize())
+            {
+                amp.setSize (juce::jlimit (0, sizes - 1, index));
+                repaint();
+            }
+        }
+    };
+
+    //==============================================================================
     /** The NAM amp: what's loaded (the amp and its cabinet, or how to get one), the two files to load, the switches,
-        and input, gate and output. */
+        input calibration (matching the amp's input level from the interface's) and a slimmable model's size, and
+        input, gate and output. */
     class AmpPanel : public StockPanel
     {
     public:
-        explicit AmpPanel (NightAmp& a) : StockPanel (a, juce::Colour (0xffff8f5a)), amp (a)
+        AmpPanel (NightAmp& a, AudioEngine& engine) : StockPanel (a, juce::Colour (0xffff8f5a)), amp (a), interfaceLevel (engine), sizeControl (a, colour)
         {
             for (auto id : { "input", "gate", "output" })
                 knobs.push_back (&knob (id));
 
             evenOut = &toggle ("evenOut", "Even out loudness");
             cabinetOn = &toggle ("cabinetOn", "Cabinet");
+            calibrate = &toggle ("calibrate", "Match input level");
+            calibrate->setTooltip ("Plays your guitar into the amp as loud as the real amp was played when it was captured, "
+                                   "from your interface's level beside it. Off, Input alone sets how hard you hit it");
+            interfaceLevel.setComponentID ("interfaceLevel");
+            sizeControl.setComponentID ("size");
+            addAndMakeVisible (interfaceLevel);
+            addChildComponent (sizeControl);
 
             for (auto* b : { &loadAmp, &loadCabinet })
             {
@@ -1010,12 +1172,13 @@ namespace
             loadCabinet.setLabel ("Load cabinet...");
             loadCabinet.setTooltip ("Pick a speaker cabinet's impulse response (.wav), for a model of the amp alone");
             loadCabinet.onClick = [this] { choose (true); };
-            setSize (680, 410);
+            setSize (680, 476);
+            tick();     // the size control showing from the start for a slimmable model
         }
 
         void layout (juce::Rectangle<int> area) override
         {
-            display = area.removeFromTop (150);
+            display = area.removeFromTop (176);
             area.removeFromTop (14);
 
             auto buttons = area.removeFromTop (36);
@@ -1026,14 +1189,57 @@ namespace
             buttons.removeFromRight (10);
             evenOut->setBounds (buttons.removeFromRight (200).withSizeKeepingCentre (200, 30));
 
+            // Matching the amp's input, then (a slimmable model) its size
+            area.removeFromTop (10);
+            auto matching = area.removeFromTop (32);
+            calibrate->setBounds (matching.removeFromLeft (190).withSizeKeepingCentre (190, 30));
+            matching.removeFromLeft (10);
+            interfaceLevel.setBounds (matching.removeFromLeft (196).withSizeKeepingCentre (196, 30));
+            sizeControl.setBounds (matching.removeFromRight (226));
+
             area.removeFromTop (14);
             row (knobs, area.removeFromTop (106));
         }
 
         void tick() override
         {
+            const auto about = amp.describeModel();
             cabinetOn->setDimmed (! amp.hasCabinet());
-            evenOut->setDimmed (! amp.hasModel() || ! amp.describeModel().levelled);
+            evenOut->setDimmed (! amp.hasModel() || ! about.levelled);
+
+            // Matching needs a model that says its level; the interface's is every amp's, so it stays bright while it's used
+            const bool canMatch = amp.hasModel() && about.hasInputLevel;
+            calibrate->setDimmed (! canMatch);
+            interfaceLevel.setAlpha (canMatch && calibrate->isOn() ? 1.0f : 0.65f);
+
+            if (sizeControl.isVisible() != (amp.numSizes() > 1))
+                sizeControl.setVisible (amp.numSizes() > 1);
+
+            sizeControl.repaint();
+            interfaceLevel.repaint();
+        }
+
+        /** What the line under the cabinet says about matching the amp's input (tests). */
+        static juce::String describeMatching (const NightAmp& amp, bool on)
+        {
+            // As the model gives it (14.76, 18.3, 12), not rounded to a tenth
+            auto number = [] (double v)
+            {
+                const auto s = juce::String (v, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".");
+                return s == "-0" ? juce::String ("0") : s;
+            };
+
+            const auto about = amp.describeModel();
+            const auto level = number (about.inputLevelDbu) + " dBu";
+
+            if (! about.hasInputLevel)
+                return "It doesn't say how loud it was played when captured: set Input by ear";
+
+            if (! on)
+                return "Not matched to your interface (it was captured at " + level + ")";
+
+            const float db = amp.calibrationDb();
+            return "Input matched to the amp: " + juce::String (db > 0.004f ? "+" : "") + number (db) + " dB (it was captured at " + level + ")";
         }
 
         void paintDisplay (juce::Graphics& g, juce::Rectangle<float> d) override
@@ -1084,6 +1290,10 @@ namespace
                                 area.removeFromTop (24.0f), juce::Justification::centredLeft, true);
                 }
 
+                // Input calibration: how much it adds, from the level the amp was captured at
+                g.setColour (about.hasInputLevel && calibrate->isOn() ? textDim : textFaint);
+                g.drawText (describeMatching (amp, calibrate->isOn()), area.removeFromTop (24.0f), juce::Justification::centredLeft, true);
+
                 // The level coming out, and the gate's light
                 auto meter = area.removeFromBottom (8.0f).withTrimmedRight (110.0f);
                 level = std::max (amp.takeOutputDb(), level - 1.5f);
@@ -1115,6 +1325,9 @@ namespace
         std::vector<juce::Component*> knobs;
         ParamToggle* evenOut = nullptr;
         ParamToggle* cabinetOn = nullptr;
+        ParamToggle* calibrate = nullptr;
+        InterfaceLevelField interfaceLevel;
+        AmpSizeControl sizeControl;
         IconButton loadAmp { "Load amp", icons::plusLine() }, loadCabinet { "Load cabinet", icons::plusLine() };
         std::unique_ptr<juce::FileChooser> chooser;
         float level = -100.0f;
@@ -1139,9 +1352,9 @@ namespace
     };
 }
 
-std::unique_ptr<juce::Component> createStockPanel (StockEffect& fx, Song& song, AudioEngine&)
+std::unique_ptr<juce::Component> createStockPanel (StockEffect& fx, Song& song, AudioEngine& audio)
 {
-    if (auto a = dynamic_cast<NightAmp*> (&fx))          return std::make_unique<AmpPanel> (*a);
+    if (auto a = dynamic_cast<NightAmp*> (&fx))          return std::make_unique<AmpPanel> (*a, audio);
 
     if (auto e = dynamic_cast<NightEQ*> (&fx))           return std::make_unique<EqPanel> (*e);
     if (auto c = dynamic_cast<NightCompressor*> (&fx))   return std::make_unique<CompressorPanel> (*c, song);

@@ -124,6 +124,10 @@ public:
     /** A sampled instrument (its SFZ under SfzPlugin::folder()), as a channel named after it. */
     int addInstrumentChannel (const juce::String& path);
 
+    /** A sampler channel playing an audio file (a sample from the sidebar), named after it and selected. Undoable.
+        Returns its id, or 0 when the file isn't audio that's there. */
+    int addSamplerChannel (const juce::String& path);
+
     /** A channel playing a synth plugged in to a MIDI output, named after it, on the first MIDI
         channel no other channel uses there, selected. Undoable. Returns its id. */
     int addMidiOutChannel (const juce::String& output);

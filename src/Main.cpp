@@ -20,6 +20,7 @@
 #include "audio/Machines.h"
 #include "audio/DrumSynth.h"
 #include "audio/Instruments.h"
+#include "audio/Samples.h"
 #include "audio/Sfz.h"
 #include "audio/MidiFiles.h"
 #include "ui/Donate.h"
@@ -67,6 +68,51 @@ namespace
         while (juce::Time::getMillisecondCounter() - start < (juce::uint32) ms
                || (! *delivered && juce::Time::getMillisecondCounter() - start < 10000))
             mm->runDispatchLoopUntil (5);
+    }
+
+    // Sounds made here for the sample browser's suite and snapshots, in `into`: a Downloads (a drum pack with its kicks
+    // in a folder of their own, a snare and a loop; a steady 440 Hz tone, half full scale, at 48 kHz and one at 44.1; a
+    // text file, a Mac's "._" leftover, an empty folder and a hidden one, none of them sounds), a Music (a song idea, as
+    // FLAC) and a folder to add (My sounds: a WAV and an AIFF). Returns Downloads, Music and My sounds
+    juce::Array<juce::File> writeSampleFolders (const juce::File& into)
+    {
+        into.deleteRecursively();
+        const auto downloads = into.getChildFile ("Downloads"), music = into.getChildFile ("Music"), mine = into.getChildFile ("My sounds");
+
+        // A sine (decaying to silence over the sound when `decay`), mono
+        auto write = [] (const juce::File& f, double seconds, double freq, float level, bool decay, double rate = 48000.0)
+        {
+            f.getParentDirectory().createDirectory();
+            juce::AudioBuffer<float> b (1, (int) (seconds * rate));
+
+            for (int i = 0; i < b.getNumSamples(); ++i)
+                b.setSample (0, i, level * (float) std::sin (juce::MathConstants<double>::twoPi * freq * i / rate)
+                                     * (decay ? (float) std::exp (-5.0 * i / b.getNumSamples()) : 1.0f));
+
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+            std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (f);
+
+            if (auto* format = formats.findFormatForFileExtension (f.getFileExtension()))
+                if (auto writer = format->createWriterFor (stream, juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (1).withBitsPerSample (24)))
+                    writer->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+        };
+
+        write (downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav"), 0.4, 55.0, 0.8f, true);
+        write (downloads.getChildFile ("Drum Pack/Kicks/Kick 10.wav"), 0.4, 50.0, 0.8f, true);
+        write (downloads.getChildFile ("Drum Pack/Snare 01.wav"), 0.3, 190.0, 0.6f, true);
+        write (downloads.getChildFile ("Drum Pack/Loop 120 bpm.wav"), 2.0, 110.0, 0.4f, false);
+        write (downloads.getChildFile ("Tone 440.wav"), 1.0, 440.0, 0.5f, false);
+        write (downloads.getChildFile ("Tone 440 at 44.1 kHz.wav"), 1.0, 440.0, 0.5f, false, 44100.0);
+        write (music.getChildFile ("Song idea.flac"), 2.0, 220.0, 0.3f, false);
+        write (mine.getChildFile ("Vocal chop.wav"), 0.5, 330.0, 0.5f, true);
+        write (mine.getChildFile ("Riser.aiff"), 1.5, 660.0, 0.3f, false);
+
+        downloads.getChildFile ("readme.txt").replaceWithText ("Not a sound");
+        downloads.getChildFile ("._Tone 440.wav").replaceWithText ("A Mac's leftover, not a sound");
+        downloads.getChildFile ("Empty folder").createDirectory();
+        write (downloads.getChildFile (".hidden/Secret.wav"), 0.2, 440.0, 0.5f, false);
+        return { downloads, music, mine };
     }
 
     struct Args
@@ -269,13 +315,14 @@ namespace
           --writekit <folder>                   write the built-in kit WAVs
           --render <file.wav>                   render the demo song (or --project <file>)
           --snapshot <file.png> [--show playlist,rack,piano] [--raise playlist] [--toggle rack] [--size 1600x940]
-                     [--arm <channel names>] [--search <text>] [--opensounds "Plugin effects;Nightshift"] [--lofi] [--settings] [--live]
+                     [--arm <channel names>] [--search <text>] [--opensounds "Plugin effects;Nightshift"] [--sampledemo] [--lofi] [--settings] [--live]
                      [--midilight <keyboard>] [--midiouts "Synth,Drum machine" [--midioutchannel]] [--exportmidi]
           --midiouttest / --midifiletest        synths plugged in (MIDI out), caught with their timing; .mid files out and in
           --rectest <folder> [--countin] [--monitor]   record from a virtual input and check the take's timing
           --comptest <folder> [--countin] [--monitor]  loop-record takes, comp them, check takes and joins
           --pianotest                           check which channel the piano roll edits, and its picker
           --arrangetest / --stepstest / --sidebartest  click and type through those parts of the window
+          --samplestest                         the sample browser: listing, search, a sample heard, samples dropped on Steps and Arrange
           --genretest                           the genres and artists the band knows, Sleep Token played by all five, each new style by the band
           --feeltest                            the drum feel learned from real drummers (Groove MIDI Dataset): the table, who plays it, render
           --vibetest                            the vibe listener: made-up songs, the band's own (rendered), the words it writes, read back
@@ -291,6 +338,16 @@ namespace
     {
         // Whatever it opens, a command-line run reads the studio's settings and never writes them
         AudioEngine::keepStudioSettings = true;
+
+        // ...and never reads the user's Downloads and Music: the sidebar's Samples lists two empty folders in their
+        // place (--samplestest and a snapshot's --sampledemo make sounds of their own)
+        {
+            const auto none = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift no samples");
+            samples::standardFoldersOverride = { none.getChildFile ("Downloads"), none.getChildFile ("Music") };
+
+            for (auto& f : samples::standardFoldersOverride)
+                f.createDirectory();
+        }
 
         if (args.has ("--writekit"))
             return kit::writeTo (juce::File (args.valueAfter ("--writekit"))) ? 0 : 1;
@@ -2240,7 +2297,8 @@ namespace
             };
 
             // Every group shut at the start: only their names showing
-            const juce::StringArray groups { "NightShift kit", "Synth presets", "Plugin instruments", "Effects", "Plugin effects", "Drum kits", "Instruments" };
+            const juce::StringArray groups { "NightShift kit", "Synth presets", "Plugin instruments", "Effects", "Plugin effects", "Drum kits", "Instruments",
+                                             "Samples" };
             auto onlyGroups = [&sidebar, &groups]
             {
                 const auto shown = sidebar.getShownSounds();
@@ -2377,7 +2435,7 @@ namespace
                     return true;
                 };
 
-                // What's under Plugin effects, to the end of the list (it's the last group)
+                // What's under Plugin effects, to the next group (Samples, the last)
                 auto underEffects = [&groups] (Sidebar& on)
                 {
                     const auto shown = on.getShownSounds();
@@ -2618,6 +2676,379 @@ namespace
                        "afterwards it says what's new (\"" + both + "\"), or that nothing is when you asked (\"" + nothing + "\"), and nothing at startup");
             }
 
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--samplestest"))
+        {
+            // The sample browser, the sidebar's Samples, on folders made here in Downloads' and Music's place (see
+            // writeSampleFolders): what it lists and what it leaves out, a folder added and taken away again, the
+            // search, a sample heard through the studio's output (its level and pitch measured, a 44.1 kHz one's too)
+            // and stopped by the next click, and samples dropped on Steps (a sampler channel) and on Arrange (an audio
+            // track, heard in the song where it was let go)
+            const auto made = writeSampleFolders (juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift samples test"));
+            const auto downloads = made[0], music = made[1], mine = made[2];
+            samples::standardFoldersOverride = { downloads, music };
+
+            Song song;
+            song.loadBlank();
+            AudioEngine audio (song, false);
+            audio.syncNow();
+            Sidebar sidebar (song, audio);
+            sidebar.setSize (252, 900);
+            sidebar.setVisible (true);
+            ChannelRack rack (song, audio);
+            rack.setSize (1300, 600);
+
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto settle = [] { settleMessages (30); };
+            auto& library = sidebar.getSampleLibrary();
+            auto lookedThrough = [&library, &settle] { const bool done = library.waitUntilDone (10000); settle(); return done; };
+
+            // A click (or a right-click, or a double-click) on a row in Samples
+            auto click = [] (Sidebar& on, const juce::String& name, int clicks = 1)
+            {
+                const auto area = on.showSoundRow (name, "Samples");
+
+                if (area.isEmpty())
+                    return false;
+
+                const auto at = area.getCentre().toFloat();
+                const auto now = juce::Time::getCurrentTime();
+                const juce::MouseEvent e (juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                          1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &on, &on, now, at, now, clicks, false);
+                on.mouseDown (e);
+
+                if (clicks == 2)
+                    on.mouseDoubleClick (e);
+
+                return true;
+            };
+
+            // What Samples shows, from its own row to the end (it's the last group)
+            auto shownSamples = [] (const Sidebar& on)
+            {
+                const auto shown = on.getShownSounds();
+                juce::StringArray rows;
+
+                for (int i = shown.indexOf ("Samples"); i >= 0 && i < shown.size(); ++i)
+                    rows.add (shown[i]);
+
+                return rows;
+            };
+
+            // The listing: last among the sounds, shut, and nothing read until it's opened
+            {
+                const auto shown = sidebar.getShownSounds();
+                check (shown[shown.size() - 1] == "Samples" && library.get (downloads) == nullptr && ! library.isLooking (downloads),
+                       "Samples is the last of the sounds, shut, and nothing in Downloads or Music is read before it's opened");
+            }
+
+            // (each action first, then what it shows: a check's words are worked out before or after its test, as the
+            // compiler likes)
+            const bool samplesOpened = click (sidebar, "Samples") && lookedThrough();
+            const auto opened = shownSamples (sidebar);
+            check (samplesOpened && opened == juce::StringArray { "Samples", "Downloads", "Music", "Add a folder..." }
+                       && library.get (downloads) != nullptr && library.get (downloads)->count == 6 && library.get (music) != nullptr
+                       && library.get (music)->count == 1,
+                   "opened, it lists Downloads and Music (looked through on a thread of its own: 6 sounds and 1), then Add a folder... ("
+                       + opened.joinIntoString (", ") + ")");
+
+            const bool downloadsOpened = click (sidebar, "Downloads");
+            const auto inDownloads = shownSamples (sidebar);
+            check (downloadsOpened && inDownloads == juce::StringArray { "Samples", "Downloads", "Drum Pack", "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder..." },
+                   "Downloads opens in place: its folder with sounds in it, then its sounds; no text file, Mac leftover, empty or hidden folder ("
+                       + inDownloads.joinIntoString (", ") + ")");
+
+            const bool packOpened = click (sidebar, "Drum Pack") && click (sidebar, "Kicks");
+            const auto pack = shownSamples (sidebar);
+            check (packOpened && pack == juce::StringArray { "Samples", "Downloads", "Drum Pack", "Kicks", "Kick 2", "Kick 10", "Loop 120 bpm", "Snare 01",
+                                                             "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder..." },
+                   "folders in folders open in place, each A to Z, numbers in order (Kick 2 before Kick 10): " + pack.joinIntoString (", "));
+
+            check (click (sidebar, "Drum Pack") && ! sidebar.getShownSounds().contains ("Kicks") && ! sidebar.getShownSounds().contains ("Snare 01"),
+                   "clicked again, a folder shuts");
+
+            // A folder of one's own, kept with NightShift; and taken away again
+            {
+                sidebar.addSampleFolder (mine);
+                lookedThrough();
+                const auto rows = shownSamples (sidebar);
+                const int at = rows.indexOf ("My sounds");
+                Sidebar again (song, audio);
+                again.setSize (252, 900);
+                click (again, "Samples");
+                const auto reopened = shownSamples (again);
+                check (audio.getOptions().sampleFolders == juce::StringArray { mine.getFullPathName() } && at == rows.indexOf ("Music") + 1
+                           && rows[at + 1] == "Riser" && rows[at + 2] == "Vocal chop" && rows.getReference (rows.size() - 1) == "Add a folder..."
+                           && reopened.indexOf ("My sounds") == reopened.indexOf ("Music") + 1,
+                       "a folder added comes after Music, open (its AIFF and WAV, A to Z), kept with NightShift: opened again it's there ("
+                           + rows.joinIntoString (", ") + ")");
+
+                sidebar.removeSampleFolder (mine);
+                check (audio.getOptions().sampleFolders.isEmpty() && ! sidebar.getShownSounds().contains ("My sounds") && mine.isDirectory(),
+                       "taken out of Samples, it's gone from the list and the options, and the folder is still there");
+            }
+
+            // The search finds sounds by name in every folder, under the folder it's in
+            {
+                juce::String added;
+                sidebar.onAddSample = [&added] (const juce::String& path) { added = path; };
+                sidebar.setSearchText ("kick");
+                settle();
+                const auto kicks = shownSamples (sidebar);
+                sidebar.setSearchText ("SONG");
+                settle();
+                const auto song2 = shownSamples (sidebar);
+                sidebar.setSearchText ("nothing called this");
+                settle();
+                const bool none = ! sidebar.getShownSounds().contains ("Samples");
+
+                juce::TextEditor* box = nullptr;
+
+                for (auto* child : sidebar.getChildren())
+                    if (auto* editor = dynamic_cast<juce::TextEditor*> (child))
+                        box = editor;
+
+                sidebar.setSearchText ("kick 1");
+                settle();
+
+                if (box != nullptr)
+                    box->keyPressed (juce::KeyPress (juce::KeyPress::returnKey));
+
+                settle();
+                sidebar.setSearchText ({});
+                settle();
+
+                check (kicks == juce::StringArray { "Samples", "Downloads", "Kick 2", "Kick 10" } && song2 == juce::StringArray { "Samples", "Music", "Song idea" }
+                           && none && added == downloads.getChildFile ("Drum Pack/Kicks/Kick 10.wav").getFullPathName(),
+                       "searching \"kick\" finds both kicks under Downloads, any case \"SONG\" the FLAC in Music, nothing nowhere; \"kick 1\" and Enter "
+                       "adds Kick 10 (" + kicks.joinIntoString (", ") + " / " + song2.joinIntoString (", ") + ")");
+            }
+
+            // Heard through the studio's output, the song stopped: a click plays it, the next stops it
+            {
+                auto listen = [&audio] (double seconds)
+                {
+                    const int block = 512;
+                    juce::AudioBuffer<float> out (2, (int) (seconds * 48000.0) / block * block), buffer (2, block);
+
+                    for (int b = 0; b < out.getNumSamples() / block; ++b)
+                    {
+                        buffer.clear();
+                        audio.processHostedBlock (buffer);
+
+                        for (int ch = 0; ch < 2; ++ch)
+                            out.copyFrom (ch, b * block, buffer, ch, 0, block);
+
+                        if (b % 4 == 0)
+                            juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                    }
+
+                    return out;
+                };
+
+                auto rms = [] (const juce::AudioBuffer<float>& b, int ch, double from, double to)
+                {
+                    return juce::Decibels::gainToDecibels (b.getRMSLevel (ch, (int) (from * 48000.0), (int) ((to - from) * 48000.0)), -200.0f);
+                };
+
+                // Its pitch from the times it crosses zero going up
+                auto pitch = [] (const juce::AudioBuffer<float>& b, double from, double to)
+                {
+                    int crossings = 0;
+
+                    for (int i = (int) (from * 48000.0) + 1; i < (int) (to * 48000.0); ++i)
+                        crossings += b.getSample (0, i - 1) <= 0.0f && b.getSample (0, i) > 0.0f ? 1 : 0;
+
+                    return crossings / (to - from);
+                };
+
+                const auto tone = downloads.getChildFile ("Tone 440.wav"), tone44 = downloads.getChildFile ("Tone 440 at 44.1 kHz.wav");
+                const auto kick = downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav");
+                click (sidebar, "Drum Pack");
+                const bool clicked = click (sidebar, "Tone 440");
+                const auto playing = audio.getPreviewing();
+                const auto heard = listen (0.6);
+                const float left = rms (heard, 0, 0.15, 0.55), right = rms (heard, 1, 0.15, 0.55);
+                const double hz = pitch (heard, 0.15, 0.55);
+                check (clicked && playing == tone && std::abs (left - (-9.03f)) < 0.3f && std::abs (right - left) < 0.05f && std::abs (hz - 440.0) < 5.0,
+                       "a click on Tone 440 plays it through the studio's output: " + juce::String (left, 2) + " dB left, " + juce::String (right, 2)
+                           + " right (made at -9.03), " + juce::String (hz, 1) + " Hz");
+
+                click (sidebar, "Tone 440");
+                const auto stopped = audio.getPreviewing();
+                const auto after = listen (0.3);
+                int lastSound = -1;
+
+                for (int i = 0; i < after.getNumSamples(); ++i)
+                    if (std::abs (after.getSample (0, i)) > 1.0e-4f)
+                        lastSound = i;
+
+                check (stopped == juce::File() && lastSound < 2048,
+                       "the next click on it stops it: nothing comes out after the output's next block or so (the last sound "
+                           + juce::String (lastSound + 1) + " samples on)");
+
+                click (sidebar, "Tone 440 at 44.1 kHz");
+                const auto heard44 = listen (0.6);
+                const double hz44 = pitch (heard44, 0.15, 0.55);
+                const float level44 = rms (heard44, 0, 0.15, 0.55);
+                check (audio.getPreviewing() == tone44 && std::abs (hz44 - 440.0) < 5.0 && std::abs (level44 - (-9.03f)) < 0.5f,
+                       "a 44.1 kHz file plays at its own pitch at the output's 48 kHz: " + juce::String (hz44, 1) + " Hz, " + juce::String (level44, 2) + " dB");
+
+                // (Kicks is still open from before, in Drum Pack)
+                click (sidebar, "Kick 2");
+                const auto switched = audio.getPreviewing();
+                listen (0.8);
+                settle();
+                check (switched == kick && audio.getPreviewing() == juce::File(),
+                       "clicking another while one plays plays that one instead, and it stops at its end (Kick 2, 0.4 s)");
+
+                // The engine's own call, as the sidebar's right-click menu uses it
+                check (audio.previewSample (tone) && audio.getPreviewing() == tone && ! audio.previewSample (downloads.getChildFile ("readme.txt")),
+                       "asked to play a sound it plays it; a file that isn't a sound it can't");
+                audio.stopPreview();
+            }
+
+            // Dropped on Steps: a sampler channel playing it
+            {
+                const auto kick = downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav").getFullPathName();
+                const auto count = song.channels.size();
+                const juce::String drag = juce::String (soundDragPrefix) + "sample:" + kick;
+                rack.itemDropped ({ drag, nullptr, { 400, 200 } });
+                const auto& c = song.channels.back();
+                check (rack.isInterestedInDragSource ({ drag, nullptr, {} }) && song.channels.size() == count + 1 && c.type == InstrumentType::sampler
+                           && c.sample == kick && c.name == "Kick 2" && song.selectedChannelId == c.id && rack.soundName (drag) == "Kick 2"
+                           && ! rack.addDraggedSound (juce::String (soundDragPrefix) + "sample:" + downloads.getChildFile ("gone.wav").getFullPathName()),
+                       "dropped on Steps, a sample is a sampler channel playing it, named after it and selected; a file that's gone adds nothing");
+
+                // Double-clicked: the same, as onAddSample has it in the studio
+                juce::String added;
+                sidebar.onAddSample = [&added] (const juce::String& path) { added = path; };
+                check (click (sidebar, "Kick 2", 2) && added == kick, "double-clicked, it's added the same way");
+            }
+
+            // Dropped on Arrange: an audio track (or the audio track it's dropped on), the clip where it was let go
+            {
+                Playlist playlist (song, audio);
+                playlist.setSize (1600, 1400);
+                playlist.setSnap (ticksPerBar);
+                playlist.onAddSound = [&rack] (const juce::String& d) { return rack.addSound (d); };
+                playlist.nameOfSound = [&rack] (const juce::String& d) { return rack.soundName (d); };
+
+                auto rowY = [] (int row) { return (int) (Playlist::rulerHeight + (row + 0.5f) * Playlist::rowHeight); };
+                const auto barX = [] (int b) { return Playlist::headerWidth + 72 * b + 10; };   // a bar is 72 px here
+                auto drag = [] (const juce::File& f) { return juce::String (soundDragPrefix) + "sample:" + f.getFullPathName(); };
+                using Kind = Playlist::DropTarget::Kind;
+
+                const auto tone = downloads.getChildFile ("Tone 440.wav"), kick = downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav");
+                const auto snare = downloads.getChildFile ("Drum Pack/Snare 01.wav");
+                const int tracks = song.numTracks(), channels = (int) song.channels.size();
+
+                // Under the last track, at bar 3: a new audio track named after it
+                const auto under = playlist.dropTargetAt ({ barX (2), rowY (tracks) }, drag (tone));
+                playlist.itemDropped ({ drag (tone), nullptr, { barX (2), rowY (tracks) } });
+                const int toneTrack = tracks;
+                const auto* toneChannel = song.findChannel (song.trackChannel (toneTrack));
+                const int toneId = toneChannel != nullptr ? toneChannel->id : -1;
+                const bool newTrack = under.kind == Kind::newTrack && under.tick == 2 * ticksPerBar && song.numTracks() == tracks + 1
+                                      && toneChannel != nullptr && toneChannel->type == InstrumentType::audio && toneChannel->name == "Tone 440" && ! toneChannel->armed
+                                      && ! song.audioClips.empty() && song.audioClips.back().start == 2 * ticksPerBar && song.audioClips.back().track == toneTrack
+                                      && std::abs (song.audioClips.back().length - 1.0) < 1.0e-6 && song.audioClips.back().takes.size() == 1
+                                      && song.audioClips.back().takes[0].file == tone.getFullPathName();
+                check (newTrack, "dropped under the last track at bar 3, a sample is a new audio track named after it (not armed), its clip at bar 3, "
+                                 "1 second long, playing the file");
+
+                // On that audio track at bar 5: a second clip there, no new channel
+                const auto onAudio = playlist.dropTargetAt ({ barX (4), rowY (toneTrack) }, drag (kick));
+                playlist.itemDropped ({ drag (kick), nullptr, { barX (4), rowY (toneTrack) } });
+                check (onAudio.kind == Kind::clip && onAudio.row == toneTrack && song.numTracks() == tracks + 1 && (int) song.channels.size() == channels + 1
+                           && song.audioClips.back().channelId == toneId && song.audioClips.back().start == 4 * ticksPerBar,
+                       "dropped on that audio track at bar 5, it's a clip there, on its channel (no new track)");
+
+                // On the empty track: that track plays it
+                const auto onEmpty = playlist.dropTargetAt ({ barX (0), rowY (0) }, drag (snare));
+                playlist.itemDropped ({ drag (snare), nullptr, { barX (0), rowY (0) } });
+                const auto* snareChannel = song.findChannel (song.trackChannel (0));
+                check (onEmpty.kind == Kind::assign && snareChannel != nullptr && snareChannel->name == "Snare 01" && song.numTracks() == tracks + 1,
+                       "dropped on an empty track, it goes on that track");
+
+                song.undo();
+                check (song.trackChannel (0) == 0 && (int) song.channels.size() == channels + 1 && song.audioClips.size() == 2,
+                       "one undo takes that drop away (its channel and clip)");
+
+                check (playlist.dropTargetAt ({ barX (1), rowY (0) }, drag (downloads.getChildFile ("gone.wav"))).kind == Kind::none,
+                       "a file that's gone can't be dropped");
+
+                // Compressed files too: Music's FLAC at bar 7 (12 s), an Ogg written here at bar 9 (16 s), and an MP3 given
+                // with --mp3 <file> at bar 11 (20 s), each on a new audio track
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+                const auto ogg = downloads.getParentDirectory().getChildFile ("Elsewhere/Hum.ogg");
+                {
+                    ogg.getParentDirectory().createDirectory();
+                    juce::AudioBuffer<float> hum (1, 96000);
+
+                    for (int i = 0; i < hum.getNumSamples(); ++i)
+                        hum.setSample (0, i, 0.3f * (float) std::sin (juce::MathConstants<double>::twoPi * 330.0 * i / 48000.0));
+
+                    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (ogg);
+
+                    if (auto* format = formats.findFormatForFileExtension ("ogg"))
+                        if (auto writer = format->createWriterFor (stream, juce::AudioFormatWriterOptions{}.withSampleRate (48000.0).withNumChannels (1)
+                                                                                                           .withQualityOptionIndex (5)))
+                            writer->writeFromAudioSampleBuffer (hum, 0, hum.getNumSamples());
+                }
+
+                const juce::File mp3 (args.valueAfter ("--mp3"));
+                const bool withMp3 = juce::File::isAbsolutePath (args.valueAfter ("--mp3")) && mp3.existsAsFile();
+                playlist.itemDropped ({ drag (music.getChildFile ("Song idea.flac")), nullptr, { barX (6), rowY (song.numTracks()) } });
+                playlist.itemDropped ({ drag (ogg), nullptr, { barX (8), rowY (song.numTracks()) } });
+
+                if (withMp3)
+                    playlist.itemDropped ({ drag (mp3), nullptr, { barX (10), rowY (song.numTracks()) } });
+
+                // Heard in the song where each was let go: the tone from bar 3 (4 s at 120), for its second, and the rest
+                const auto rendered = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift samples test render.wav");
+                audio.syncNow();
+                const bool renderedOk = audio.renderToFile (rendered, 0.5);
+                std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (rendered));
+                float before = 1.0f, during = -200.0f, flac = -200.0f, vorbis = -200.0f, mp3Level = -200.0f;
+
+                if (reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b (2, (int) reader->lengthInSamples);
+                    reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+                    auto level = [&b] (double from, double to)
+                    {
+                        const int start = (int) (from * 48000.0), length = std::min ((int) ((to - from) * 48000.0), b.getNumSamples() - start);
+                        return length > 0 ? juce::Decibels::gainToDecibels (b.getRMSLevel (0, start, length), -200.0f) : -200.0f;
+                    };
+
+                    before = b.getMagnitude (0, 48000, 48000 * 3 - 48000);                              // 1 to 3 s
+                    during = level (4.2, 4.8);
+                    flac = level (12.2, 13.8);
+                    vorbis = level (16.2, 17.8);
+                    mp3Level = level (20.0, 20.0 + std::max (0.1, samples::lengthInSeconds (mp3)));
+                }
+
+                rendered.deleteFile();
+                check (renderedOk && reader != nullptr && before < 1.0e-4f && during > -18.0f && during < -6.0f,
+                       "rendered, the song is silent before bar 3 and has the tone from there: " + juce::String (during, 1) + " dB (the file is -9.0)");
+                check (flac > -20.0f && flac < -8.0f && vorbis > -20.0f && vorbis < -8.0f && (! withMp3 || mp3Level > -60.0f),
+                       "a FLAC and an Ogg dropped on Arrange play in the song too: " + juce::String (flac, 1) + " and " + juce::String (vorbis, 1)
+                           + " dB (made at -13.5)" + (withMp3 ? ", and the MP3 given: " + juce::String (mp3Level, 1) + " dB" : juce::String()));
+            }
+
+            samples::standardFoldersOverride.clear();
+            downloads.getParentDirectory().deleteRecursively();
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
             return failures == 0 ? 0 : 1;
         }
@@ -11959,7 +12390,10 @@ namespace
             // an LSTM, a standard-size WaveNet) and ones made here whose sound is known exactly (Linear models: half
             // the level). What a model says about itself; its sound at the song's rate and at another (between NAM's
             // resamplers); input, output, the gate and evening out loudness; a cabinet; its state kept and opened
-            // again; a missing file and one that isn't a model; its panel; and what a standard WaveNet costs
+            // again; a missing file and one that isn't a model; input calibration (a model's input_level_dbu against
+            // the interface's level) measured; a slimmable model at each size (one made here, NAM's container, its
+            // slimmable WaveNet and its A2), what a size saves, and the size kept; its panel; and what a standard
+            // WaveNet costs
             Song song;
             song.loadEmpty();
             AudioEngine audio (song, false);
@@ -12234,6 +12668,180 @@ namespace
             const auto why = tried->loadModel (junk);
             check (why.contains ("isn't an amp model NightShift can open") && ! tried->hasModel(), "a file that isn't a model says so: " + why);
 
+            // Input calibration (NAM's input_level_dbu, as its plugin has it): a model that says how loud its amp was
+            // played is played as loud from the interface, whose level is every amp's. A Linear model made here, so
+            // the gain measured is exact: captured at 18 dBu, from an interface at 12 it's 6 dB softer
+            auto gainDb = [&rmsDb, &reference] (const juce::AudioBuffer<float>& b) { return rmsDb (b, 0, b.getNumSamples()) - rmsDb (reference, 0, reference.getNumSamples()); };
+            auto through = [&run, &reference] (NightAmp& a) { auto b = reference; run (a, b, 48000.0, 512); return b; };
+            const auto halfDb = juce::Decibels::gainToDecibels (0.5f);
+
+            NightAmp::setInterfaceLevel (12.0);
+            auto* calibrated = make (48000.0, 512);
+            calibrated->loadModel (linear ("captured at 18 dBu", 48000.0, ", \"metadata\": {\"input_level_dbu\": 18.0}"));
+            const auto at12 = through (*calibrated);
+            NightAmp::setInterfaceLevel (24.0);
+            const auto at24 = through (*calibrated);
+            set (*calibrated, "calibrate", 0.0f);
+            const auto unmatched = through (*calibrated);
+            set (*calibrated, "calibrate", 1.0f);
+            NightAmp::setInterfaceLevel (12.0);
+            const float db12 = gainDb (at12) - halfDb, db24 = gainDb (at24) - halfDb, dbOff = gainDb (unmatched) - halfDb;
+            check (calibrated->describeModel().hasInputLevel && calibrated->describeModel().inputLevelDbu == 18.0
+                       && worst (at12, reference, 0.5f * juce::Decibels::decibelsToGain (-6.0f)) < 1.0e-5f
+                       && worst (at24, reference, 0.5f * juce::Decibels::decibelsToGain (6.0f)) < 1.0e-5f && worst (unmatched, reference, 0.5f) < 1.0e-5f,
+                   "input calibration: a model captured at 18 dBu, from an interface at 12, goes in " + juce::String (db12, 2) + " dB; at 24, "
+                       + juce::String (db24, 2) + " dB; Match input level off, " + juce::String (dbOff, 2) + " dB (measured)");
+
+            auto* unknown = make (48000.0, 512);
+            unknown->loadModel (half);
+            const auto asItCame = through (*unknown);
+            check (! unknown->describeModel().hasInputLevel && unknown->calibrationDb() == 0.0f && worst (asItCame, reference, 0.5f) < 1.0e-5f,
+                   "a model that doesn't say its level goes in as it comes, Match input level on or not");
+
+            // NAM's own A2 (it says 14.76 dBu): matched from 12 is Input at -2.76 dB, to the sample
+            const auto a2 = examples.getChildFile ("A2.nam");
+            auto* matchedA2 = make (48000.0, 512);
+            auto* byHandA2 = make (48000.0, 512);
+            matchedA2->loadModel (a2);
+            byHandA2->loadModel (a2);
+            set (*byHandA2, "calibrate", 0.0f);
+            set (*byHandA2, "input", matchedA2->calibrationDb());
+            auto a2Matched = sine (220.0, 0.25f, 24000, 48000.0), a2ByHand = a2Matched;
+            run (*matchedA2, a2Matched, 48000.0, 512);
+            run (*byHandA2, a2ByHand, 48000.0, 512);
+            check (matchedA2->describeModel().hasInputLevel && std::abs (matchedA2->calibrationDb() + 2.76f) < 1.0e-4f && finite (a2Matched)
+                       && rmsDb (a2Matched, 12000, 24000) > -60.0f && worst (a2Matched, a2ByHand, 1.0f) < 1.0e-6f,
+                   "NAM's A2 says it was captured at 14.76 dBu: matched from an interface at 12 it plays as with Input at "
+                       + juce::String (matchedA2->calibrationDb(), 2) + " dB (the same to " + juce::String (worst (a2Matched, a2ByHand, 1.0f), 7) + ")");
+
+            // The studio's option sets every amp's interface level; an amp saved with a model before calibration came in
+            // keeps the sound it was saved with, and a new one starts matched
+            auto options = audio.getOptions();
+            options.interfaceInputDbu = 9.5;
+            audio.setOptions (options);
+            const double fromOptions = NightAmp::getInterfaceLevel();
+            options.interfaceInputDbu = NightAmp::defaultInterfaceLevel;
+            audio.setOptions (options);
+
+            auto before = calibrated->state.createCopy();
+            before.removeProperty ("calibrate", nullptr);
+            auto* older = reopen (before);
+            set (*calibrated, "calibrate", 0.0f);
+            auto* keptOff = reopen (calibrated->state.createCopy());
+            set (*calibrated, "calibrate", 1.0f);
+            auto* keptOn = reopen (calibrated->state.createCopy());
+            auto* added = make (48000.0, 512);
+            check (fromOptions == 9.5 && older != nullptr && older->hasModel() && older->calibrationDb() == 0.0f && keptOff != nullptr && keptOff->calibrationDb() == 0.0f
+                       && keptOn != nullptr && std::abs (keptOn->calibrationDb() + 6.0f) < 1.0e-4f && added->state.hasProperty ("calibrate")
+                       && added->findParam ("calibrate")->get() >= 0.5f,
+                   "the interface's level is the studio's option (9.5 dBu set there, " + juce::String (fromOptions, 1) + " heard); an amp saved before "
+                       "calibration keeps its sound (off), one saved since opens as it was, a new one starts matched");
+
+            // A slimmable model at each of its sizes. Made here, a container of three Linear models (a quarter, half and
+            // the whole level), so what's heard says which size played
+            auto sizes = folder.getChildFile ("three sizes.nam");
+            {
+                auto part = [] (double maxValue, double weight)
+                {
+                    return "{\"max_value\": " + juce::String (maxValue, 2) + ", \"model\": {\"version\": \"0.5.4\", \"architecture\": \"Linear\", "
+                           "\"config\": {\"receptive_field\": 1, \"bias\": false}, \"weights\": [" + juce::String (weight, 2) + "], \"sample_rate\": 48000}}";
+                };
+
+                sizes.replaceWithText ("{\"version\": \"0.7.0\", \"architecture\": \"SlimmableContainer\", \"config\": {\"submodels\": ["
+                                       + part (0.3, 0.25) + ", " + part (0.6, 0.5) + ", " + part (1.0, 1.0) + "]}, \"weights\": [], \"sample_rate\": 48000}");
+            }
+
+            auto* sized = make (48000.0, 512);
+            sized->loadModel (sizes);
+            juce::StringArray heard;
+            bool eachRight = sized->numSizes() == 3 && sized->getSize() == 2;
+
+            for (int size : { 0, 1, 2, 1, 0 })
+            {
+                sized->setSize (size);
+                const auto b = through (*sized);
+                const float wanted = size == 0 ? 0.25f : size == 1 ? 0.5f : 1.0f;
+                eachRight = eachRight && sized->getSize() == size && worst (b, reference, wanted) < 1.0e-5f;
+                heard.add (juce::String (gainDb (b), 1));
+            }
+
+            check (eachRight, "a slimmable model made here comes in 3 sizes, starts whole, and plays each size picked: "
+                              + heard.joinIntoString (", ") + " dB at sizes 1, 2, 3, 2, 1 (a quarter, half, the whole)");
+
+            // NAM's own: a container (an LSTM and two WaveNets) and a WaveNet that drops to 1 or 2 of its 3 channels,
+            // each size its own sound, the whole one as the model loads
+            for (auto name : { "slimmable_container.nam", "slimmable_wavenet.nam" })
+            {
+                auto* model = make (48000.0, 512);
+                auto* whole = make (48000.0, 512);
+                const auto loadedOk = model->loadModel (examples.getChildFile (name)).isEmpty() && whole->loadModel (examples.getChildFile (name)).isEmpty();
+                set (*model, "evenOut", 0.0f);
+                set (*whole, "evenOut", 0.0f);
+                std::vector<juce::AudioBuffer<float>> outs;
+                juce::StringArray levels;
+
+                for (int size = 0; loadedOk && size < model->numSizes(); ++size)
+                {
+                    model->setSize (size);
+                    auto b = sine (220.0, 0.25f, 12000, 48000.0);
+                    run (*model, b, 48000.0, 512);
+                    levels.add (juce::String (rmsDb (b, 6000, 12000), 1));
+                    outs.push_back (b);
+                }
+
+                auto asLoaded = sine (220.0, 0.25f, 12000, 48000.0);
+                run (*whole, asLoaded, 48000.0, 512);
+                bool distinct = outs.size() == 3, allFinite = true;
+
+                for (size_t i = 0; i < outs.size(); ++i)
+                {
+                    allFinite = allFinite && finite (outs[i]) && rmsDb (outs[i], 6000, 12000) > -80.0f;
+
+                    for (size_t j = i + 1; j < outs.size(); ++j)
+                        distinct = distinct && worst (outs[i], outs[j], 1.0f) > 1.0e-3f;
+                }
+
+                // (the whole size after the smaller ones is built afresh: it starts from silence, as the one loaded did)
+                const float sameAsLoaded = outs.empty() ? 1.0f : worst (outs.back(), asLoaded, 1.0f);
+                check (loadedOk && model->numSizes() == 3 && distinct && allFinite && sameAsLoaded < 1.0e-4f,
+                       juce::String ("NAM's ") + name + " in " + juce::String (model->numSizes()) + " sizes, each heard on its own: " + levels.joinIntoString (", ")
+                           + " dB out; the whole one as it loads (to " + juce::String (sameAsLoaded, 6) + ")");
+            }
+
+            // What a size saves: NAM's A2, a WaveNet of 3 channels and one of 8, ten seconds through each (best of three)
+            {
+                auto* timed = make (48000.0, 256);
+                timed->loadModel (a2);
+                double took[2] { 1.0e9, 1.0e9 };
+
+                for (int round = 0; round < 3; ++round)
+                    for (int size : { 0, 1 })
+                    {
+                        timed->setSize (size);
+                        auto b = sine (110.0, 0.3f, 480000, 48000.0);
+                        const double t0 = juce::Time::getMillisecondCounterHiRes();
+                        run (*timed, b, 48000.0, 256);
+                        took[size] = std::min (took[size], juce::Time::getMillisecondCounterHiRes() - t0);
+                    }
+
+                check (timed->numSizes() == 2 && took[0] < took[1],
+                       "NAM's A2 in its 2 sizes: the small one runs " + juce::String (10000.0 / took[0], 1) + " times faster than real time, the whole one "
+                           + juce::String (10000.0 / took[1], 1) + " times");
+            }
+
+            // Kept in the song: the size it was set to, and a new model starts whole
+            sized->setSize (0);
+            auto* reopenedSize = reopen (sized->state.createCopy());
+
+            if (reopenedSize != nullptr)
+                reopenedSize->initialise ({ te::TimePosition(), 48000.0, 512 });
+
+            const auto smallAgain = reopenedSize != nullptr ? through (*reopenedSize) : reference;
+            sized->loadModel (a2);
+            check (reopenedSize != nullptr && reopenedSize->getSize() == 0 && worst (smallAgain, reference, 0.25f) < 1.0e-5f
+                       && sized->getSize() == sized->numSizes() - 1 && ! sized->state.hasProperty ("size"),
+                   "kept in the song: opened again it plays at the size it was set to; another model loaded starts whole");
+
             // Its panel: which amp, and every word readable
             if (auto panel = createStockPanel (*amp, song, audio))
             {
@@ -12241,10 +12849,48 @@ namespace
                 const bool named = std::any_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.text == "Test Model"; });
                 const bool readable = std::all_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.fine(); });
                 check (named && readable, "its panel says which amp it is (Test Model), and every word on it is readable");
+
+                // NAM's example WaveNet comes in one size: no size control; it says it was captured at 18.3 dBu
+                const auto* sizeControl = panel->findChildWithID ("size");
+                const bool matchedLine = std::any_of (runs.begin(), runs.end(), [] (const textaudit::Run& r)
+                                                      { return r.text == "Input matched to the amp: -6.3 dB (it was captured at 18.3 dBu)"; });
+                check (sizeControl != nullptr && ! sizeControl->isVisible() && matchedLine && panel->findChildWithID ("calibrate") != nullptr
+                           && panel->findChildWithID ("interfaceLevel") != nullptr,
+                       "its panel has Match input level and your interface's level, says how much matching adds (-6.3 dB for the example WaveNet), "
+                       "and no size control for a model that comes in one size");
             }
             else
             {
                 check (false, "it has a panel");
+            }
+
+            // A slimmable model's panel: its size, clicked smaller and back
+            if (auto panel = createStockPanel (*sized, song, audio))
+            {
+                auto* sizeControl = panel->findChildWithID ("size");
+                bool clicked = false;
+
+                if (sizeControl != nullptr && sizeControl->isVisible())
+                {
+                    auto clickAt = [sizeControl] (float x)
+                    {
+                        const auto at = juce::Point<float> (x, sizeControl->getHeight() * 0.5f);
+                        const auto now = juce::Time::getCurrentTime();
+                        sizeControl->mouseDown (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), at,
+                                                                  juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                                                  sizeControl, sizeControl, now, at, now, 1, false));
+                    };
+
+                    clickAt (50.0f);
+                    const bool smallest = sized->getSize() == 0;
+                    clickAt ((float) sizeControl->getWidth() - 104.0f);
+                    clicked = smallest && sized->getSize() == sized->numSizes() - 1;
+                }
+
+                const auto runs = textaudit::collect (*panel);
+                const bool readable = std::all_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.fine(); });
+                check (clicked && readable, "a slimmable model's panel shows its size; clicked at the left it's the smallest, at the right the whole "
+                                            "model again, and every word is readable");
             }
 
             // What a standard-size WaveNet costs: ten seconds through it
@@ -12303,6 +12949,7 @@ namespace
                 { "the reverb", "--effectpanel nightshiftReverb" }, { "the delay", "--effectpanel nightshiftDelay" },
                 { "the chorus", "--effectpanel nightshiftChorus" }, { "the NAM amp, empty", "--effectpanel nightshiftAmp" },
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
+                { "the NAM amp, a model in two sizes, the smaller", "--effectpanel nightshiftAmp --nammodel a2 --namsize 0" },
                 { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
                 { "automation lanes", "--automationdemo" }, { "a bus's automation lanes", "--buses --automationdemo --busautomation" },
@@ -12312,7 +12959,11 @@ namespace
                 { "a plugin's Inspector", "--moretracks --select \"Surge XT\"" },
                 { "an instrument's Inspector", "--moretracks --select \"Violin Section\"" },
                 { "a synth plugged in's Inspector", "--midiouts \"Synth module\" --midioutchannel --select \"Synth module\"" },
-                { "a sound search", "--search piano" }, { "no drum kits yet", "--nokits --raise drummer" },
+                { "a sound search", "--search piano" },
+                { "Samples, folders open and a sample playing", "--sampledemo --opensounds \"Samples;Downloads;Drum Pack;Kicks;Kick 10\"" },
+                { "Samples, searched", "--sampledemo --search tone" },
+                { "a sample dragged over Arrange", "--sampledemo --dragover 900,330 --dragsound \"sample:Loop 120 bpm\"" },
+                { "no drum kits yet", "--nokits --raise drummer" },
                 { "a MIDI keyboard playing", "--midilight \"Keystation 49\"" }, { "the Lofi effects", "--lofi --select Kick" },
                 { "armed to record", "--moretracks --armrecord" }
             };
@@ -16428,6 +17079,19 @@ namespace
                 song.notify (Song::Change::selection);
             }
 
+            // Samples with sounds in them (--sampledemo): the sounds the samples suite makes, in Downloads' and Music's
+            // place, and its folder of one's own added; looked through before anything's opened or searched. A sample
+            // named in --opensounds is clicked, so it shows playing
+            if (args.has ("--sampledemo"))
+            {
+                const auto made = writeSampleFolders (juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift sample demo"));
+                samples::standardFoldersOverride = { made[0], made[1] };
+                auto options = audio.getOptions();
+                options.sampleFolders = { made[2].getFullPathName() };
+                audio.setOptions (options);
+                main.getSidebar().lookThroughSamples (10000);
+            }
+
             // Text in the sound search, as if typed after Ctrl+K
             if (auto text = args.valueAfter ("--search"); text.isNotEmpty())
                 main.getSidebar().setSearchText (text);
@@ -16563,6 +17227,17 @@ namespace
                     for (auto& p : song.patterns)
                         if (p.name == sound.fromFirstOccurrenceOf ("pattern:", false, false))
                             sound = juce::String (patternDragPrefix) + juce::String (p.id);
+                }
+
+                // A sample by its name, in Samples' folders (with --sampledemo: "sample:Loop 120 bpm")
+                if (sound.startsWith ("sample:"))
+                {
+                    const auto name = sound.fromFirstOccurrenceOf ("sample:", false, false);
+
+                    for (auto& folder : samples::standardFolders())
+                        for (auto& f : folder.findChildFiles (juce::File::findFiles, true, name + ".*"))
+                            if (samples::isAudioFile (f))
+                                sound = juce::String (soundDragPrefix) + "sample:" + f.getFullPathName();
                 }
 
                 if (sound.isEmpty())
@@ -16876,12 +17551,16 @@ namespace
                 {
                     fx->initialise ({ te::TimePosition(), 48000.0, 512 });
 
-                    // The NAM amp with a model in it (--nammodel <file.nam>, or "example": NAM's own wavenet) and a
-                    // cabinet (--namcabinet <file.wav>)
+                    // The NAM amp with a model in it (--nammodel <file.nam>, "example": NAM's own wavenet, or "a2": its
+                    // A2, which comes in two sizes) and a cabinet (--namcabinet <file.wav>); --namsize 0 picks a size
                     if (auto amp = dynamic_cast<NightAmp*> (fx))
                     {
                         if (auto model = args.valueAfter ("--nammodel"); model.isNotEmpty())
-                            amp->loadModel (model == "example" ? juce::File (NIGHTSHIFT_NAM_EXAMPLES).getChildFile ("wavenet.nam") : juce::File (model));
+                            amp->loadModel (model == "example" ? juce::File (NIGHTSHIFT_NAM_EXAMPLES).getChildFile ("wavenet.nam")
+                                            : model == "a2" ? juce::File (NIGHTSHIFT_NAM_EXAMPLES).getChildFile ("A2.nam") : juce::File (model));
+
+                        if (auto size = args.valueAfter ("--namsize"); size.isNotEmpty())
+                            amp->setSize (size.getIntValue());
 
                         if (auto cab = args.valueAfter ("--namcabinet"); cab.isNotEmpty())
                             amp->loadCabinet (juce::File (cab));
