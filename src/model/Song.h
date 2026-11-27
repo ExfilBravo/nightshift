@@ -269,28 +269,47 @@ struct PlaylistClip
     int length = 0;                  // ticks it plays for; 0: on to the end of its pattern
 };
 
-/** A point on an automation lane: the parameter's value at a moment of the song. */
+/** A point on an automation lane: the parameter's value at a moment of the song, and how the
+    line on to the next point bends (FL's curves): 0 straight; towards 1 it eases in (it starts
+    slowly and gets there quickly), towards -1 it eases out. */
 struct AutomationPoint
 {
     int tick = 0;
     float value = 0.0f;              // in the parameter's own units (pan -1..1, a fader's 0..1...)
+    float curve = 0.0f;              // the bend of the line from here to the next point, -1..1
     bool operator== (const AutomationPoint&) const = default;
 };
 
+/** The shape of a bent automation line. A bend is where the line's middle (in time) gets to: a
+    bend of `c` puts it (1 - c) / 2 of the way from the first value to the second, so dragging the
+    middle of a line up or down sets its bend. Easing in is a power curve, easing out its mirror. */
+namespace automationcurve
+{
+    constexpr float most = 0.95f;    // as far as a line bends either way (its middle 2.5% of the way)
+
+    /** How far along a line its value has got (0..1) at `along` (0..1) of the way in time. */
+    float shape (float along, float curve);
+
+    /** The bend that puts the middle `fraction` (0..1) of the way, and back. */
+    inline float fromMiddle (float fraction)        { return juce::jlimit (-most, most, 1.0f - 2.0f * fraction); }
+    inline float middleOf (float curve)             { return (1.0f - curve) * 0.5f; }
+}
+
 /** One parameter changing over the song (Logic's automation), drawn as a lane under its
-    channel's track in Arrange, or along the bottom for the master's. Song mode plays it; in
-    Pattern mode the parameter stays where its control is. Its parameter, by key:
+    channel's track in Arrange, or along the bottom for a bus's and the master's. Song mode plays
+    it; in Pattern mode the parameter stays where its control is. Its parameter, by key:
     "volume", "pan", "send:<bus id>", "fx:<effect id>:<parameter id>", "instrument:<parameter id>";
-    the master (owner 0) has "volume" and "fx:...". */
+    a bus has "volume", "pan" and "fx:...", the master (owner 0) "volume" and "fx:...". */
 struct AutomationLane
 {
-    int owner = 0;                   // the channel, or 0 for the master
+    int owner = 0;                   // the channel or bus, or 0 for the master
     juce::String param;
     juce::String name;               // what it was called, for when its plugin isn't there
     std::vector<AutomationPoint> points;     // in time order
 
-    /** Its value at `tick`: straight lines between points, level before the first and after the last. */
-    float valueAt (int tick) const;
+    /** Its value at `tick`: lines between points (bent as each point says), level before the
+        first and after the last. */
+    float valueAt (double tick) const;
 };
 
 /** A knob or fader on a MIDI controller linked to one of NightShift's (MIDI learn): moving it
@@ -300,7 +319,7 @@ struct ControllerLink
     juce::String device;             // the MIDI input it comes from
     int midiChannel = 1;             // 1..16
     int controller = 0;              // the CC number
-    int owner = 0;                   // the channel, or 0 for the master
+    int owner = 0;                   // the channel or bus, or 0 for the master
     juce::String param;              // "volume", "pan", "send:<bus id>", "fx:<effect id>:<parameter id>", "instrument:<parameter id>"
 };
 
@@ -536,8 +555,11 @@ public:
     /** The lane for a parameter, added (with no points) if there isn't one. */
     AutomationLane& laneFor (int owner, const juce::String& param, const juce::String& name);
 
-    /** The lanes of a channel (or of the master, for 0), in the order they were added. */
+    /** The lanes of a channel or bus (or of the master, for 0), in the order they were added. */
     std::vector<const AutomationLane*> lanesOf (int owner) const;
+
+    /** Whether lanes can belong to it: the master (0), a channel or a bus. */
+    bool canOwnAutomation (int owner) const          { return owner == 0 || findChannel (owner) != nullptr || findBus (owner) != nullptr; }
 
     // MIDI controllers' knobs linked to controls (MIDI learn), saved with the song
     std::vector<ControllerLink> controllerLinks;
@@ -657,7 +679,8 @@ public:
     Bus& addBus (const juce::String& name = {});
     void removeChannel (int id);
 
-    /** Takes a bus away, and every output and send to it (those channels go to the master). */
+    /** Takes a bus away, and every output and send to it (those channels go to the master), with
+        its automation lanes and MIDI links and those of the sends to it. */
     void removeBus (int id);
     void removePattern (int id);
 

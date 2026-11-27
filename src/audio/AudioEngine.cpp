@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "AudioEngine.h"
+#include "AutomationRecorder.h"
 #include "model/Paths.h"
 #include "DrumKit.h"
 #include "DrumSynth.h"
@@ -351,6 +352,7 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
     loadPluginList (getKnownPlugins(), pluginListFile());
     getKnownPlugins().addChangeListener (this);
     song.addListener (this);
+    automationRecorder = std::make_unique<AutomationRecorder> (song, *this);
     syncNow();
 }
 
@@ -358,6 +360,7 @@ AudioEngine::~AudioEngine()
 {
     *alive = false;
     stopTimer();
+    automationRecorder.reset();     // off every parameter it listens to, while they're there
     pluginFinder.reset();
 
     if (liveAudio)
@@ -1573,6 +1576,19 @@ te::AutomatableParameter* AudioEngine::findAutomationParameter (int owner, const
         return param.startsWith ("fx:") ? inChain (masterFx) : nullptr;
     }
 
+    // A bus: its track's volume and pan, and its effects
+    if (auto bus = busSlots.find (owner); bus != busSlots.end())
+    {
+        if (bus->second.track == nullptr)
+            return nullptr;
+
+        if (param == "volume" || param == "pan")
+            if (auto vp = bus->second.track->getVolumePlugin())
+                return param == "volume" ? vp->volParam.get() : vp->panParam.get();
+
+        return param.startsWith ("fx:") ? inChain (bus->second.effects) : nullptr;
+    }
+
     auto it = slots.find (owner);
 
     if (it == slots.end() || it->second.track == nullptr)
@@ -1632,6 +1648,17 @@ std::vector<AudioEngine::AutomationTarget> AudioEngine::automationTargets (int o
         return targets;
     }
 
+    // A bus: volume, pan and its effects (it sends nowhere but on, to the master)
+    if (auto bus = busSlots.find (owner); bus != busSlots.end())
+    {
+        targets.push_back ({ "pan", {}, "Pan" });
+
+        for (auto& [id, plugin] : bus->second.effects)
+            addPlugin (plugin.get(), "fx:" + juce::String (id) + ":", effectName (id, plugin.get()));
+
+        return targets;
+    }
+
     auto it = slots.find (owner);
 
     if (it == slots.end() || it->second.track == nullptr)
@@ -1664,6 +1691,20 @@ std::optional<std::pair<int, juce::String>> AudioEngine::automationKeyFor (const
     for (auto& [id, plugin] : masterFx)
         if (holds (plugin.get()))
             return std::make_pair (0, "fx:" + juce::String (id) + ":" + param.paramID);
+
+    for (auto& [owner, slot] : busSlots)
+    {
+        if (slot.track != nullptr)
+            if (auto vp = slot.track->getVolumePlugin())
+            {
+                if (vp->volParam.get() == p)  return std::make_pair (owner, juce::String ("volume"));
+                if (vp->panParam.get() == p)  return std::make_pair (owner, juce::String ("pan"));
+            }
+
+        for (auto& [id, plugin] : slot.effects)
+            if (holds (plugin.get()))
+                return std::make_pair (owner, "fx:" + juce::String (id) + ":" + param.paramID);
+    }
 
     for (auto& [owner, slot] : slots)
     {
@@ -1701,6 +1742,39 @@ juce::String AudioEngine::automationName (int owner, const juce::String& param) 
     return param;
 }
 
+std::vector<std::pair<double, float>> AudioEngine::curvePoints (const AutomationLane& lane)
+{
+    std::vector<std::pair<double, float>> out;
+    out.reserve (lane.points.size());
+
+    for (size_t i = 0; i < lane.points.size(); ++i)
+    {
+        const auto& a = lane.points[i];
+        out.emplace_back ((double) a.tick, a.value);
+
+        if (i + 1 == lane.points.size() || a.curve == 0.0f)
+            continue;
+
+        // A bent line: short straight ones along it, one every two ticks up to 48 (within a
+        // thousandth of the way at the sharpest bend)
+        const auto& b = lane.points[i + 1];
+        const int span = b.tick - a.tick;
+
+        if (span <= 0 || b.value == a.value)
+            continue;
+
+        const int steps = juce::jlimit (4, 48, span / 2);
+
+        for (int k = 1; k < steps; ++k)
+        {
+            const float along = (float) k / (float) steps;
+            out.emplace_back (a.tick + span * (double) along, a.value + (b.value - a.value) * automationcurve::shape (along, a.curve));
+        }
+    }
+
+    return out;
+}
+
 void AudioEngine::syncAutomation()
 {
     // Song mode plays the lanes. Pattern mode loops one pattern, where the song's automation
@@ -1718,21 +1792,30 @@ void AudioEngine::syncAutomation()
 
             driven.insert (param);
 
-            // Written again only when something changed (or the plugin is new, its curve empty)
+            // A lane being recorded is the hand's until it's let go: the parameter follows the hand
+            // meanwhile, and its curve is written once, when it's let go
+            if (automationRecorder != nullptr && automationRecorder->isWritingLane (lane.owner, lane.param))
+                continue;
+
+            // Written again only when something changed (or the plugin is new, its curve empty).
+            // A bent line goes in as short straight ones: Tracktion's own bends play only a quarter
+            // of the way to the corner before turning into a hold and a jump, and its message thread
+            // works them out twice as bent as its player, so a stopped song would sit elsewhere
             auto& written = writtenAutomation[juce::String (lane.owner) + "/" + lane.param];
             auto& curve = param->getCurve();
+            const auto wanted = curvePoints (lane);
 
             if (written.param == param && written.points == lane.points && written.bpm == song.bpm
                  && written.tempoChanges == song.tempoChanges && written.unit == song.meterUnit
-                 && curve.getNumPoints() == (int) lane.points.size())
+                 && curve.getNumPoints() == (int) wanted.size())
                 continue;
 
             const auto range = param->getValueRange();
             curve.clear (nullptr);
 
-            for (auto& point : lane.points)
-                curve.addPoint (te::TimePosition::fromSeconds (ticksToSeconds (point.tick)),
-                                juce::jlimit (range.getStart(), range.getEnd(), point.value), 0.0f, nullptr);
+            for (auto& [tick, value] : wanted)
+                curve.addPoint (te::TimePosition::fromSeconds (ticksToSeconds (tick)),
+                                juce::jlimit (range.getStart(), range.getEnd(), value), 0.0f, nullptr);
 
             written = { param, lane.points, song.bpm, song.tempoChanges, song.meterUnit };
         }
@@ -1770,6 +1853,15 @@ void AudioEngine::syncAutomation()
             sweep (plugin.get());
     }
 
+    for (auto& [id, slot] : busSlots)
+    {
+        if (slot.track != nullptr)
+            sweep (slot.track->getVolumePlugin());
+
+        for (auto& [effectId, plugin] : slot.effects)
+            sweep (plugin.get());
+    }
+
     for (auto& [id, plugin] : masterFx)
         sweep (plugin.get());
 
@@ -1778,6 +1870,173 @@ void AudioEngine::syncAutomation()
 
     if (restored)
         syncMixer();
+}
+
+//==============================================================================
+namespace
+{
+    /** A Tracktion fader position (a volume's or a send's parameter) as the song's 0..1, where
+        0.78 is 0 dB: channelVolumeToDb backwards. */
+    float levelFromFaderPosition (float position)
+    {
+        const float db = te::volumeFaderPositionToDB (position);
+        return db <= -99.0f ? 0.0f : juce::jlimit (0.0f, 1.0f, 0.78f * std::pow (10.0f, db / 40.0f));
+    }
+}
+
+void AudioEngine::setAutomationRecording (bool on)
+{
+    if (automationRecorder != nullptr)
+        automationRecorder->setArmed (on);
+}
+
+bool AudioEngine::isAutomationRecording() const
+{
+    return automationRecorder != nullptr && automationRecorder->isArmed();
+}
+
+bool AudioEngine::isWritingAutomation() const
+{
+    return automationRecorder != nullptr && automationRecorder->isWriting();
+}
+
+bool AudioEngine::isWritingLane (int owner, const juce::String& param) const
+{
+    return automationRecorder != nullptr && automationRecorder->isWritingLane (owner, param);
+}
+
+void AudioEngine::touchControl (int owner, const juce::String& param, bool down, bool held)
+{
+    if (automationRecorder == nullptr || ! automationRecorder->isArmed())
+        return;
+
+    // The song's own controls: their faders made the undo step as they were grabbed. Their moves
+    // reach the parameter a moment later (syncMixer), so the last one goes in before letting go
+    if (auto p = findAutomationParameter (owner, param))
+    {
+        if (! held)
+            automationRecorder->nudge (*p, false);
+        else if (down)
+            automationRecorder->touch (*p, true, false);
+        else
+        {
+            syncNow();
+            automationRecorder->touch (*p, false, false);
+        }
+    }
+}
+
+void AudioEngine::touchParameter (te::AutomatableParameter& p, bool down, bool held)
+{
+    if (automationRecorder == nullptr || ! automationRecorder->isArmed())
+        return;
+
+    if (! held)
+        automationRecorder->nudge (p);
+    else
+        automationRecorder->touch (p, down);
+}
+
+double AudioEngine::getHeardTicks() const
+{
+    // Where the audio thread is now, less the output's delay before it's heard
+    auto& transport = edit->getTransport();
+    double seconds = transport.getPosition().inSeconds();
+
+    if (auto context = transport.getCurrentPlaybackContext())
+        seconds = context->getPosition().inSeconds();
+
+    if (const auto info = getLatencyInfo(); info.sampleRate > 0.0)
+        seconds -= info.outputSamples / info.sampleRate;
+
+    return secondsToTicks (seconds);
+}
+
+std::vector<te::AutomatableParameter*> AudioEngine::allAutomationParameters() const
+{
+    std::vector<te::AutomatableParameter*> all;
+
+    auto add = [&all] (te::Plugin* plugin)
+    {
+        if (plugin != nullptr)
+            for (auto* p : plugin->getAutomatableParameters())
+                all.push_back (p);
+    };
+
+    for (auto& [id, slot] : slots)
+    {
+        if (slot.track != nullptr)
+            add (slot.track->getVolumePlugin());
+
+        add (slot.instrument.get());
+
+        for (auto& [effectId, plugin] : slot.effects)
+            add (plugin.get());
+
+        for (auto& [key, plugin] : slot.sends)
+            add (plugin.get());
+    }
+
+    for (auto& [id, slot] : busSlots)
+    {
+        if (slot.track != nullptr)
+            add (slot.track->getVolumePlugin());
+
+        for (auto& [effectId, plugin] : slot.effects)
+            add (plugin.get());
+    }
+
+    for (auto& [id, plugin] : masterFx)
+        add (plugin.get());
+
+    add (masterLimiter.get());
+    return all;
+}
+
+void AudioEngine::takeParameterValue (int owner, const juce::String& param, float value)
+{
+    auto p = findAutomationParameter (owner, param);
+
+    if (p != nullptr)
+        p->setParameter (value, juce::dontSendNotification);
+
+    // The song's own controls keep their values in the song (syncMixer puts them back on)
+    bool mixer = true;
+
+    if (owner == 0 && param == "volume")
+        song.masterVolume = juce::jlimit (0.0f, 1.0f, value);
+    else if (auto c = song.findChannel (owner); c != nullptr && param == "volume")
+        c->volume = levelFromFaderPosition (value);
+    else if (c != nullptr && param == "pan")
+        c->pan = juce::jlimit (-1.0f, 1.0f, value);
+    else if (auto s = c != nullptr && param.startsWith ("send:") ? Song::findSend (*c, param.fromFirstOccurrenceOf ("send:", false, false).getIntValue()) : nullptr)
+        s->level = levelFromFaderPosition (value);
+    else if (auto b = song.findBus (owner); b != nullptr && param == "volume")
+        b->volume = levelFromFaderPosition (value);
+    else if (b != nullptr && param == "pan")
+        b->pan = juce::jlimit (-1.0f, 1.0f, value);
+    else
+        mixer = false;
+
+    if (mixer)
+        song.notify (Song::Change::mixer);
+}
+
+std::optional<float> AudioEngine::getAutomatedControl (int owner, const juce::String& param) const
+{
+    if (song.mode != PlayMode::song || ! isPlaying())
+        return std::nullopt;
+
+    const auto* lane = song.findLane (owner, param);
+    auto p = lane != nullptr && ! lane->points.empty() ? findAutomationParameter (owner, param) : nullptr;
+
+    if (p == nullptr)
+        return std::nullopt;
+
+    // The master's volume and every pan are in the song's units already; volumes and sends are
+    // Tracktion fader positions
+    const float value = p->getCurrentValue();
+    return owner == 0 || param == "pan" ? value : levelFromFaderPosition (value);
 }
 
 //==============================================================================
@@ -2064,6 +2323,11 @@ bool AudioEngine::applyControllerLinks (const juce::String& device, const juce::
 
         any = true;
 
+        // Recording automation: the knob writes its control's lane until it's left alone a moment
+        if (automationRecorder != nullptr && automationRecorder->isWriting())
+            if (auto p = findAutomationParameter (link.owner, link.param))
+                automationRecorder->nudge (*p);
+
         // The song's own controls through the song (their faders follow, it's saved); anything
         // else straight to its parameter
         if (link.param == "volume" || link.param == "pan" || link.param.startsWith ("send:"))
@@ -2081,6 +2345,13 @@ bool AudioEngine::applyControllerLinks (const juce::String& device, const juce::
                     c->pan = norm * 2.0f - 1.0f;
                 else if (auto s = Song::findSend (*c, link.param.fromFirstOccurrenceOf ("send:", false, false).getIntValue()))
                     s->level = norm;
+            }
+            else if (auto b = song.findBus (link.owner))
+            {
+                if (link.param == "volume")
+                    b->volume = norm;
+                else if (link.param == "pan")
+                    b->pan = norm * 2.0f - 1.0f;
             }
 
             mixer = true;

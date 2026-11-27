@@ -14,6 +14,8 @@ namespace te = tracktion;
 namespace nightshift
 {
 
+class AutomationRecorder;
+
 /** Mirrors the Song into a Tracktion Edit: one audio track per channel holding its
     instrument, and MIDI clips generated from the patterns (the current pattern in
     pattern mode, the playlist in song mode). Audio channels are tracks fed by an
@@ -282,6 +284,50 @@ public:
 
     /** What a lane is called: "Volume", "Send to Reverb", "Delay: Feedback". */
     juce::String automationName (int owner, const juce::String& param) const;
+
+    /** A lane's points as its parameter's curve takes them, ticks and values: a bent line as
+        short straight ones (see syncAutomation). */
+    static std::vector<std::pair<double, float>> curvePoints (const AutomationLane&);
+
+    /** Recording automation (Logic's touch, FL's automation recording): switched on, a control
+        moved while the song plays in Song mode writes its lane, from where it was grabbed to where
+        it was let go (see AutomationRecorder). Off each time NightShift opens. */
+    void setAutomationRecording (bool);
+    bool isAutomationRecording() const;
+
+    /** Switched on, and the song playing in Song mode past any count-in: a control moved now is
+        written. */
+    bool isWritingAutomation() const;
+
+    /** Whether a lane is being written now (its header shows it). */
+    bool isWritingLane (int owner, const juce::String& param) const;
+
+    /** One of the song's own controls grabbed (down) or let go, by its lane's key: a fader, a pan
+        bar, a send. Not `held`: a change with no holding (the wheel, a double-click), written until
+        it's left alone a moment. */
+    void touchControl (int owner, const juce::String& param, bool down, bool held = true);
+
+    /** A knob's parameter grabbed or let go (a stock effect's, Nova's); `held` as above. */
+    void touchParameter (te::AutomatableParameter&, bool down, bool held = true);
+
+    /** A lane has started being written: the studio makes sure it's on show. */
+    std::function<void (int owner, const juce::String& param)> onAutomationWriting;
+
+    /** Where in the song what's heard now is, in ticks: the playhead less the output's delay. */
+    double getHeardTicks() const;
+
+    /** Every parameter automation can drive now: the channels', buses' and the master's. */
+    std::vector<te::AutomatableParameter*> allAutomationParameters() const;
+
+    /** Puts a parameter's value (in its own units) into its control: the song's own (volume, pan,
+        a send, the master volume) through the song, so their faders show it; anything else
+        straight into the parameter. */
+    void takeParameterValue (int owner, const juce::String& param, float value);
+
+    /** What one of the song's own controls (volume, pan, a send, the master volume) is at while its
+        automation drives it, in the song's units: Song mode playing a lane with points; else
+        nothing, and it's where the song has it. */
+    std::optional<float> getAutomatedControl (int owner, const juce::String& param) const;
 
     //==============================================================================
     /** MIDI keyboards and controllers. Every MIDI input (bar those switched off in Audio
@@ -626,6 +672,9 @@ private:
     };
 
     std::map<juce::String, WrittenAutomation> writtenAutomation;
+
+    // Recording automation: made with the edit, gone before it
+    std::unique_ptr<AutomationRecorder> automationRecorder;
 
     void songChanged (Song::Change) override;
     void handleAsyncUpdate() override;
