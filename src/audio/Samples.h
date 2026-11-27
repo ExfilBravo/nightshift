@@ -22,6 +22,18 @@ namespace nightshift::samples
     /** Tests and snapshots list folders of their own in their place (empty: the real ones). */
     extern juce::Array<juce::File> standardFoldersOverride;
 
+    /** NightShift's own folders of sounds, listed after Downloads and Music when there's something in them: the free
+        packs ("Free packs"), the drum kits ("Drum kits") and the sampled instruments ("Piano and orchestra"), each with
+        its credit. Command-line runs leave them out unless a test asks (ownFoldersShown). */
+    struct OwnFolder
+    {
+        juce::File folder;
+        juce::String name, credit;
+    };
+
+    std::vector<OwnFolder> ownFolders();
+    extern bool ownFoldersShown;
+
     /** A folder as the list names it: Downloads and Music by those names (whatever the system calls them), any
         other by its own name. */
     juce::String displayName (const juce::File& folder);

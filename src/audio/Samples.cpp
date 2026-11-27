@@ -2,11 +2,36 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "Samples.h"
+#include "Packs.h"
+#include "Kits.h"
+#include "Sfz.h"
 
 namespace nightshift::samples
 {
 
 juce::Array<juce::File> standardFoldersOverride;
+bool ownFoldersShown = true;
+
+std::vector<OwnFolder> ownFolders()
+{
+    std::vector<OwnFolder> found;
+
+    if (! ownFoldersShown)
+        return found;
+
+    auto add = [&found] (const juce::File& dir, const juce::String& name, const juce::String& credit)
+    {
+        if (dir.isDirectory() && ! dir.findChildFiles (juce::File::findFilesAndDirectories | juce::File::ignoreHiddenFiles, false).isEmpty())
+            found.push_back ({ dir, name, credit });
+    };
+
+    add (packs::folder(), "Free packs", "Free sample packs NightShift downloaded for you, each with its licence inside");
+    add (drumkits::folder(), "Drum kits", "NightShift's own 808 and 909; the studio kits: drum samples provided by DrumGizmo.org (CC BY 4.0); "
+                                          "AVL Drumkits by Glen MacArthur (CC BY-SA 3.0)");
+    add (SfzPlugin::folder(), "Piano and orchestra", "Salamander Grand Piano by Alexander Holm (CC BY 3.0); Versilian Studios Chamber "
+                                                     "Orchestra 2 Community Edition (CC0)");
+    return found;
+}
 
 bool isAudioFile (const juce::File& f)
 {
@@ -69,6 +94,10 @@ juce::Array<juce::File> standardFolders()
 
 juce::String displayName (const juce::File& folder)
 {
+    for (auto& own : ownFolders())
+        if (own.folder == folder)
+            return own.name;
+
     if (standardFoldersOverride.isEmpty())
     {
         if (folder == downloadsFolder())    return "Downloads";

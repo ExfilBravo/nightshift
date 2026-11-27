@@ -3765,6 +3765,8 @@ void AudioEngine::loadOptions()
     options.lowLatencyMonitoring = file.getBoolValue ("nsLowLatencyMonitoring", true);
     options.preferInterface = file.getBoolValue ("nsPreferInterface", true);
     options.interfaceInputDbu = juce::jlimit (-20.0, 40.0, file.getDoubleValue ("nsInterfaceInputDbu", NightAmp::defaultInterfaceLevel));
+    options.tone3000Token = file.getValue ("nsTone3000Token");
+    options.packsOffered = file.getBoolValue ("nsPacksOffered", false);
     options.countInBars = juce::jlimit (0, 2, file.getIntValue ("nsCountInBars", 1));
     options.computerKeyboard = file.getBoolValue ("nsComputerKeyboard", true);
     options.blendNotes = file.getBoolValue ("nsBlendNotes", true);
@@ -3837,6 +3839,12 @@ void AudioEngine::setOptions (const Options& o)
         file.setValue ("nsLowLatencyMonitoring", options.lowLatencyMonitoring);
         file.setValue ("nsPreferInterface", options.preferInterface);
         file.setValue ("nsInterfaceInputDbu", options.interfaceInputDbu);
+        file.setValue ("nsPacksOffered", options.packsOffered);
+
+        if (options.tone3000Token.isEmpty())
+            file.removeValue ("nsTone3000Token");
+        else
+            file.setValue ("nsTone3000Token", options.tone3000Token);
         file.setValue ("nsCountInBars", options.countInBars);
         file.setValue ("nsComputerKeyboard", options.computerKeyboard);
         file.setValue ("nsBlendNotes", options.blendNotes);

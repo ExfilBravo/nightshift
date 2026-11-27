@@ -11,6 +11,7 @@
 #include "audio/Kits.h"
 #include "audio/Instruments.h"
 #include "audio/GuitarSound.h"
+#include "audio/Packs.h"
 
 namespace nightshift
 {
@@ -274,6 +275,19 @@ void Sidebar::rebuildSounds()
 
             if (filtering || groupOpen[samplesGroup])
                 soundRows.insert (soundRows.end(), rows.begin(), rows.end());
+
+            // The packs' card on show: it's been offered (kept with NightShift, so it's offered once)
+            if (groupOpen[samplesGroup] && ! filtering && std::any_of (rows.begin(), rows.end(), [] (const Row& r) { return r.kind == Kind::card; }))
+            {
+                packsCardShown = true;
+
+                if (! audio.getOptions().packsOffered)
+                {
+                    auto options = audio.getOptions();
+                    options.packsOffered = true;
+                    audio.setOptions (options);
+                }
+            }
         }
     }
 
@@ -653,6 +667,27 @@ void Sidebar::paint (juce::Graphics& g)
             continue;
 
         // A line of words under a sample folder (looking through it, nothing in it): nothing to click
+        // Samples' card: free sample packs on offer, in its colour
+        if (row.kind == Kind::card)
+        {
+            auto card = area.withTrimmedLeft (20).toFloat().reduced (0.0f, 2.0f);
+            g.setColour (sampleColour.withAlpha (i == hoveredSound ? 0.22f : 0.14f));
+            g.fillRoundedRectangle (card, 7.0f);
+            g.setColour (sampleColour.withAlpha (0.5f));
+            g.drawRoundedRectangle (card.reduced (0.5f), 7.0f, 1.0f);
+
+            auto content = card.reduced (10.0f, 0.0f);
+            auto spark = icons::sparkle();
+            spark.applyTransform (spark.getTransformToScaleToFit (content.removeFromLeft (15.0f).withSizeKeepingCentre (15.0f, 15.0f), true));
+            g.setColour (sampleColour);
+            g.fillPath (spark);
+            content.removeFromLeft (8.0f);
+            g.setColour (text);
+            g.setFont (font (16.0f, true));
+            g.drawText (row.name, content, juce::Justification::centredLeft, true);
+            continue;
+        }
+
         if (row.kind == Kind::note)
         {
             g.setColour (textFaint);
@@ -846,7 +881,15 @@ void Sidebar::mouseDown (const juce::MouseEvent& e)
         const auto row = soundRows[(size_t) i];     // (a copy: rebuilding the rows below replaces them)
         pressedSound = i;
 
-        if (row.kind == Kind::group)
+        if (row.kind == Kind::group && row.id == samplesGroup && e.mods.isPopupMenu())
+        {
+            // Samples' own menu: the free packs, a folder of one's own
+            juce::PopupMenu menu;
+            menu.addItem ("Free sample packs...", [this] { if (onGetPacks != nullptr) onGetPacks(); });
+            menu.addItem ("Add a folder...", [this] { chooseSampleFolder(); });
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
+        }
+        else if (row.kind == Kind::group)
         {
             groupOpen[row.id] = ! groupOpen[row.id];
 
@@ -855,6 +898,11 @@ void Sidebar::mouseDown (const juce::MouseEvent& e)
                 lookThroughSampleFolders (60.0);
 
             rebuildSounds();
+        }
+        else if (row.kind == Kind::card || (row.kind == Kind::scan && row.id == getPacksRow))
+        {
+            if (onGetPacks != nullptr)
+                onGetPacks();
         }
         else if (row.kind == Kind::sampleFolder)
         {
@@ -986,12 +1034,25 @@ juce::String Sidebar::getTooltip()
                    "or into Steps for a sampler channel (or double-click it)";
 
         if (row.kind == Kind::sampleFolder)
-            return row.tip + (row.detail.isNotEmpty() ? ": " + row.detail + (row.detail == "1" ? " sound" : " sounds") : juce::String())
+        {
+            // NightShift's own folders say whose sounds they are
+            juce::String credit;
+
+            for (auto& own : samples::ownFolders())
+                if (row.depth == 1 && own.folder.getFullPathName() == row.key)
+                    credit = ". " + own.credit;
+
+            return row.tip + (row.detail.isNotEmpty() ? ": " + row.detail + (row.detail == "1" ? " sound" : " sounds") : juce::String()) + credit
                    + ". Click to show or hide what's in it" + (row.depth == 1 && audio.getOptions().sampleFolders.contains (row.key)
                                                                   ? ", right-click to take it out of Samples" : "");
+        }
 
         if (row.kind == Kind::scan && row.id == addSampleFolderRow)
             return "Add a folder of your own sounds to Samples; NightShift keeps it there";
+
+        if (row.kind == Kind::card || (row.kind == Kind::scan && row.id == getPacksRow))
+            return "Free sounds to use in your songs: drums, synths and loops made by NightShift, real drum kits, a piano and an orchestra. "
+                   "Pick the ones you want; nothing downloads until you say";
 
         if (row.kind == Kind::effect)
             return "Double-click to put " + row.name + " on the selected channel, or drag it onto a channel in Steps";
@@ -1009,8 +1070,13 @@ juce::String Sidebar::getTooltip()
 //==============================================================================
 juce::Array<juce::File> Sidebar::getSampleFolders() const
 {
-    // Downloads and Music, then the ones added (those that are there: a drive unplugged comes back with it)
+    // Downloads and Music, NightShift's own (the free packs, the drum kits, the piano and orchestra), then the ones added
+    // (those that are there: a drive unplugged comes back with it)
     auto folders = samples::standardFolders();
+
+    for (auto& own : samples::ownFolders())
+        if (! folders.contains (own.folder))
+            folders.add (own.folder);
 
     for (auto& path : audio.getOptions().sampleFolders)
         if (juce::File::isAbsolutePath (path) && juce::File (path).isDirectory() && ! folders.contains (juce::File (path)))
@@ -1036,6 +1102,10 @@ std::vector<Sidebar::Row> Sidebar::sampleRows (const juce::String& filter, int& 
 {
     std::vector<Row> rows;
     count = 0;
+
+    // The first time it opens with no packs yet, a card at its top offers the free ones (and for the rest of that run)
+    if (filter.isEmpty() && ! packs::anyInstalled() && (! audio.getOptions().packsOffered || packsCardShown))
+        rows.push_back ({ Kind::card, "Get free sample packs", "free", sampleColour, getPacksRow, {} });
 
     for (auto& folder : getSampleFolders())
     {
@@ -1092,9 +1162,18 @@ std::vector<Sidebar::Row> Sidebar::sampleRows (const juce::String& filter, int& 
     }
 
     if (filter.isEmpty())
+    {
         rows.push_back ({ Kind::scan, "Add a folder...", {}, sampleColour, addSampleFolderRow, {} });
+        rows.push_back ({ Kind::scan, "Free sample packs...", {}, sampleColour, getPacksRow, {} });
+    }
 
     return rows;
+}
+
+void Sidebar::packsChanged()
+{
+    lookThroughSampleFolders (0.0);
+    rebuildSounds();
 }
 
 void Sidebar::addFolderRows (std::vector<Row>& rows, const juce::File& dir, const samples::Folder* folder, int depth)

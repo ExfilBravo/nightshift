@@ -23,7 +23,11 @@
 #include "audio/Machines.h"
 #include "audio/DrumSynth.h"
 #include "audio/Instruments.h"
+#include "audio/Packs.h"
 #include "audio/Samples.h"
+#include "app/SoundsMaker.h"
+#include "app/Tone3000.h"
+#include "ui/PacksPanel.h"
 #include "audio/Sfz.h"
 #include "audio/MidiFiles.h"
 #include "audio/Freeze.h"
@@ -121,6 +125,168 @@ namespace
         write (downloads.getChildFile (".hidden/Secret.wav"), 0.2, 440.0, 0.5f, false);
         return { downloads, music, mine };
     }
+
+    // A small web server on 127.0.0.1 for the suites (a pack to download, a pretend TONE3000), on a thread of its own:
+    // each request (its method, path, query, form and headers, by lower-case name) handed to `handle`, which answers.
+    // A slow answer comes 16 KB at a time with a pause between (for Cancel)
+    struct TestServer : private juce::Thread
+    {
+        struct Request
+        {
+            juce::String method, path;
+            juce::StringPairArray query, form, headers;
+        };
+
+        struct Response
+        {
+            int status = 200;
+            juce::String type { "application/json" };
+            juce::MemoryBlock body;
+            int pauseMs = 0;
+
+            static Response json (const juce::var& v, int status = 200)
+            {
+                Response r;
+                r.status = status;
+                const auto text = juce::JSON::toString (v, true);
+                r.body.append (text.toRawUTF8(), text.getNumBytesAsUTF8());
+                return r;
+            }
+
+            static Response file (const juce::File& f, const juce::String& type, int pauseMs = 0)
+            {
+                Response r;
+                r.type = type;
+                r.pauseMs = pauseMs;
+                f.loadFileAsData (r.body);
+                return r;
+            }
+
+            static Response missing (int status = 404)
+            {
+                Response r;
+                r.status = status;
+                return r;
+            }
+        };
+
+        std::function<Response (const Request&)> handle;
+
+        TestServer() : juce::Thread ("Test server") {}
+
+        ~TestServer() override
+        {
+            signalThreadShouldExit();
+            listener.close();
+            stopThread (5000);
+        }
+
+        bool start()
+        {
+            if (! listener.createListener (0, "127.0.0.1"))
+                return false;
+
+            port = listener.getBoundPort();
+            startThread();
+            return port > 0;
+        }
+
+        juce::String base() const       { return "http://127.0.0.1:" + juce::String (port); }
+
+    private:
+        juce::StreamingSocket listener;
+        int port = 0;
+
+        static juce::StringPairArray parse (const juce::String& query)
+        {
+            juce::StringPairArray out;
+
+            for (auto& pair : juce::StringArray::fromTokens (query, "&", {}))
+                if (pair.isNotEmpty())
+                    out.set (juce::URL::removeEscapeChars (pair.upToFirstOccurrenceOf ("=", false, false)),
+                             juce::URL::removeEscapeChars (pair.fromFirstOccurrenceOf ("=", false, false)));
+
+            return out;
+        }
+
+        void run() override
+        {
+            while (! threadShouldExit())
+            {
+                if (listener.waitUntilReady (true, 100) != 1)
+                    continue;
+
+                if (std::unique_ptr<juce::StreamingSocket> client (listener.waitForNextConnection()); client != nullptr)
+                    serve (*client);
+            }
+        }
+
+        void serve (juce::StreamingSocket& client)
+        {
+            juce::MemoryBlock data;
+            char buffer[8192];
+            int headEnd = -1;
+
+            while (headEnd < 0 && client.waitUntilReady (true, 5000) == 1)
+            {
+                const int got = client.read (buffer, (int) sizeof (buffer), false);
+
+                if (got <= 0)
+                    break;
+
+                data.append (buffer, (size_t) got);
+                headEnd = data.toString().indexOf ("\r\n\r\n");
+            }
+
+            if (headEnd < 0)
+                return;
+
+            const auto lines = juce::StringArray::fromLines (data.toString().substring (0, headEnd));
+            const auto target = lines[0].fromFirstOccurrenceOf (" ", false, false).upToLastOccurrenceOf (" ", false, false);
+            Request r;
+            r.method = lines[0].upToFirstOccurrenceOf (" ", false, false);
+            r.path = target.upToFirstOccurrenceOf ("?", false, false);
+            r.query = parse (target.fromFirstOccurrenceOf ("?", false, false));
+
+            for (int i = 1; i < lines.size(); ++i)
+                if (lines[i].containsChar (':'))
+                    r.headers.set (lines[i].upToFirstOccurrenceOf (":", false, false).trim().toLowerCase(), lines[i].fromFirstOccurrenceOf (":", false, false).trim());
+
+            // The body (a form, here)
+            juce::MemoryBlock body (static_cast<const char*> (data.getData()) + headEnd + 4, data.getSize() - (size_t) (headEnd + 4));
+
+            while ((int) body.getSize() < r.headers["content-length"].getIntValue() && client.waitUntilReady (true, 5000) == 1)
+            {
+                const int got = client.read (buffer, (int) sizeof (buffer), false);
+
+                if (got <= 0)
+                    break;
+
+                body.append (buffer, (size_t) got);
+            }
+
+            r.form = parse (body.toString());
+            const auto answer = handle != nullptr ? handle (r) : Response::missing();
+            const juce::String reason = answer.status == 200 ? "OK" : answer.status == 400 ? "Bad Request" : answer.status == 401 ? "Unauthorized"
+                                      : answer.status == 403 ? "Forbidden" : "Not Found";
+            const juce::String top = "HTTP/1.1 " + juce::String (answer.status) + " " + reason + "\r\nContent-Type: " + answer.type
+                                     + "\r\nContent-Length: " + juce::String ((juce::int64) answer.body.getSize()) + "\r\nConnection: close\r\n\r\n";
+            client.write (top.toRawUTF8(), (int) top.getNumBytesAsUTF8());
+
+            for (size_t done = 0; done < answer.body.getSize() && ! threadShouldExit();)
+            {
+                const auto piece = std::min ((size_t) 16384, answer.body.getSize() - done);
+
+                if (client.write (static_cast<const char*> (answer.body.getData()) + done, (int) piece) < 0)
+                    break;
+
+                done += piece;
+
+                if (answer.pauseMs > 0)
+                    juce::Thread::sleep (answer.pauseMs);
+            }
+        }
+    };
 
     struct Args
     {
@@ -333,6 +499,8 @@ namespace
           --pianotest                           check which channel the piano roll edits, and its picker
           --arrangetest / --stepstest / --sidebartest  click and type through those parts of the window
           --samplestest                         the sample browser: listing, search, a sample heard, samples dropped on Steps and Arrange
+          --packstest / --tone3000test          the free sample packs; picking a tone on TONE3000 (both against a pretend server on 127.0.0.1)
+          --makesounds <folder> [--only drums|synths|loops]   make NightShift Sounds 1 (the pack's folder, its zip, size and SHA-256)
           --genretest                           the genres and artists the band knows, Sleep Token played by all five, each new style by the band
           --feeltest                            the drum feel learned from real drummers (Groove MIDI Dataset): the table, who plays it, render
           --vibetest                            the vibe listener: made-up songs, the band's own (rendered), the words it writes, read back
@@ -356,6 +524,7 @@ namespace
         {
             const auto none = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift no samples");
             samples::standardFoldersOverride = { none.getChildFile ("Downloads"), none.getChildFile ("Music") };
+            samples::ownFoldersShown = false;       // (nor NightShift's own: the free packs, the drum kits, the instruments)
 
             for (auto& f : samples::standardFoldersOverride)
                 f.createDirectory();
@@ -363,6 +532,25 @@ namespace
 
         if (args.has ("--writekit"))
             return kit::writeTo (juce::File (args.valueAfter ("--writekit"))) ? 0 : 1;
+
+        // NightShift Sounds 1, the free pack Samples offers (CC0, only NightShift's own sounds): its folder and zip in
+        // the folder given, and the zip's size and SHA-256 for Packs.cpp (--only drums|synths|loops to try a part)
+        if (args.has ("--makesounds"))
+        {
+            soundsmaker::Made made;
+            const auto problem = soundsmaker::make (juce::File (args.valueAfter ("--makesounds")), args.valueAfter ("--only"),
+                                                    [] (const juce::String& step) { std::cout << step << std::endl; }, made);
+
+            if (problem.isNotEmpty())
+            {
+                std::cout << "FAILED: " << problem << std::endl;
+                return 1;
+            }
+
+            std::cout << made.zip.getFullPathName() << std::endl << made.files << " files, " << made.bytes << " bytes" << std::endl
+                      << "sha256 " << made.sha256 << std::endl;
+            return 0;
+        }
 
         if (args.has ("--save"))
         {
@@ -2767,7 +2955,7 @@ namespace
             // compiler likes)
             const bool samplesOpened = click (sidebar, "Samples") && lookedThrough();
             const auto opened = shownSamples (sidebar);
-            check (samplesOpened && opened == juce::StringArray { "Samples", "Downloads", "Music", "Add a folder..." }
+            check (samplesOpened && opened == juce::StringArray { "Samples", "Get free sample packs", "Downloads", "Music", "Add a folder...", "Free sample packs..." }
                        && library.get (downloads) != nullptr && library.get (downloads)->count == 6 && library.get (music) != nullptr
                        && library.get (music)->count == 1,
                    "opened, it lists Downloads and Music (looked through on a thread of its own: 6 sounds and 1), then Add a folder... ("
@@ -2775,14 +2963,14 @@ namespace
 
             const bool downloadsOpened = click (sidebar, "Downloads");
             const auto inDownloads = shownSamples (sidebar);
-            check (downloadsOpened && inDownloads == juce::StringArray { "Samples", "Downloads", "Drum Pack", "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder..." },
+            check (downloadsOpened && inDownloads == juce::StringArray { "Samples", "Get free sample packs", "Downloads", "Drum Pack", "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder...", "Free sample packs..." },
                    "Downloads opens in place: its folder with sounds in it, then its sounds; no text file, Mac leftover, empty or hidden folder ("
                        + inDownloads.joinIntoString (", ") + ")");
 
             const bool packOpened = click (sidebar, "Drum Pack") && click (sidebar, "Kicks");
             const auto pack = shownSamples (sidebar);
-            check (packOpened && pack == juce::StringArray { "Samples", "Downloads", "Drum Pack", "Kicks", "Kick 2", "Kick 10", "Loop 120 bpm", "Snare 01",
-                                                             "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder..." },
+            check (packOpened && pack == juce::StringArray { "Samples", "Get free sample packs", "Downloads", "Drum Pack", "Kicks", "Kick 2", "Kick 10", "Loop 120 bpm", "Snare 01",
+                                                             "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder...", "Free sample packs..." },
                    "folders in folders open in place, each A to Z, numbers in order (Kick 2 before Kick 10): " + pack.joinIntoString (", "));
 
             check (click (sidebar, "Drum Pack") && ! sidebar.getShownSounds().contains ("Kicks") && ! sidebar.getShownSounds().contains ("Snare 01"),
@@ -2799,7 +2987,7 @@ namespace
                 click (again, "Samples");
                 const auto reopened = shownSamples (again);
                 check (audio.getOptions().sampleFolders == juce::StringArray { mine.getFullPathName() } && at == rows.indexOf ("Music") + 1
-                           && rows[at + 1] == "Riser" && rows[at + 2] == "Vocal chop" && rows.getReference (rows.size() - 1) == "Add a folder..."
+                           && rows[at + 1] == "Riser" && rows[at + 2] == "Vocal chop" && rows[rows.size() - 2] == "Add a folder..."
                            && reopened.indexOf ("My sounds") == reopened.indexOf ("Music") + 1,
                        "a folder added comes after Music, open (its AIFF and WAV, A to Z), kept with NightShift: opened again it's there ("
                            + rows.joinIntoString (", ") + ")");
@@ -3061,6 +3249,216 @@ namespace
 
             samples::standardFoldersOverride.clear();
             downloads.getParentDirectory().deleteRecursively();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--packstest"))
+        {
+            // The free sample packs, offline: a pack made here and served on 127.0.0.1 (as GitHub serves the real one):
+            // the first-use card in Samples shown once; a download whose SHA-256 isn't the pack's refused (and deleted); a
+            // download stopped part way; one downloaded, checked and unpacked into NightShift's own folder (only what's
+            // in its top folder: nothing climbs out); Samples listing it as Free packs; the packs' window (the libraries
+            // in it with their credits, Download fetching what's ticked, the big libraries started their own way)
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto settle = [] { settleMessages (30); };
+            const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift packs test");
+            root.deleteRecursively();
+            root.createDirectory();
+            packs::folderOverride = root.getChildFile ("Packs");
+            drumkits::folderOverride = root.getChildFile ("no kits");           // the libraries as on a new computer
+            SfzPlugin::folderOverride = root.getChildFile ("no instruments");
+            samples::ownFoldersShown = true;
+            const auto folders = writeSampleFolders (root.getChildFile ("folders"));
+            samples::standardFoldersOverride = { folders[0], folders[1] };
+
+            // The pack: a WAV and a FLAC in folders of their own, its licence, and two entries that mustn't come out of it
+            const auto zipFile = root.getChildFile ("Test-Pack.zip");
+            {
+                const auto licence = root.getChildFile ("LICENSE.txt");
+                licence.replaceWithText ("CC0");
+                juce::ZipFile::Builder builder;
+                builder.addFile (folders[0].getChildFile ("Drum Pack/Kicks/Kick 2.wav"), 0, "Test Pack/Drums/Kick 2.wav");
+                builder.addFile (folders[1].getChildFile ("Song idea.flac"), 0, "Test Pack/Loops/Song idea 120bpm.flac");
+                builder.addFile (folders[0].getChildFile ("Drum Pack/Loop 120 bpm.wav"), 0, "Test Pack/Loops/Bass loop 120bpm.wav");  // (big enough to stop part way)
+                builder.addFile (licence, 9, "Test Pack/LICENSE.txt");
+                builder.addFile (licence, 9, "Elsewhere/stray.txt");
+                builder.addFile (licence, 9, "Test Pack/../climbed.txt");
+                juce::FileOutputStream out (zipFile);
+                builder.writeToStream (out, nullptr);
+            }
+
+            juce::String hash;
+            {
+                juce::FileInputStream in (zipFile);
+                hash = juce::SHA256 (in).toHexString().toLowerCase();
+            }
+
+            TestServer server;
+            server.handle = [&zipFile] (const TestServer::Request& r)
+            {
+                if (r.path == "/test-pack.zip")
+                    return TestServer::Response::file (zipFile, "application/zip");
+
+                if (r.path == "/slow-pack.zip")
+                    return TestServer::Response::file (zipFile, "application/zip", 400);
+
+                return TestServer::Response::missing();
+            };
+
+            const bool serving = server.start();
+            check (serving, "a pretend download site on 127.0.0.1 (" + server.base() + ")");
+
+            packs::Pack good { "Test Pack", "Test Pack", "Two sounds made here.", "CC0: free for anything.", server.base() + "/test-pack.zip", hash,
+                               zipFile.getSize(), {} };
+            auto wrong = good, slow = good;
+            wrong.sha256 = juce::String::repeatedString ("0", 64);
+            slow.url = server.base() + "/slow-pack.zip";
+            auto& list = packs::available();
+            const auto realList = list;
+            list = { good, realList[1], realList[2] };
+
+            Song song;
+            song.loadBlank();
+            AudioEngine audio (song, false);
+
+            auto click = [] (Sidebar& on, const juce::String& name)
+            {
+                const auto area = on.showSoundRow (name, "Samples");
+
+                if (area.isEmpty())
+                    return false;
+
+                const auto at = area.getCentre().toFloat();
+                const auto now = juce::Time::getCurrentTime();
+                on.mouseDown (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &on, &on, now, at, now, 1, false));
+                return true;
+            };
+
+            auto shownSamples = [] (const Sidebar& on)
+            {
+                const auto shown = on.getShownSounds();
+                juce::StringArray rows;
+
+                for (int i = shown.indexOf ("Samples"); i >= 0 && i < shown.size(); ++i)
+                    rows.add (shown[i]);
+
+                return rows;
+            };
+
+            // The card: the first time Samples opens with no packs yet, at its top; clicked, the packs' window
+            {
+                Sidebar sidebar (song, audio);
+                sidebar.setSize (252, 900);
+                int asked = 0;
+                sidebar.onGetPacks = [&asked] { ++asked; };
+                const bool opened = click (sidebar, "Samples");
+                const auto rows = shownSamples (sidebar);
+                const bool offered = audio.getOptions().packsOffered;
+                click (sidebar, "Get free sample packs");
+                click (sidebar, "Free sample packs...");
+
+                Sidebar later (song, audio);            // NightShift opened again
+                later.setSize (252, 900);
+                click (later, "Samples");
+                const auto rowsLater = shownSamples (later);
+                check (opened && rows[1] == "Get free sample packs" && offered && asked == 2 && ! rowsLater.contains ("Get free sample packs")
+                           && rowsLater.contains ("Free sample packs..."),
+                       "the first time Samples opens with no packs, a card at its top offers them (and opens the packs' window, as Free sample "
+                       "packs... does); opened again, no card, the row still there (" + rows.joinIntoString (", ") + ")");
+            }
+
+            // A file that isn't the pack as made: refused and deleted
+            {
+                const auto problem = packs::install (wrong, {}, {});
+                check (problem.contains ("isn't the pack as it was made") && ! packs::isInstalled (good)
+                           && packs::folder().getChildFile (".downloads").findChildFiles (juce::File::findFiles, false).isEmpty(),
+                       "a download whose SHA-256 isn't the pack's is refused and deleted: \"" + problem + "\"");
+            }
+
+            // Stopped part way: nothing installed
+            {
+                std::atomic<bool> stop { false };
+                double reached = 0.0;
+                const auto problem = packs::install (slow, [&] (double f) { reached = f; if (f > 0.01) stop = true; }, [&stop] { return stop.load(); });
+                check (problem.isNotEmpty() && ! packs::isInstalled (good) && reached < 0.9,
+                       "a download stopped part way installs nothing (stopped at " + juce::String (juce::roundToInt (reached * 100.0)) + "%: \"" + problem + "\")");
+            }
+
+            // Downloaded, checked and unpacked into NightShift's own folder: only what's in its top folder
+            {
+                double reached = 0.0;
+                const auto problem = packs::install (good, [&reached] (double f) { reached = f; }, {});
+                const auto dir = packs::folder().getChildFile ("Test Pack");
+                check (problem.isEmpty() && packs::isInstalled (good) && dir.getChildFile ("Drums/Kick 2.wav").existsAsFile()
+                           && dir.getChildFile ("Loops/Song idea 120bpm.flac").existsAsFile() && dir.getChildFile ("LICENSE.txt").existsAsFile()
+                           && ! packs::folder().getChildFile ("Elsewhere").exists() && ! packs::folder().getChildFile ("climbed.txt").exists()
+                           && ! root.getChildFile ("climbed.txt").exists() && ! packs::folder().getChildFile (".downloads/Test Pack.zip").exists()
+                           && packs::folder().isAChildOf (root) && reached > 0.99,
+                       "downloaded (" + juce::String (juce::roundToInt (reached * 100.0)) + "%), its SHA-256 checked and unpacked into NightShift's own "
+                       "folder: its sounds in their folders and its licence, nothing from outside its top folder, the zip gone" + (problem.isNotEmpty() ? " (" + problem + ")" : juce::String()));
+            }
+
+            // Listed in Samples as Free packs, and no card any more
+            {
+                auto options = audio.getOptions();
+                options.packsOffered = false;
+                audio.setOptions (options);
+                Sidebar sidebar (song, audio);
+                sidebar.setSize (252, 900);
+                click (sidebar, "Samples");
+                sidebar.lookThroughSamples (10000);
+                settle();
+                const bool listed = click (sidebar, "Free packs") && click (sidebar, "Test Pack") && click (sidebar, "Drums");
+                const auto rows = shownSamples (sidebar);
+                check (listed && rows.contains ("Kick 2") && rows.contains ("Loops") && ! rows.contains ("Get free sample packs")
+                           && samples::displayName (packs::folder()) == "Free packs",
+                       "Samples lists the pack under Free packs, and offers no card once a pack is here (" + rows.joinIntoString (", ") + ")");
+            }
+
+            // The window: every pack with what's in it, its size and licence; Download fetches the ticked zips, and the big
+            // libraries start NightShift's own way
+            {
+                packs::folder().getChildFile ("Test Pack").deleteRecursively();
+                PacksPanel panel;
+                juce::StringArray libraries;
+                int installed = 0;
+                panel.onGetLibrary = [&libraries] (const juce::String& l) { libraries.add (l); };
+                panel.onInstalled = [&installed] { ++installed; };
+                const auto runs = textaudit::collect (panel);
+                auto said = [&runs] (const juce::String& words) { return std::any_of (runs.begin(), runs.end(), [&words] (const textaudit::Run& r) { return r.text.contains (words); }); };
+                const bool readable = std::all_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.fine(); });
+                check (readable && said ("Test Pack") && said ("Studio drum kits") && said ("DrumGizmo.org") && said ("Salamander") && said ("10.2 GB")
+                           && panel.isTicked (0) && ! panel.isTicked (1) && ! panel.isTicked (2),
+                       "the packs' window lists each pack with what's in it, its size and its licence or credit (DrumGizmo.org, Salamander...), "
+                       "NightShift's own ticked and the big libraries not, every word readable");
+
+                panel.setTicked (1, true);
+                panel.startDownload();
+
+                for (int i = 0; i < 1000 && panel.isBusy(); ++i)
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+                settle();
+                check (! panel.isBusy() && installed == 1 && packs::isInstalled (good) && libraries == juce::StringArray { "kits" }
+                           && panel.getStatus().startsWith ("Done"),
+                       "Download fetches the ticked pack in the background (\"" + panel.getStatus() + "\") and starts the studio drum kits "
+                       "NightShift's own way");
+            }
+
+            list = realList;
+            packs::folderOverride = juce::File();
+            drumkits::folderOverride = juce::File();
+            SfzPlugin::folderOverride = juce::File();
+            samples::standardFoldersOverride.clear();
+            root.deleteRecursively();
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
             return failures == 0 ? 0 : 1;
         }
@@ -15598,6 +15996,295 @@ namespace
             return failures == 0 ? 0 : 1;
         }
 
+        if (args.has ("--tone3000test"))
+        {
+            // Picking a tone on TONE3000, against a pretend TONE3000 on 127.0.0.1 with a key of the suite's own (never the
+            // build's): PKCE (RFC 7636's own example, and S256 of the verifier the exchange gets matching the challenge),
+            // the Select flow's address, an answer with the wrong state turned away and TONE3000's own taken, the code
+            // exchanged, the tone and its models fetched and downloaded with the access token, the model loaded into the amp
+            // with its creator and licence kept (in its state too, opened again) and shown, the refresh token refreshed (the
+            // newest kept, an old one refused), a model fetched again, sign out, and a build with no key
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift TONE3000 test");
+            root.deleteRecursively();
+            tone3000::folderOverride = root.getChildFile ("TONE3000");
+            auto& config = tone3000::config();
+            const auto realConfig = config;
+            const juce::String testKey ("t3k_pub_nightshift_suite");
+            config.clientId = testKey;
+
+            // The pretend TONE3000 and what it saw
+            juce::String challenge, exchangedVerifier, refreshedWith, redirectUsed;
+            bool toneWithToken = false, modelWithToken = false;
+            int tokenCalls = 0;
+            const juce::String code ("code-123"), access1 ("access-1"), refresh1 ("refresh-1"), access2 ("access-2"), refresh2 ("refresh-2");
+            const juce::String modelJson ("{\"version\": \"0.5.4\", \"architecture\": \"Linear\", \"config\": {\"receptive_field\": 1, \"bias\": false}, "
+                                          "\"weights\": [0.5], \"sample_rate\": 48000, \"metadata\": {\"name\": \"Twin\"}}");
+            TestServer server;
+
+            auto tokens = [] (const juce::String& access, const juce::String& refresh)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("access_token", access);
+                o->setProperty ("refresh_token", refresh);
+                o->setProperty ("token_type", "bearer");
+                o->setProperty ("expires_in", 3600);
+                o->setProperty ("scope", "read");
+                return TestServer::Response::json (juce::var (o));
+            };
+
+            server.handle = [&] (const TestServer::Request& r) -> TestServer::Response
+            {
+                if (r.method == "POST" && r.path == "/api/v1/oauth/token")
+                {
+                    ++tokenCalls;
+
+                    if (r.form["client_id"] != testKey)
+                        return TestServer::Response::missing (401);
+
+                    if (r.form["grant_type"] == "authorization_code")
+                    {
+                        // PKCE: the verifier's S256 must be the challenge the address carried
+                        exchangedVerifier = r.form["code_verifier"];
+                        redirectUsed = r.form["redirect_uri"];
+                        return r.form["code"] == code && tone3000::challengeFor (exchangedVerifier) == challenge ? tokens (access1, refresh1)
+                                                                                                                  : TestServer::Response::missing (400);
+                    }
+
+                    if (r.form["grant_type"] == "refresh_token")
+                    {
+                        refreshedWith = r.form["refresh_token"];
+                        return refreshedWith == refresh1 || refreshedWith == refresh2 ? tokens (access2, refresh2) : TestServer::Response::missing (400);
+                    }
+
+                    return TestServer::Response::missing (400);
+                }
+
+                const auto bearer = r.headers["authorization"];
+                const bool authorised = bearer == "Bearer " + access1 || bearer == "Bearer " + access2;
+
+                if (r.path == "/api/v1/tones/42")
+                {
+                    toneWithToken = authorised;
+                    auto* user = new juce::DynamicObject();
+                    user->setProperty ("username", "ampfan");
+                    user->setProperty ("display_name", juce::var());
+                    auto* tone = new juce::DynamicObject();
+                    tone->setProperty ("id", 42);
+                    tone->setProperty ("title", "Clean Twin");
+                    tone->setProperty ("license", "cc-by");
+                    tone->setProperty ("gear", "amp");
+                    tone->setProperty ("user", juce::var (user));
+                    tone->setProperty ("url", server.base() + "/tones/42");
+                    return authorised ? TestServer::Response::json (juce::var (tone)) : TestServer::Response::missing (401);
+                }
+
+                if (r.path == "/api/v1/models" && r.query["tone_id"] == "42")
+                {
+                    juce::Array<juce::var> data;
+
+                    for (auto [id, name, size] : { std::tuple<int, const char*, const char*> { 7, "Clean Twin standard", "standard" }, { 8, "Clean Twin nano", "nano" } })
+                    {
+                        auto* m = new juce::DynamicObject();
+                        m->setProperty ("id", id);
+                        m->setProperty ("name", name);
+                        m->setProperty ("size", size);
+                        m->setProperty ("model_url", server.base() + "/files/" + juce::String (id) + ".nam");
+                        data.add (juce::var (m));
+                    }
+
+                    auto* page = new juce::DynamicObject();
+                    page->setProperty ("data", data);
+                    page->setProperty ("total", 2);
+                    return authorised ? TestServer::Response::json (juce::var (page)) : TestServer::Response::missing (401);
+                }
+
+                if (r.path.startsWith ("/files/"))
+                {
+                    modelWithToken = authorised;
+                    TestServer::Response file;
+                    file.type = "application/octet-stream";
+                    file.body.append (modelJson.toRawUTF8(), modelJson.getNumBytesAsUTF8());
+                    return authorised ? file : TestServer::Response::missing (401);
+                }
+
+                return TestServer::Response::missing();
+            };
+
+            const bool serving = server.start();
+            check (serving, "a pretend TONE3000 on 127.0.0.1 (" + server.base() + "), and the suite's own key");
+            config.base = server.base();
+            juce::URL opened;
+            config.openBrowser = [&opened] (const juce::URL& address) { opened = address; };    // the browser, caught
+
+            // PKCE: RFC 7636's own example, and a verifier of 64 unreserved characters
+            const auto verifier = tone3000::makeVerifier();
+            check (tone3000::challengeFor ("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+                       && verifier.length() == 64 && verifier.containsOnly ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+                       && verifier != tone3000::makeVerifier(),
+                   "PKCE's S256 challenge is RFC 7636's own example's, and each verifier is 64 unreserved characters, new each time");
+
+            // The Select flow: TONE3000's authorize address in the browser, a listener on 127.0.0.1 for its answer
+            tone3000::Picker::Result result;
+            bool done = false;
+            tone3000::Picker picker ([&] (const tone3000::Picker::Result& r) { result = r; done = true; });
+            juce::String problem;
+            const bool started = picker.start (problem);
+            juce::StringPairArray params;
+
+            for (int i = 0; i < opened.getParameterNames().size(); ++i)
+                params.set (opened.getParameterNames()[i], opened.getParameterValues()[i]);
+
+            challenge = params["code_challenge"];
+            const auto redirect = "http://127.0.0.1:" + juce::String (picker.getPort()) + "/callback";
+            check (started && opened.toString (false) == server.base() + "/api/v1/oauth/authorize" && params["client_id"] == testKey
+                       && params["response_type"] == "code" && params["code_challenge_method"] == "S256" && params["prompt"] == "select_tone"
+                       && params["format"] == "nam" && params["redirect_uri"] == redirect && params["state"] == picker.getState()
+                       && picker.getState().length() >= 32 && challenge.length() == 43,
+                   "it opens TONE3000's Select flow in the browser (client_id, S256 challenge, state, prompt=select_tone, format=nam) with "
+                   "the redirect " + redirect);
+
+            // The browser comes back: first an answer with another state (turned away, still waiting), then TONE3000's own
+            auto visit = [] (const juce::String& address, int& status)
+            {
+                std::unique_ptr<juce::InputStream> in (juce::URL (address).createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                                                                                                 .withConnectionTimeoutMs (5000).withStatusCode (&status)));
+                return in != nullptr ? in->readEntireStreamAsString() : juce::String();
+            };
+
+            int wrongStatus = 0, rightStatus = 0;
+            visit (redirect + "?code=" + code + "&state=someone-else&tone_id=42", wrongStatus);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+            check (wrongStatus == 403 && picker.getRefused() == 1 && ! done && tokenCalls == 0,
+                   "an answer that doesn't carry the state it sent is turned away (" + juce::String (wrongStatus) + "), and it waits on");
+
+            const auto page = visit (redirect + "?code=" + code + "&state=" + picker.getState() + "&tone_id=42", rightStatus);
+
+            for (int i = 0; i < 500 && ! done; ++i)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+            check (rightStatus == 200 && page.contains ("Back to NightShift") && done && result.ok && tone3000::challengeFor (exchangedVerifier) == challenge
+                       && redirectUsed == redirect && result.refreshToken == refresh1 && toneWithToken && modelWithToken,
+                   "TONE3000's answer is taken (the browser told to go back to NightShift), the code exchanged with the verifier whose S256 "
+                   "is the challenge, the tone and its models fetched with the access token" + (result.problem.isNotEmpty() ? " (" + result.problem + ")" : juce::String()));
+
+            check (result.tone.title == "Clean Twin" && result.tone.creator == "ampfan" && result.tone.licence == "cc-by" && result.files.size() == 2
+                       && result.files[0].existsAsFile() && result.files[0].isAChildOf (tone3000::folder()) && result.models[0].name == "Clean Twin standard",
+                   "the tone's two models downloaded into NightShift's own folder, with its name, creator and licence (" + result.tone.title + " by "
+                       + result.tone.creator + ", " + result.tone.licence + ")");
+
+            // Into the amp: plays the model, keeps where it came from (in its state, opened again), shows it
+            Song song;
+            song.loadEmpty();
+            AudioEngine audio (song, false);
+            auto plugin = audio.getEdit().getPluginCache().createNewPlugin (NightAmp::xmlTypeName, {});
+            auto* amp = dynamic_cast<NightAmp*> (plugin.get());
+            te::Plugin::Ptr reopenedPlugin;
+
+            if (amp != nullptr && ! result.files.empty())
+            {
+                amp->initialise ({ te::TimePosition(), 48000.0, 512 });
+                amp->loadModel (result.files[0]);
+                amp->setToneSource ({ result.tone.id, result.tone.title, result.tone.creator, result.tone.licence, result.tone.url, result.models[0].name });
+                auto saved = amp->state.createCopy();
+                saved.removeProperty (te::IDs::id, nullptr);
+                reopenedPlugin = audio.getEdit().getPluginCache().createNewPlugin (saved);
+            }
+
+            const auto* reopened = dynamic_cast<NightAmp*> (reopenedPlugin.get());
+            check (amp != nullptr && amp->hasModel() && reopened != nullptr && reopened->hasModel() && reopened->getToneSource().creator == "ampfan"
+                       && reopened->getToneSource().licence == "cc-by" && reopened->getToneSource().title == "Clean Twin"
+                       && reopened->getToneSource().model == "Clean Twin standard",
+                   "loaded into the amp, its creator, name and licence go with the song (opened again: by ampfan, CC BY)");
+
+            if (amp != nullptr)
+            {
+                auto options = audio.getOptions();
+                options.tone3000Token = result.refreshToken;
+                audio.setOptions (options);
+                auto panel = createStockPanel (*amp, song, audio);
+                const auto runs = textaudit::collect (*panel);
+                auto said = [&runs] (const juce::String& words) { return std::any_of (runs.begin(), runs.end(), [&words] (const textaudit::Run& r) { return r.text == words; }); };
+                const auto dot = juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  "));
+                auto* signOut = dynamic_cast<juce::Button*> (panel->findChildWithID ("signOut"));
+                const bool shown = said ("Clean Twin") && said ("From TONE3000" + dot + "CC BY: credit the creator" + dot + "Clean Twin standard")
+                                   && said ("Powered by TONE3000") && said ("Find a tone on TONE3000")
+                                   && std::all_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.fine(); });
+                const bool signedInShown = signOut != nullptr && signOut->isVisible();
+
+                if (signOut != nullptr)
+                    signOut->triggerClick();
+
+                settleMessages (50);
+                check (shown && signedInShown && audio.getOptions().tone3000Token.isEmpty() && ! signOut->isVisible(),
+                       "its panel names the tone, says it's from TONE3000 with its licence and model, \"Powered by TONE3000\" beside the button; "
+                       "signed in, Sign out of TONE3000 forgets the sign-in");
+            }
+
+            // Refresh: the kept token for a new one (the newest kept); a token TONE3000 no longer takes, said so
+            {
+                tone3000::Tokens kept;
+                kept.refresh = refresh1;
+                bool expired = false;
+                const auto refreshed = tone3000::refresh (kept, &expired);
+                tone3000::Tokens stale;
+                stale.refresh = "refresh-gone";
+                bool staleExpired = false;
+                const auto refused = tone3000::refresh (stale, &staleExpired);
+                check (refreshed.isEmpty() && kept.access == access2 && kept.refresh == refresh2 && refreshedWith == "refresh-gone" && kept.usable() && ! expired
+                           && refused.isNotEmpty() && staleExpired,
+                       "the refresh token is traded for a new access token and the newest refresh token kept; one TONE3000 no longer takes is "
+                       "said to need signing in again (\"" + refused + "\")");
+            }
+
+            // A model gone from this computer, fetched again with the kept sign-in
+            {
+                if (! result.files.empty())
+                    result.files[0].deleteFile();
+
+                auto token = refresh2;
+                juce::File file;
+                const auto again = tone3000::getAgain ("42", "Clean Twin standard", token, file);
+                check (again.isEmpty() && file.existsAsFile() && file.getFileName() == "Clean Twin standard.nam" && token == refresh2,
+                       "a model gone from this computer is fetched again with the kept sign-in" + (again.isNotEmpty() ? " (" + again + ")" : juce::String()));
+            }
+
+            // A build with no key, and never a secret key
+            {
+                config.clientId = {};
+                tone3000::Picker none ([] (const tone3000::Picker::Result&) {});
+                juce::String why;
+                const bool refused = ! none.start (why);
+                juce::String words;
+
+                if (amp != nullptr)
+                {
+                    auto panel = createStockPanel (*amp, song, audio);
+
+                    for (auto& r : textaudit::collect (*panel))
+                        words << r.text << "|";
+                }
+
+                config.clientId = "t3k_cs_not_for_apps";
+                const bool secretRefused = ! tone3000::hasKey();
+                check (refused && why.contains ("no TONE3000 key") && words.contains ("Open TONE3000's website") && words.contains ("Powered by TONE3000")
+                           && words.contains ("has no TONE3000 key") && secretRefused && ! tone3000::builtInKey().startsWith ("t3k_cs_"),
+                       "with no key it won't start (\"" + why + "\"): the button opens TONE3000's website and says why; a secret key is never used");
+            }
+
+            config = realConfig;
+            tone3000::folderOverride = juce::File();
+            root.deleteRecursively();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--texttest"))
         {
             // Every text in every view a snapshot can set up, read back as it's painted (the text check,
@@ -15639,6 +16326,9 @@ namespace
                 { "the chorus", "--effectpanel nightshiftChorus" }, { "the NAM amp, empty", "--effectpanel nightshiftAmp" },
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
                 { "the NAM amp, a model in two sizes, the smaller", "--effectpanel nightshiftAmp --nammodel a2 --namsize 0" },
+                { "the NAM amp, a tone from TONE3000, signed in",
+                  "--effectpanel nightshiftAmp --nammodel example --tonesource \"Clean Twin;ampfan;cc-by;Clean Twin standard\" --t3ksignedin" },
+                { "the NAM amp in a build with no TONE3000 key", "--effectpanel nightshiftAmp --t3knokey" },
                 { "pitch correction, listening", "--effectpanel nightshiftTune" },
                 { "pitch correction, a sung phrase pulled onto the key", "--effectpanel nightshiftTune --tunedemo" },
                 { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" },
@@ -15661,6 +16351,7 @@ namespace
                 { "a sound search", "--search piano" },
                 { "Samples, folders open and a sample playing", "--sampledemo --opensounds \"Samples;Downloads;Drum Pack;Kicks;Kick 10\"" },
                 { "Samples, searched", "--sampledemo --search tone" },
+                { "Samples, the free packs' card", "--sampledemo --opensounds Samples" }, { "the free sample packs", "--packs" },
                 { "a sample dragged over Arrange", "--sampledemo --dragover 900,330 --dragsound \"sample:Loop 120 bpm\"" },
                 { "no drum kits yet", "--nokits --raise drummer" },
                 { "a MIDI keyboard playing", "--midilight \"Keystation 49\"" }, { "the Lofi effects", "--lofi --select Kick" },
@@ -20844,6 +21535,26 @@ namespace
                         if (auto size = args.valueAfter ("--namsize"); size.isNotEmpty())
                             amp->setSize (size.getIntValue());
 
+                        // A tone from TONE3000 (--tonesource "Clean Twin;ampfan;cc-by;Clean Twin standard"), signed in
+                        // (--t3ksignedin), or a build with no TONE3000 key (--t3knokey), as the panel shows them
+                        if (auto source = args.valueAfter ("--tonesource"); source.isNotEmpty())
+                        {
+                            const auto parts = juce::StringArray::fromTokens (source, ";", {});
+                            amp->setToneSource ({ "42", parts[0], parts[1], parts[2], tone3000::website, parts[3] });
+                        }
+
+                        if (args.has ("--t3ksignedin"))
+                        {
+                            auto options = audio.getOptions();
+                            options.tone3000Token = "snapshot";
+                            audio.setOptions (options);
+                        }
+
+                        if (args.has ("--t3knokey"))
+                            tone3000::config().clientId = {};
+                        else if (! tone3000::hasKey())
+                            tone3000::config().clientId = "t3k_pub_snapshot";     // (as a build with its key shows it)
+
                         if (auto cab = args.valueAfter ("--namcabinet"); cab.isNotEmpty())
                             amp->loadCabinet (juce::File (cab));
                     }
@@ -20908,6 +21619,13 @@ namespace
             if (args.has ("--exportmidi"))
             {
                 main.exportMidi();
+                closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+            }
+
+            // The free sample packs' window, as Samples' card opens it (nothing downloads)
+            if (args.has ("--packs"))
+            {
+                main.showPacks();
                 closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
             }
 

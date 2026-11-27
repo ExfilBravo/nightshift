@@ -144,6 +144,39 @@ endif()
 # Only the encoder's own file sees lame.h (so every other file's build stays as it was)
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/audio/Mp3Encoder.cpp PROPERTIES INCLUDE_DIRECTORIES ${LAME_DIR}/include)
 
+# TONE3000 (the NAM amp's tone picker, tone3000.com/api): the app's publishable key, its OAuth client_id (public by
+# design), from tone3000-key.txt beside this file when it's there: a line "publishable_key=...", # lines comments.
+# Never a secret key (t3k_cs_): that's refused. The key goes in a header only src/app/Tone3000.cpp includes, so a new
+# key builds that file alone, and it's never on a compiler's command line or in this script's output. With no file or
+# no key NightShift still builds: the amp's button says this build has no TONE3000 key
+set(NIGHTSHIFT_T3K_FILE ${CMAKE_CURRENT_SOURCE_DIR}/tone3000-key.txt)
+set(NIGHTSHIFT_T3K_KEY "")
+
+if (EXISTS ${NIGHTSHIFT_T3K_FILE})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NIGHTSHIFT_T3K_FILE})
+    file(STRINGS ${NIGHTSHIFT_T3K_FILE} NIGHTSHIFT_T3K_LINES REGEX "^[ \t]*publishable_key[ \t]*=")
+
+    if (NIGHTSHIFT_T3K_LINES)
+        list(GET NIGHTSHIFT_T3K_LINES 0 NIGHTSHIFT_T3K_LINE)
+        string(REGEX REPLACE "^[ \t]*publishable_key[ \t]*=" "" NIGHTSHIFT_T3K_KEY "${NIGHTSHIFT_T3K_LINE}")
+        string(STRIP "${NIGHTSHIFT_T3K_KEY}" NIGHTSHIFT_T3K_KEY)
+    endif()
+endif()
+
+if (NIGHTSHIFT_T3K_KEY MATCHES "^t3k_cs_")
+    message(FATAL_ERROR "tone3000-key.txt gives a TONE3000 secret key (one starting t3k_cs_). NightShift takes only the publishable key, "
+                        "which is made to be inside an app: put that after publishable_key=, and keep the secret one out of this folder.")
+endif()
+
+if (NIGHTSHIFT_T3K_KEY MATCHES "[^A-Za-z0-9_.~-]")
+    message(FATAL_ERROR "tone3000-key.txt's publishable_key has characters a TONE3000 key doesn't have: copy it again from TONE3000's settings.")
+endif()
+
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/tone3000/Tone3000Key.h
+     CONTENT "// Written by CMake from tone3000-key.txt: TONE3000's publishable key (its OAuth client_id, public by design)\n#define NIGHTSHIFT_TONE3000_KEY \"@NIGHTSHIFT_T3K_KEY@\"\n"
+     @ONLY)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/app/Tone3000.cpp PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR}/tone3000)
+
 target_compile_definitions(Nightshift PRIVATE
     $<$<PLATFORM_ID:Windows>:JUCE_ASIO=1>               # JUCE bundles the ASIO SDK under the GPLv3
     $<$<PLATFORM_ID:Darwin>:JUCE_PLUGINHOST_AU=1>       # a Mac's Audio Units, beside VST3

@@ -217,6 +217,38 @@ float NightAmp::calibrationDb() const
     return calibrate->get() >= 0.5f && modelHasInputLevel.load() ? (float) (interfaceLevel.load() - modelInputLevelDbu.load()) : 0.0f;
 }
 
+void NightAmp::setToneSource (const ToneSource& s)
+{
+    // In the state under one child, so a song keeps where its amp came from (and it goes with the plugin's state)
+    auto tone = state.getChildWithName ("tone3000");
+
+    if (s.isEmpty())
+    {
+        state.removeChild (tone, nullptr);
+        return;
+    }
+
+    if (! tone.isValid())
+    {
+        tone = juce::ValueTree ("tone3000");
+        state.appendChild (tone, nullptr);
+    }
+
+    tone.setProperty ("toneId", s.toneId, nullptr);
+    tone.setProperty ("title", s.title, nullptr);
+    tone.setProperty ("creator", s.creator, nullptr);
+    tone.setProperty ("licence", s.licence, nullptr);
+    tone.setProperty ("url", s.url, nullptr);
+    tone.setProperty ("model", s.model, nullptr);
+}
+
+NightAmp::ToneSource NightAmp::getToneSource() const
+{
+    const auto tone = state.getChildWithName ("tone3000");
+    return { tone["toneId"].toString(), tone["title"].toString(), tone["creator"].toString(), tone["licence"].toString(),
+             tone["url"].toString(), tone["model"].toString() };
+}
+
 int NightAmp::numSizes() const
 {
     return model != nullptr ? model->net->numSizes() : 1;
@@ -270,6 +302,11 @@ void NightAmp::restorePluginStateFromValueTree (const juce::ValueTree& v)
         calibrate->set (0.0f);
 
     loadSavedFiles (v);
+
+    // Where its model came from on TONE3000, as saved
+    const auto tone = v.getChildWithName ("tone3000");
+    setToneSource ({ tone["toneId"].toString(), tone["title"].toString(), tone["creator"].toString(), tone["licence"].toString(),
+                     tone["url"].toString(), tone["model"].toString() });
 }
 
 void NightAmp::loadSavedFiles (const juce::ValueTree& v)

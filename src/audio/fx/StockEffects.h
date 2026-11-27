@@ -301,6 +301,18 @@ public:
     int getSize() const;
     void setSize (int index);
 
+    /** Where the model came from when it was picked on TONE3000: the tone's id, name, creator and licence, its page
+        and the model's name (kept in the state, shown in the panel; TONE3000 asks that they never be lost). Empty
+        for a model loaded from a file. Loading a model doesn't change it: whoever loads one sets or clears it. */
+    struct ToneSource
+    {
+        juce::String toneId, title, creator, licence, url, model;
+        bool isEmpty() const                                { return toneId.isEmpty(); }
+    };
+
+    void setToneSource (const ToneSource&);
+    ToneSource getToneSource() const;
+
     /** What's wrong with the files, or empty: the model's problem (missing, not a model), then the cabinet's. */
     juce::String getProblem() const                         { return (modelProblem + "\n" + cabinetProblem).trim(); }
 

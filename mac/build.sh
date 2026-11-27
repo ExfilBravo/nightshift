@@ -190,12 +190,12 @@ if [ "$TESTS" = "1" ]; then
     PASSED=0
     FAILED=0
 
-    for suite in masteringtest stemtest mp3test startscreentest trackstest closetest pianotest arrangetest stepstest sidebartest samplestest fxtest savetest \
+    for suite in masteringtest stemtest mp3test startscreentest trackstest closetest pianotest arrangetest stepstest sidebartest samplestest packstest fxtest savetest \
                  fxstoptest looptest mutetest freezetest inspectortest stockfxtest bustest mixertest metertest drumtest drumbartest \
                  tunetest stretchtest \
                  offlinedrummertest offlinebasstest basstest offlineguitartest guitartest guitarsoundtest offlinekeystest keystest \
                  offlinesynthtest synthplayertest masterengineertest masteraitest songwritertest bandmetertest songtest machinetest kitimporttest \
-                 synthtest novatest keyboardtest metronometest editingtest arrangeedittest automationtest automationcurvetest busautomationtest automationrecordtest miditest midiouttest midifiletest tempotest tempocurvetest texttest namtest genretest feeltest vibetest vibepaneltest plugininstrumenttest pluginfindtest updatetest; do
+                 synthtest novatest keyboardtest metronometest editingtest arrangeedittest automationtest automationcurvetest busautomationtest automationrecordtest miditest midiouttest midifiletest tempotest tempocurvetest texttest namtest tone3000test genretest feeltest vibetest vibepaneltest plugininstrumenttest pluginfindtest updatetest; do
         out="$MAC_DIR/.tests/$suite.txt"
         mkdir -p "$MAC_DIR/.tests"
         "$EXE" "--$suite" > "$out" 2>&1 &

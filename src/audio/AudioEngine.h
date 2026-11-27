@@ -223,6 +223,8 @@ public:
         bool lowLatencyMonitoring = true;   // bypass plugins that add delay while monitoring an armed track
         bool preferInterface = true;        // open the preferred interface with ASIO at startup
         double interfaceInputDbu = 12.0;    // the interface's input level (dBu at 0 dBFS), for the NAM amps' input calibration
+        juce::String tone3000Token;         // TONE3000's refresh token, kept on this computer once signed in (never logged)
+        bool packsOffered = false;          // Samples has offered the free sample packs once (its card)
         int countInBars = 1;                // countdown before recording: 0, 1 or 2 bars
         bool computerKeyboard = true;       // the PC keyboard plays the selected channel
 
