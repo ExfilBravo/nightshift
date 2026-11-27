@@ -1043,8 +1043,8 @@ void Playlist::showTrackMenu (int row)
 //==============================================================================
 juce::Range<double> Playlist::tempoLaneRange() const
 {
-    // Held still while a point is dragged, else the song's tempos with room around them
-    if (drag == Drag::tempo)
+    // Held still while a point or a curve is dragged, else the song's tempos with room around them
+    if (drag == Drag::tempo || drag == Drag::tempoCurve)
         return dragTempoRange;
 
     double lo = song.bpm, hi = song.bpm;
@@ -1088,6 +1088,54 @@ int Playlist::tempoPointAt (juce::Point<float> p) const
     return noTempoPoint;
 }
 
+juce::Point<float> Playlist::tempoCurveHandle (int index, juce::Range<double> range) const
+{
+    const auto& to = song.tempoChanges[(size_t) index];
+    const double from = index > 0 ? song.tempoChanges[(size_t) index - 1].tick : 0.0;
+    const double fromBpm = index > 0 ? song.tempoChanges[(size_t) index - 1].bpm : song.bpm;
+    const double middle = 0.5 * (from + to.tick);
+    return { tickToX (middle), tempoToY (Song::glideBpm (from, fromBpm, to.tick, to.bpm, to.curve, middle), range) };
+}
+
+bool Playlist::hasTempoCurveHandle (int index) const
+{
+    if (! juce::isPositiveAndBelow (index, (int) song.tempoChanges.size()) || ! song.tempoChanges[(size_t) index].glide)
+        return false;
+
+    // A glide that changes the tempo, long enough on screen for a handle between its points
+    const auto& to = song.tempoChanges[(size_t) index];
+    const double from = index > 0 ? song.tempoChanges[(size_t) index - 1].tick : 0.0;
+    const double fromBpm = index > 0 ? song.tempoChanges[(size_t) index - 1].bpm : song.bpm;
+    return std::abs (to.bpm - fromBpm) >= 0.5 && (to.tick - from) * pxPerTick >= 28.0;
+}
+
+int Playlist::tempoCurveHandleAt (juce::Point<float> p) const
+{
+    const auto range = tempoLaneRange();
+
+    for (int i = (int) song.tempoChanges.size(); --i >= 0;)
+        if (hasTempoCurveHandle (i) && tempoCurveHandle (i, range).getDistanceFrom (p) <= 7.0f)
+            return i;
+
+    return -1;
+}
+
+void Playlist::setTempoCurve (int index, float curve)
+{
+    if (! juce::isPositiveAndBelow (index, (int) song.tempoChanges.size()))
+        return;
+
+    auto& t = song.tempoChanges[(size_t) index];
+
+    if (t.glide && t.curve == curve)
+        return;
+
+    song.checkpoint();
+    t.glide = true;
+    t.curve = juce::jlimit (-1.0f, 1.0f, curve);
+    song.notify (Song::Change::transport);
+}
+
 void Playlist::paintTempoLane (juce::Graphics& g)
 {
     juce::Graphics::ScopedSaveState state (g);
@@ -1108,13 +1156,13 @@ void Playlist::paintTempoLane (juce::Graphics& g)
     g.setFont (font (16.0f, true));
     g.drawText ("Tempo", h.withTrimmedLeft (46.0f), juce::Justification::centredLeft, true);
 
-    // The line: held to each change and jumping there, or gliding to it; level before the start
-    // and after the last
+    // The line: held to each change and jumping there, or gliding to it (straight, or along its
+    // curve, a point every few pixels); level before the start and after the last
     const auto range = tempoLaneRange();
     juce::Graphics::ScopedSaveState lane (g);
     g.reduceClipRegion (tempoArea);
     const float left = std::min ((float) tempoArea.getX(), tickToX (0)), right = (float) tempoArea.getRight();
-    double held = song.bpm;
+    double held = song.bpm, heldFrom = 0.0;
     juce::Path line;
     line.startNewSubPath (left, tempoToY (held, range));
     line.lineTo (tickToX (0), tempoToY (held, range));
@@ -1124,10 +1172,24 @@ void Playlist::paintTempoLane (juce::Graphics& g)
         const float x = tickToX (t.tick);
 
         if (! t.glide)
+        {
             line.lineTo (x, tempoToY (held, range));
+        }
+        else if (t.curve != 0.0f)
+        {
+            const float x0 = tickToX (heldFrom);
+            const int pieces = juce::jlimit (8, 400, (int) ((x - x0) / 3.0f));
+
+            for (int k = 1; k < pieces; ++k)
+            {
+                const double at = heldFrom + (t.tick - heldFrom) * k / pieces;
+                line.lineTo (tickToX (at), tempoToY (Song::glideBpm (heldFrom, held, t.tick, t.bpm, t.curve, at), range));
+            }
+        }
 
         line.lineTo (x, tempoToY (t.bpm, range));
         held = t.bpm;
+        heldFrom = t.tick;
     }
 
     line.lineTo (std::max (right, tickToX (song.tempoChanges.empty() ? 0 : song.tempoChanges.back().tick)), tempoToY (held, range));
@@ -1140,6 +1202,37 @@ void Playlist::paintTempoLane (juce::Graphics& g)
     g.fillPath (fill);
     g.setColour (accent.interpolatedWith (juce::Colours::white, 0.25f));
     g.strokePath (line, juce::PathStrokeType (1.8f));
+
+    // Each glide's curve handle, halfway along it: a ring to drag up or down (and while it's
+    // dragged, which way it eases, on top of everything once the points are drawn)
+    std::optional<std::pair<juce::Point<float>, float>> bending;
+
+    for (int i = 0; i < (int) song.tempoChanges.size(); ++i)
+    {
+        if (! hasTempoCurveHandle (i))
+            continue;
+
+        const auto c = tempoCurveHandle (i, range);
+
+        if (c.x < tempoArea.getX() - 10.0f || c.x > right + 10.0f)
+            continue;
+
+        // (as an automation line's bend handle is: a ring, filled while it's bent or being bent)
+        const bool dragged = dragTempo == i && drag == Drag::tempoCurve;
+        const float bend = song.tempoChanges[(size_t) i].curve;
+        const auto ring = juce::Rectangle<float> (9.0f, 9.0f).withCentre (c);
+        g.setColour (panel);
+        g.fillEllipse (ring);
+        g.setColour (accent.interpolatedWith (juce::Colours::white, 0.5f).withAlpha (dragged ? 1.0f : 0.85f));
+
+        if (dragged || bend != 0.0f)
+            g.fillEllipse (ring.reduced (2.0f));
+
+        g.drawEllipse (ring, 1.3f);
+
+        if (dragged)
+            bending = std::pair (c, bend);
+    }
 
     // The points, each saying its tempo (a glide's: where it gets to)
     g.setFont (monoFont (15.0f, true));
@@ -1163,6 +1256,24 @@ void Playlist::paintTempoLane (juce::Graphics& g)
         const bool below = c.y < tempoArea.getY() + 20.0f;
         g.setColour (dragged ? juce::Colours::white : textDim);
         g.drawText (words, juce::Rectangle<float> (c.x + 8.0f, below ? c.y + 2.0f : c.y - 19.0f, 70.0f, 17.0f), juce::Justification::centredLeft, true);
+    }
+
+    // A curve being bent: which way it eases, beside its handle
+    if (bending.has_value())
+    {
+        const auto [c, bend] = *bending;
+        const auto words = bend > 0.0f ? juce::String ("Easing in, gentle at first")
+                         : bend < 0.0f ? juce::String ("Easing out, gentle at the end")
+                                       : juce::String ("A straight line");
+        g.setFont (font (15.0f));
+        const float w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), words) + 12.0f;
+        const float y = juce::jlimit ((float) tempoArea.getY() + 2.0f, (float) tempoArea.getBottom() - 22.0f, c.y - 10.0f);
+        const bool leftOfIt = c.x + 12.0f + w > right;
+        const auto tag = juce::Rectangle<float> (leftOfIt ? c.x - 12.0f - w : c.x + 12.0f, y, w, 20.0f);
+        g.setColour (panel.withAlpha (0.94f));
+        g.fillRoundedRectangle (tag, 4.0f);
+        g.setColour (juce::Colours::white);
+        g.drawText (words, tag, juce::Justification::centred, true);
     }
 
     // No changes yet: what to do, on a backing of its own
@@ -1193,10 +1304,34 @@ void Playlist::tempoMouseDown (const juce::MouseEvent& e)
 {
     const int index = tempoPointAt (e.position);
     const int tick = snapped (xToTick (e.position.x), e.mods);
+    const int handle = index == noTempoPoint ? tempoCurveHandleAt (e.position) : -1;
 
     if (e.mods.isPopupMenu())
     {
-        showTempoMenu (index, index == noTempoPoint ? tick : index < 0 ? 0 : song.tempoChanges[(size_t) index].tick);
+        // A glide's handle: that glide's menu
+        if (handle >= 0)
+            showTempoMenu (handle, song.tempoChanges[(size_t) handle].tick);
+        else
+            showTempoMenu (index, index == noTempoPoint ? tick : index < 0 ? 0 : song.tempoChanges[(size_t) index].tick);
+
+        return;
+    }
+
+    // A glide's curve handle: dragged up or down it bends the glide; a double-click straightens it
+    if (handle >= 0)
+    {
+        if (e.getNumberOfClicks() > 1)
+        {
+            setTempoCurve (handle, 0.0f);
+            return;
+        }
+
+        // (the undo step once it bends, as an automation line's)
+        tempoCurveCheckpointed = false;
+        dragTempoRange = tempoLaneRange();
+        dragTempo = handle;
+        drag = Drag::tempoCurve;
+        repaint();
         return;
     }
 
@@ -1246,20 +1381,28 @@ void Playlist::showTempoMenu (int index, int tick)
 
         if (! start)
         {
-            menu.addItem ("Glide to it from the tempo before", true, change.glide, [this, tick = change.tick]
+            // How it gets there: a jump, or a glide in a straight line or along a curve (the
+            // handle halfway along bends it further either way)
+            auto how = [this, tick = change.tick] (bool glide, float curve)
             {
                 for (auto& t : song.tempoChanges)
                 {
-                    if (t.tick == tick)
+                    if (t.tick == tick && (t.glide != glide || (glide && t.curve != curve)))
                     {
                         song.checkpoint();
-                        t.glide = ! t.glide;
+                        t.glide = glide;
+                        t.curve = glide ? curve : t.curve;
                         song.notify (Song::Change::transport);
                         return;
                     }
                 }
-            });
+            };
 
+            menu.addSeparator();
+            menu.addItem ("Jump to it here", true, ! change.glide, [how] { how (false, 0.0f); });
+            menu.addItem ("Glide to it in a straight line", true, change.glide && change.curve == 0.0f, [how] { how (true, 0.0f); });
+            menu.addItem ("Glide, easing in (gentle at first)", true, change.glide && change.curve > 0.0f, [how] { how (true, 1.0f); });
+            menu.addItem ("Glide, easing out (gentle at the end)", true, change.glide && change.curve < 0.0f, [how] { how (true, -1.0f); });
             menu.addSeparator();
             menu.addItem ("Delete this tempo change", [this, tick = change.tick]
             {
@@ -1364,21 +1507,29 @@ void Playlist::askTempo (int tick)
                                           juce::MessageBoxIconType::NoIcon);
     window->addTextEditor ("bpm", juce::String (now, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd ("."), "Beats a minute (quarter notes)");
 
+    // How it gets there: a jump, or a glide from the tempo before, straight or along a curve (a
+    // curve its handle bent stays as it is, unless another way is picked)
+    const float curve = existing ? it->curve : 0.0f;
+    const int shown = ! existing || ! it->glide ? 0 : curve > 0.0f ? 2 : curve < 0.0f ? 3 : 1;
+
     if (tick > 0)
     {
-        window->addComboBox ("how", { "Jump to it here", "Glide to it from the tempo before" }, "How it gets there");
+        window->addComboBox ("how", { "Jump to it here", "Glide to it in a straight line", "Glide, easing in (gentle at first)",
+                                      "Glide, easing out (gentle at the end)" }, "How it gets there");
 
         if (auto* how = window->getComboBoxComponent ("how"))
-            how->setSelectedItemIndex (existing && it->glide ? 1 : 0, juce::dontSendNotification);
+            how->setSelectedItemIndex (shown, juce::dontSendNotification);
     }
 
     window->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
     window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-    window->enterModalState (true, juce::ModalCallbackFunction::create ([this, window, tick] (int result)
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([this, window, tick, curve, shown] (int result)
     {
         const double bpm = window->getTextEditorContents ("bpm").trim().getDoubleValue();
         const auto* how = window->getComboBoxComponent ("how");
-        const bool glide = how != nullptr && how->getSelectedItemIndex() == 1;
+        const int picked = how != nullptr ? how->getSelectedItemIndex() : 0;
+        const bool glide = picked >= 1;
+        const float bend = picked == shown ? curve : picked == 2 ? 1.0f : picked == 3 ? -1.0f : 0.0f;
 
         if (result != 1)
             return;
@@ -1392,7 +1543,7 @@ void Playlist::askTempo (int tick)
         }
 
         song.checkpoint();
-        song.setTempoAt (tick, bpm, glide);
+        song.setTempoAt (tick, bpm, glide, bend);
         song.notify (Song::Change::transport);
     }), true);
 }
@@ -1506,6 +1657,13 @@ void Playlist::updateScrollBars()
 
     vScroll.setRangeLimits (0.0, song.numTracks() + 1, juce::dontSendNotification);
     vScroll.setCurrentRange (firstRow, gridArea.getHeight() / (double) rowHeight, juce::dontSendNotification);
+}
+
+void Playlist::scrollToTick (double tick)
+{
+    scrollTicks = std::max (0.0, tick);
+    updateScrollBars();
+    repaint();
 }
 
 void Playlist::scrollBarMoved (juce::ScrollBar* bar, double start)
@@ -2510,6 +2668,23 @@ juce::String Playlist::getTooltip()
                "right-click to rename it, pick its icon, add a track under it or delete it. Drop a sound here to play its part with that";
     }
 
+    // The tempo lane: its points, a glide's curve handle, the lane
+    if (tempoArea.contains (p))
+    {
+        if (tempoPointAt (p.toFloat()) != noTempoPoint)
+            return "Drag this tempo up or down (and a change along); double-click to type it; right-click for how it gets "
+                   "there (a jump, or a glide in a straight line or easing in or out) or to delete it";
+
+        if (tempoCurveHandleAt (p.toFloat()) >= 0)
+            return "Drag up or down to bend this glide: easing in (gentle at first) or easing out (gentle at the end). "
+                   "Double-click to make it straight again; right-click for its menu";
+
+        return "Click to change the tempo here; right-click a point to glide to it, then drag the ring halfway along to curve it";
+    }
+
+    if (tempoHeaderArea.contains (p))
+        return "The song's tempo as it goes: click to set the tempo at the start";
+
     for (auto& lane : visibleLanes())
     {
         if (lane.header.contains (p.toFloat()))
@@ -2573,6 +2748,15 @@ void Playlist::mouseMove (const juce::MouseEvent& e)
     {
         const bool clickable = row == addRow() || trackButtonAt (row, e.position).has_value() || iconBounds (row).contains (e.position);
         setMouseCursor (clickable ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    // The tempo lane: a glide's handle goes up and down, a point anywhere
+    if (tempoArea.contains (e.getPosition()))
+    {
+        setMouseCursor (tempoCurveHandleAt (e.position) >= 0 ? juce::MouseCursor::UpDownResizeCursor
+                        : tempoPointAt (e.position) != noTempoPoint ? juce::MouseCursor::DraggingHandCursor
+                                                                    : juce::MouseCursor::NormalCursor);
         return;
     }
 
@@ -3690,6 +3874,36 @@ void Playlist::mouseDrag (const juce::MouseEvent& e)
             break;
         }
 
+        case Drag::tempoCurve:
+        {
+            // The handle follows the mouse up and down: the curve that passes through it there, and
+            // near the middle a straight line again
+            if (! hasTempoCurveHandle (dragTempo))
+                break;
+
+            auto& to = song.tempoChanges[(size_t) dragTempo];
+            const double from = dragTempo > 0 ? song.tempoChanges[(size_t) dragTempo - 1].tick : 0.0;
+            const double fromBpm = dragTempo > 0 ? song.tempoChanges[(size_t) dragTempo - 1].bpm : song.bpm;
+            float curve = Song::glideCurveThrough (from, fromBpm, to.tick, to.bpm, 0.5 * (from + to.tick), yToTempo (e.position.y, dragTempoRange));
+
+            if (std::abs (curve) < 0.06f)
+                curve = 0.0f;
+
+            curve = std::round (curve * 100.0f) / 100.0f;
+
+            if (curve != to.curve)
+            {
+                if (! std::exchange (tempoCurveCheckpointed, true))
+                    song.checkpoint();
+
+                to.curve = curve;
+                song.notify (Song::Change::transport);
+            }
+
+            repaint();
+            break;
+        }
+
         case Drag::box:
         {
             boxEnd = e.position;
@@ -3744,7 +3958,7 @@ void Playlist::mouseUp (const juce::MouseEvent&)
     if (drag == Drag::move || drag == Drag::moveAudio)
         dropTracksLeftBehind();
 
-    const bool boxed = drag == Drag::box || drag == Drag::point || drag == Drag::tempo || drag == Drag::bend;
+    const bool boxed = drag == Drag::box || drag == Drag::point || drag == Drag::tempo || drag == Drag::tempoCurve || drag == Drag::bend;
     drag = Drag::none;
     dragIndex = dragLane = -1;
     dragPoint = bendPoint = {};

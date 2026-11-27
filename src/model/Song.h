@@ -343,12 +343,15 @@ struct ControllerLink
 
 /** A tempo change along the song (Logic's tempo track): from `tick` it plays at `bpm`, quarter
     notes a minute. It jumps there, or with `glide` gets there gradually, from the tempo before,
-    over the stretch since the change before (an accelerando or a ritardando). */
+    over the stretch since the change before (an accelerando or a ritardando), in a straight line
+    or along a curve: `curve` above 0 eases in (gentle at first, most of the change near the end),
+    below 0 eases out (most of the change at first, settling gently), 1 and -1 the most. */
 struct TempoChange
 {
     int tick = 0;
     double bpm = 120.0;
     bool glide = false;
+    float curve = 0.0f;              // -1..1, a glide's
     bool operator== (const TempoChange&) const = default;
 };
 
@@ -459,8 +462,27 @@ public:
     double secondsAt (double tick) const;
     double tickAt (double seconds) const;
 
-    /** The tempo at `tick`, part way along a glide in between. */
+    /** The tempo at `tick`, part way along a glide in between (on its curve). */
     double bpmAt (double tick) const;
+
+    /** Part way along a glide as Tracktion plays it (its tempo curve, tracktion_Bezier.h): a
+        quadratic bezier from (`from`, `fromBpm`) to (`to`, `toBpm`) bent by `tracktionCurve`
+        (-0.5..0.5, half a TempoChange's curve), its tempo where it crosses `at`. */
+    static double bezierBpm (double from, double fromBpm, double to, double toBpm, double tracktionCurve, double at);
+
+    /** The curve Tracktion's tempo before `change` gets: 1 holds it until it jumps there; a
+        glide bends by half its curve (Tracktion's strongest bezier is 0.5), and a straight one
+        by 1/2048, never 0: Tracktion's bezier loses its way on a straight line between changes
+        that aren't on exact binary fractions of a beat (tempos 20 bpm out), a hair's bend doesn't
+        (0.01 bpm from straight). */
+    static float tracktionCurve (const TempoChange& change);
+
+    /** The curve (-1..1) a glide from (`from`, `fromBpm`) to (`to`, `toBpm`) needs to pass
+        through `bpm` at `at`, or as near as a curve gets (a curve's handle dragged). */
+    static float glideCurveThrough (double from, double fromBpm, double to, double toBpm, double at, double bpm);
+
+    /** The tempo along a glide's curve as drawn: a straight line, or the bezier it bends into. */
+    static double glideBpm (double from, double fromBpm, double to, double toBpm, float curve, double at);
 
     /** The tempo change in effect at `tick`; -1 for the start's tempo. */
     int tempoChangeAt (double tick) const;
@@ -485,13 +507,23 @@ public:
     int gridStep (int grid, double tick) const;
 
     /** Sets the tempo at `tick` (the start's at 0 or before): changes the one there, or adds one
-        that jumps there. Keeps them in order. */
-    void setTempoAt (int tick, double newBpm, bool glide = false);
+        that jumps there (or glides, along `curve`). Keeps them in order. */
+    void setTempoAt (int tick, double newBpm, bool glide = false, float curve = 0.0f);
 
     /** Sets the time signature from the bar starting at `tick` (the start's at 0): changes the one
         there or adds one, and takes away a change that would repeat the one before it. */
     void setMeterAt (int tick, int beats, int unit);
     void removeMeterChange (int index);
+
+    /** Puts `beats`/`unit` over the bars from `from` (a bar's start) to `to`: the changes inside
+        taken away, and what played from `to` before put back there. At the start it's the start's
+        time signature: the patterns that had the start's keep it as their own. */
+    void setMeterOver (int from, int to, int beats, int unit);
+
+    /** A clip placed at `start` of a pattern in a time signature of its own: the song's bars in it
+        there (setMeterOver over the clip), unless they are already. A pattern in the start's
+        changes nothing. */
+    void fitMeterToClip (int patternId, int start);
 
     /** Puts tempo and time signature changes in order, after the start, one per tick. */
     void tidyTimeline();

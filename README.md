@@ -318,8 +318,13 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   ruler tags each change, blue for a time signature and amber for a tempo, and the menu deletes the ones in that bar.
   With **Automation** on, a **Tempo** lane runs along the top: click to add a change at that tempo, drag a point
   (on the snap; up and down for its tempo, Alt for tenths), double-click it for its dialog, right-click it to glide to
-  it or delete it. **TEMPO** and **TIME SIG** in the top bar show what's playing where the song is (along a glide, the
-  tempo in between) and change that; TIME SIG's menu also starts another time signature from the bar the song is in.
+  it or delete it. **Curved glides**: a glide goes in a straight line or along a curve, *easing in* (gentle at first,
+  most of the change near the end) or *easing out* (most of it at first, settling gently). Drag the ring halfway along a
+  glide up or down to bend it as far as you like (double-click the ring for a straight line again), or pick the way in a
+  point's menu or its dialog (*How it gets there*). It plays and renders along the curve (Tracktion's tempo curve, in
+  steps of a sixteenth as Tracktion plays any glide), and the bars, the metronome, recordings, stretched audio and
+  automation follow it. **TEMPO** and **TIME SIG** in the top bar show what's playing where the song is (along a glide,
+  the tempo in between) and change that; TIME SIG's menu also starts another time signature from the bar the song is in.
   Bars are as long as their time signature makes them, and snapping, the bar.beat display, the metronome's beats and
   accents, the count-in (the bars before the record start, as they play), recordings and automation all follow; a
   recording's length stays real time. Patterns keep a time signature of their own (FL's pattern time signature):
@@ -464,6 +469,14 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   the keys. Any request can ask for it too: "soft verses", "a quiet intro", "heavy half-time choruses", "builds",
   "twelve bar" (the blues' changes, twelve bars a section), "soul chords", "four on the floor", "clean", "piano".
   A name it doesn't know ("zyx style") is said back, not played as rock.
+- **Across a time signature change** – the song agent and every player write each section in its own time
+  signature: "a rock song with verses in 4/4 and a bridge in 7/8", "metalcore with a 7/8 breakdown", "funk in 7/8 with
+  a chorus in 4/4", "the bridge goes to 5/4". The drummer's grooves, accents and fills fit each section's bars, counted
+  as the metronome counts them (7/8 in 2+2+3, 5/8 in 3+2, 6/8 in two), and the bassist, guitarist, keys and synth
+  play each section in the drummer's. Each section becomes a pattern in its time signature, and laid out in Arrange
+  the song's bars change where the sections do (the ruler, the metronome and the count-in following). In a song whose
+  time signature already changes, a section the drummer writes takes the time signature where it starts (laid out
+  from bar 1, as Put in Arrange lays it), ending where that changes. The song agent says which sections are in which.
   A one-word artist that's also a word (Ghost, Ride, Future, Death) counts only beside "like", "style", "type
   beat" or the like. The mastering engineer keeps a dynamic song's quiet parts quiet (its loudest squeezed 10 dB
   at most), stopping short of the loudness target and saying so.
@@ -929,10 +942,13 @@ Nightshift.exe --midiouttest
 Nightshift.exe --midifiletest
 Nightshift.exe --mididevices
 Nightshift.exe --tempotest
+Nightshift.exe --tempocurvetest
+Nightshift.exe --bandmetertest
 Nightshift.exe --texttest
 Nightshift.exe --namtest
 Nightshift.exe --snapshot ui.png --effectpanel nightshiftAmp [--nammodel example|a2|<file.nam>] [--namsize <0 for the smallest>] [--namcabinet <file.wav>]
-Nightshift.exe --snapshot ui.png [--about [screen height]] [--settings] [--midilight <keyboard>] [--tempodemo] [--textaudit [--alltext]]
+Nightshift.exe --snapshot ui.png [--about [screen height]] [--settings] [--midilight <keyboard>] [--tempodemo [--curved] [--tempodialog]] [--textaudit [--alltext]]
+Nightshift.exe --snapshot ui.png [--songwords "a rock song with verses in 4/4 and a bridge in 7/8"] [--arrangeat <bar>]
 Nightshift.exe --snapshot ui.png [--midiouts "Synth module,Drum machine" [--midioutchannel]] [--settings] [--exportmidi]
 Nightshift.exe --trackstest
 Nightshift.exe --closetest
@@ -1070,8 +1086,25 @@ against Tracktion's (to a microsecond), bars across 7/8 and 3/4 changes and one 
 recording's end through a change, a render whose kick on each bar lands where the tempo map says, an automation point
 through a glide, Pattern mode at the start's tempo, the count-in's bars, the metronome's clicks and accents through a
 jump to 240 and a 3/4 change and in a pattern's own 7/8, then Arrange's tempo lane (click, drag), its dialog (a glide
-to 150), the right-click menus, and the top bar's tempo where the song is. `--snapshot ... --tempodemo` shows a jump,
-a glide back, a 7/8 stretch, the tempo lane and the ruler's tags. `--snapshot ... --textaudit` paints the view through
+to 150), the right-click menus, and the top bar's tempo where the song is. `--tempocurvetest` checks curved glides:
+easing in and out halfway along (60 to 120: about 76 and 104 bpm) both ways, how long they take, a curve found again
+through its middle, saving (a straight glide saved as before, an older project's straight), undo, Tracktion's times
+the song's to a microsecond through curves and through a straight glide whose changes aren't on a beat (Tracktion's own
+straight line there is 10 to 20 bpm out; a hair's bend keeps it right), the tempo Tracktion plays halfway, 12 rendered
+kicks where the curve puts them, the metronome's clicks along it, a 120 BPM loop following the tempo through an eased-in
+glide with its clicks on the song's beats, the lane's curve handle dragged up and down with real
+mouse events, double-clicked straight, its menu, the dialog's four ways, and the top bar's tempo along a curve.
+`--bandmetertest` checks the AI band across time signature changes: the words ("verses in 4/4 and a bridge in 7/8", "a
+7/8 breakdown", "in 7/8 with a chorus in 4/4", "soft verses in 6/8"), kept with a follow-up; the song agent's words for
+its drummer; ten styles' drummers writing a bridge in 7/8 (its bars, the kick on one, the backbeat on the second group
+of 2+2+3, the accents on each group's start, fills from a group's start); the bassist, guitarist, keys and synth
+following each section's time signature, saved and read back; played into patterns of their own time signature and
+laid out in Arrange, the song's bars going to 7/8 at each bridge and back after it, every clip on a bar line of its
+own; each 7/8 bar of the bridge measured for every player's notes of that bar where a bar of 7/8 puts them; saved and
+opened; the metronome over the bridge; a song whose time signature already changes followed; and the song agent in the
+studio (with the drum kits there). `--snapshot ... --tempodemo` shows a jump, a glide back, a 7/8 stretch, the tempo
+lane and the ruler's tags (`--curved`: the glide back eases out and another eases in, its curve handle held;
+`--tempodialog`: the tempo dialog). `--snapshot ... --textaudit` paints the view through
 the text check, which reads back every piece of text as it's drawn and lists any that's under 15 px (the small
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
 behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by

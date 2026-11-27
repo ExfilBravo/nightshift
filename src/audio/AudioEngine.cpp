@@ -559,7 +559,8 @@ void AudioEngine::syncTempo()
     }
 
     // The tempo map: the start's tempo, then Song mode's changes (Pattern mode plays the start's).
-    // Each holds until the next (curve 1), or glides to it in a straight line (0)
+    // Each holds until the next (curve 1), or glides to it along its curve (a bezier, 0 a line:
+    // Song::tracktionCurve, as Song::secondsAt times it)
     struct Wanted { double beat, bpm; float curve; };
     std::vector<Wanted> wanted { { 0.0, song.bpm, 1.0f } };
 
@@ -567,7 +568,7 @@ void AudioEngine::syncTempo()
     {
         for (auto& change : song.tempoChanges)
         {
-            wanted.back().curve = change.glide ? 0.0f : 1.0f;
+            wanted.back().curve = Song::tracktionCurve (change);
             wanted.push_back ({ beatsFor (change.tick), change.bpm, 1.0f });
         }
     }

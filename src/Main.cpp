@@ -10192,6 +10192,686 @@ namespace
             return failures == 0 ? 0 : 1;
         }
 
+        if (args.has ("--bandmetertest"))
+        {
+            // The AI band across time signature changes. The words read ("verses in 4/4 and a bridge in 7/8", "a 7/8
+            // breakdown", "in 7/8 with a chorus in 4/4") and kept; the song agent's words for its drummer and its form; the
+            // drummer writing each section in its own time signature, for ten styles (its bars that many 16ths; the backbeat,
+            // the accents and the fills where its beats fall: 7/8 in 2+2+3, as the metronome counts it); the bassist,
+            // guitarist, keys and synth following each section's; played into the song and laid out in Arrange, every player
+            // measured bar by bar against the song's bars, which change where the sections do, the metronome clicking them;
+            // saved and opened; a song whose time signature already changes followed; the song agent in the studio
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            using M = std::pair<int, int>;
+            const juce::String bridgeWords ("a rock song with verses in 4/4 and a bridge in 7/8");
+            auto isBridge = [] (const juce::String& name) { return theory::kindOf (name) == "bridge"; };
+
+            // The words
+            {
+                using agents::Request;
+                const auto a = Request::parse (bridgeWords);
+                const auto b = Request::parse ("metalcore with a 7/8 breakdown");
+                const auto c = Request::parse ("funk in 7/8 with a chorus in 4/4");
+                const auto d = Request::parse ("soft verses in 6/8 and heavy choruses");
+                const auto e = Request::parse ("rock, the bridge goes to 5/4");
+                const auto f = Request::parse ("rock in 7/8 for the bridge");
+                const auto whole = Request::parse ("rock in 7/8");
+                check (a.style == "rock" && a.meterIn.size() == 2 && a.meterIn.at ("verse") == M (4, 4) && a.meterIn.at ("bridge") == M (7, 8)
+                           && a.meterBeats == 0 && a.sections.isEmpty(),
+                       "\"" + bridgeWords + "\": the verses in 4/4, the bridge in 7/8, the song otherwise its style's (" + a.understood.joinIntoString (", ") + ")");
+                check (b.meterIn.size() == 1 && b.meterIn.count ("breakdown") > 0 && b.meterIn.at ("breakdown") == M (7, 8)
+                           && c.meterBeats == 7 && c.meterUnit == 8 && c.meterIn.size() == 1 && c.meterIn.at ("chorus") == M (4, 4)
+                           && e.meterIn.size() == 1 && e.meterIn.at ("bridge") == M (5, 4) && f.meterIn.size() == 1 && f.meterIn.at ("bridge") == M (7, 8)
+                           && whole.meterBeats == 7 && whole.meterIn.empty(),
+                       "\"a 7/8 breakdown\"; \"in 7/8 with a chorus in 4/4\" (the song in 7/8, its chorus in 4/4); \"the bridge goes to 5/4\"; "
+                       "\"in 7/8 for the bridge\"; \"rock in 7/8\" the whole song");
+                check (d.meterIn.size() == 1 && d.meterIn.at ("verse") == M (6, 8) && d.softIn.contains ("verse") && d.heavyIn.contains ("chorus") && d.energy == 0.5f,
+                       "\"soft verses in 6/8 and heavy choruses\": the verses soft and in 6/8, the choruses heavy, the song as a whole neither");
+
+                const auto again = Request::fromVar (a.toVar());
+                const auto busier = Request::parse ("busier", &a);
+                check (again.meterIn == a.meterIn && busier.meterIn == a.meterIn && busier.busy > a.busy,
+                       "kept with the request (as a turn saves it) and through a follow-up (\"busier\")");
+            }
+
+            // The song agent: its words for the drummer, its form
+            {
+                const auto words = songwriter::drummerWords (bridgeWords, "rock");
+                const auto r = agents::Request::parse (words);
+                check (words.contains ("the bridge in 7/8") && r.meterIn.count ("bridge") > 0 && r.meterIn.at ("bridge") == M (7, 8)
+                           && r.meterIn.count ("verse") > 0 && r.sections.contains ("intro") && r.sections.contains ("bridge") && r.sections.contains ("outro"),
+                       "the song agent's words for its drummer: its sections, then each one's own time signature on its own (\"" + words + "\")");
+                check (songwriter::formFor ("funk", "funk with a breakdown in 7/8").contains ("breakdown") && ! songwriter::formFor ("funk", "funk").contains ("breakdown"),
+                       "a section asked for in a time signature of its own is in the song: funk's breakdown in 7/8");
+            }
+
+            // The drummer: ten styles with a bridge in 7/8, three takes each
+            {
+                Song blank;
+                blank.loadBlank();
+                bool bars = true, backbeat = true, accents = true, fills = true, kicks = true;
+                juce::StringArray barsWhy, backbeatWhy, accentsWhy, fillsWhy, kicksWhy;
+                std::set<int> fillStarts;
+                int fillsSeen = 0;
+
+                auto steps16 = [] (const drummer::Bar& bar, int sixteenths) { return bar.steps / std::max (1, sixteenths); };   // grid steps a 16th
+                auto at = [] (const drummer::Bar& bar, const juce::String& voice, int step) -> juce::juce_wchar
+                {
+                    for (auto& lane : bar.lanes)
+                        if (lane.voice == voice && step < lane.hits.length())
+                            return lane.hits[step];
+
+                    return '.';
+                };
+
+                for (auto style : { "rock", "metalcore", "funk", "boombap", "house", "reggae", "lofi", "country", "punk", "edm" })
+                {
+                    for (int seed = 1; seed <= 3; ++seed)
+                    {
+                        const auto words = songwriter::drummerWords (juce::String (style) + " song with a bridge in 7/8", style);
+                        const auto g = drummer::offline::write (words, blank, nullptr, {}, false, {}, true, seed).groove;
+                        const auto take = juce::String (style) + " " + juce::String (seed);
+                        bool hasBridge = false;
+
+                        for (auto& s : g.sections)
+                        {
+                            const bool bridge = isBridge (s.name);
+                            const int sixteenths = bridge ? 14 : 16;
+                            hasBridge = hasBridge || bridge;
+
+                            if (s.meterBeats != (bridge ? 7 : 4) || s.meterUnit != (bridge ? 8 : 4))
+                            {
+                                bars = false;
+                                barsWhy.add (take + " " + s.name + " in " + drummer::meterText (s.meterBeats, s.meterUnit));
+                            }
+
+                            for (auto& bar : s.bars)
+                                if (bar.steps % sixteenths != 0)
+                                {
+                                    bars = false;
+                                    barsWhy.add (take + " " + s.name + " a bar of " + juce::String (bar.steps) + " steps");
+                                }
+
+                            if (! bridge || s.bars.size() < 4)
+                                continue;
+
+                            // The one: the kick on it in the bridge's first bar
+                            const auto& first = s.bars.front();
+
+                            if (at (first, "kick", 0) == '.' && juce::String (style) != "reggae")
+                            {
+                                kicks = false;
+                                kicksWhy.add (take);
+                            }
+
+                            // A bar inside it: the backbeat on the second group's start (the 3rd eighth of 2+2+3), and the pulse's
+                            // accents on each group's start (1, 3 and 5), not every fourth 16th
+                            const auto& mid = s.bars[1];
+                            const int per = steps16 (mid, 14);
+                            const bool backbeatStyle = juce::StringArray { "rock", "metalcore", "funk", "boombap", "lofi", "punk" }.contains (style);
+
+                            if (backbeatStyle)
+                            {
+                                static const char* const backbeatVoices[] { "snare", "clap", "sidestick" };
+                                const bool hit = std::any_of (std::begin (backbeatVoices), std::end (backbeatVoices), [&] (const char* v)
+                                {
+                                    const auto x = at (mid, v, 4 * per);
+                                    return x != '.' && x != 'g' && x != 'G';
+                                });
+
+                                if (! hit)
+                                {
+                                    backbeat = false;
+                                    backbeatWhy.add (take);
+                                }
+
+                                // The pulse: the busiest of the hats, ride or a tom riding it; its loudest hits on group starts
+                                juce::String pulse;
+                                int most = 0;
+
+                                for (auto& lane : mid.lanes)
+                                    if (juce::StringArray { "hat_closed", "hat_open", "ride", "ride_bell", "tom_floor", "crash", "china" }.contains (lane.voice))
+                                        if (const int count = lane.hits.removeCharacters (".").length(); count > most)
+                                        {
+                                            most = count;
+                                            pulse = lane.voice;
+                                        }
+
+                                if (pulse.isNotEmpty() && most >= 3)
+                                {
+                                    // (a pulse played evenly, punk's ride, has no accents to place)
+                                    juce::juce_wchar loudest = '0', softest = '9';
+
+                                    for (int i = 0; i < mid.steps; ++i)
+                                        if (const auto x = at (mid, pulse, i); x >= '1' && x <= '9')
+                                        {
+                                            loudest = std::max (loudest, x);
+                                            softest = std::min (softest, x);
+                                        }
+
+                                    if (loudest == softest)
+                                        loudest = 0;
+
+                                    for (int i = 0; i < mid.steps; ++i)
+                                    {
+                                        const auto x = at (mid, pulse, i);
+                                        const bool groupStart = i % per == 0 && (i / per == 0 || i / per == 4 || i / per == 8);
+
+                                        if (x == loudest && ! groupStart)
+                                        {
+                                            accents = false;
+                                            accentsWhy.add (take + " " + pulse + " step " + juce::String (i));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // The fill into what follows: from where the last bar first parts from the groove, a group's start
+                            // (in 7/8, the last group's three eighths or the last two's five)
+                            if (juce::StringArray { "rock", "metalcore", "funk", "punk" }.contains (style) && &s != &g.sections.back())
+                            {
+                                const auto& last = s.bars.back();
+                                const int lastPer = steps16 (last, 14);
+                                juce::StringArray voices;
+                                int from = -1;
+
+                                for (const auto* b : { &last, &mid })
+                                    for (auto& lane : b->lanes)
+                                        voices.addIfNotAlreadyThere (lane.voice);
+
+                                for (int i = 0; i < last.steps && from < 0 && last.steps == mid.steps; ++i)
+                                    for (auto& voice : voices)
+                                        if (at (last, voice, i) != at (mid, voice, i))
+                                            from = i;
+
+                                if (from >= 0)
+                                {
+                                    ++fillsSeen;
+                                    fillStarts.insert (from / std::max (1, lastPer));
+
+                                    if (from % lastPer != 0 || (from / lastPer != 4 && from / lastPer != 8))
+                                    {
+                                        fills = false;
+                                        fillsWhy.add (take + " from 16th " + juce::String (from / std::max (1, lastPer)));
+                                    }
+                                }
+                            }
+                        }
+
+                        if (! hasBridge)
+                        {
+                            bars = false;
+                            barsWhy.add (take + ": no bridge");
+                        }
+                    }
+                }
+
+                juce::StringArray starts;
+
+                for (auto s : fillStarts)
+                    starts.add (juce::String (s));
+
+                check (bars, "ten styles, three takes each: the bridge written in 7/8 (bars of 14 16ths), every other section in 4/4 (16)"
+                           + (barsWhy.isEmpty() ? juce::String() : "; not: " + barsWhy.joinIntoString (", ")));
+                check (kicks, "the kick on the bridge's one" + (kicksWhy.isEmpty() ? juce::String() : "; not: " + kicksWhy.joinIntoString (", ")));
+                check (backbeat, "the backbeat on the 7/8's 3 (its second group, 2+2+3) in rock, metalcore, funk, boom bap, lofi and punk"
+                           + (backbeatWhy.isEmpty() ? juce::String() : "; not: " + backbeatWhy.joinIntoString (", ")));
+                check (accents, "the hats' (or ride's) accents on each group's start, 1, 3 and 5, not every fourth 16th"
+                           + (accentsWhy.isEmpty() ? juce::String() : "; not: " + accentsWhy.joinIntoString (", ")));
+                check (fills && fillsSeen >= 6, juce::String (fillsSeen) + " fills out of the 7/8 bridge, each from a group's start (16ths " + starts.joinIntoString (", ")
+                           + " of 14: the last three eighths or the last five)" + (fillsWhy.isEmpty() ? juce::String() : "; not: " + fillsWhy.joinIntoString (", ")));
+            }
+
+            // The band: the drummer's groove, the bassist, guitarist, keys and synth with it, played into the song and laid out
+            Song song;
+            song.loadBlank();
+            const int drumsId = song.addChannel ("Drums", InstrumentType::kit).id;
+            const int bassId = song.addChannel ("Bass", InstrumentType::synth).id;
+            const int guitarId = song.addChannel ("Guitar", InstrumentType::synth).id;
+            const int keysId = song.addChannel ("Keys", InstrumentType::synth).id;
+            const int synthId = song.addChannel ("Synth", InstrumentType::synth).id;
+            auto gmKeys = [] (const juce::String& voice) { return drumkits::generalMidiKey (voice); };
+
+            auto groove = drummer::offline::write (songwriter::drummerWords (bridgeWords, "rock"), song, nullptr, {}, false, {}, true, 7).groove;
+            groove.arrangement = songwriter::arrange (groove, "rock", bridgeWords, 4.0 * 60.0 / (groove.tempo > 0 ? groove.tempo : song.bpm));
+            drummer::render (song, drumsId, groove, gmKeys);
+            const auto bassPart = bass::offline::write (bridgeWords, song, nullptr, &groove, true, true, 7).part;
+            const auto guitarPart = guitar::offline::write (bridgeWords, song, nullptr, &groove, &bassPart, true, true, 7).part;
+            const auto keysPart = keys::offline::write (bridgeWords, song, nullptr, &groove, &bassPart, true, true, 7).part;
+            const auto synthPart = synth::offline::write (bridgeWords, song, nullptr, {}, {}, &groove, &bassPart, &keysPart, true, true, 7).part;
+
+            {
+                // Each part's sections as the drummer's: the bridge in 7/8, its bars the drummer's
+                juce::StringArray wrong;
+
+                auto follows = [&] (const juce::String& who, const auto& sections)
+                {
+                    for (auto& s : sections)
+                    {
+                        const bool bridge = isBridge (s.name);
+                        const int sixteenths = bridge ? 14 : 16;
+
+                        if (s.meterBeats != (bridge ? 7 : 4) || s.meterUnit != (bridge ? 8 : 4))
+                            wrong.add (who + " " + s.name + " in " + drummer::meterText (s.meterBeats, s.meterUnit));
+
+                        for (auto& bar : s.bars)
+                        {
+                            if (bar.steps % sixteenths != 0)
+                                wrong.add (who + " " + s.name + " a bar of " + juce::String (bar.steps));
+
+                            for (auto& n : bar.notes)
+                                if (n.step < 0 || n.step >= bar.steps)
+                                    wrong.add (who + " " + s.name + " a note at step " + juce::String (n.step));
+                        }
+                    }
+                };
+
+                follows ("bass", bassPart.sections);
+                follows ("guitar", guitarPart.sections);
+                follows ("keys", keysPart.sections);
+                follows ("synth", synthPart.sections);
+                check (wrong.isEmpty() && ! bassPart.sections.empty() && ! guitarPart.sections.empty() && ! keysPart.sections.empty() && ! synthPart.sections.empty(),
+                       "the bassist, guitarist, keys and synth write each section in the drummer's time signature, the bridge's bars in 7/8"
+                           + (wrong.isEmpty() ? juce::String() : "; not: " + wrong.joinIntoString (", ")));
+
+                // Saved with each turn and read back
+                auto sameMeters = [] (const auto& a, const auto& b)
+                {
+                    if (a.size() != b.size())
+                        return false;
+
+                    for (size_t i = 0; i < a.size(); ++i)
+                        if (a[i].meterBeats != b[i].meterBeats || a[i].meterUnit != b[i].meterUnit || a[i].bars.size() != b[i].bars.size())
+                            return false;
+
+                    return true;
+                };
+
+                const auto grooveBack = drummer::Groove::fromJson (drummer::offline::toJson (groove));
+                const auto bassBack = bass::Part::fromJson (bassPart.toJson());
+                const auto guitarBack = guitar::Part::fromJson (guitarPart.toJson());
+                const auto keysBack = keys::Part::fromJson (keysPart.toJson());
+                const auto synthBack = synth::Part::fromJson (synthPart.toJson());
+                check (grooveBack && bassBack && guitarBack && keysBack && synthBack && sameMeters (grooveBack->sections, groove.sections)
+                           && sameMeters (bassBack->sections, bassPart.sections) && sameMeters (guitarBack->sections, guitarPart.sections)
+                           && sameMeters (keysBack->sections, keysPart.sections) && sameMeters (synthBack->sections, synthPart.sections),
+                       "each section's time signature is saved with the drummer's and every player's part, and read back");
+            }
+
+            bass::render (song, bassId, bassPart);
+            guitar::render (song, guitarId, guitarPart);
+            keys::render (song, keysId, keysPart);
+            synth::render (song, synthId, synthPart);
+            drummer::placeInArrange (song, drumsId, groove);
+            bass::placeInArrange (song, bassId, bassPart);
+            guitar::placeInArrange (song, guitarId, guitarPart);
+            keys::placeInArrange (song, keysId, keysPart);
+            synth::placeInArrange (song, synthId, synthPart);
+            song.mode = PlayMode::song;
+
+            const std::vector<std::pair<int, juce::String>> players { { drumsId, "drums" }, { bassId, "bass" }, { guitarId, "guitar" }, { keysId, "keys" }, { synthId, "synth" } };
+            auto patternsOf = [&song] (int channelId) -> const std::map<juce::String, int>&
+            {
+                const auto* c = song.findChannel (channelId);
+                return ! c->drummer.patterns.empty() ? c->drummer.patterns : ! c->bass.patterns.empty() ? c->bass.patterns
+                     : ! c->guitar.patterns.empty() ? c->guitar.patterns : ! c->keys.patterns.empty() ? c->keys.patterns : c->synthPlayer.patterns;
+            };
+
+            // Each player's patterns: the bridge's in 7/8, as many 336-tick bars as it has; the rest the song's 4/4
+            {
+                bool right = true;
+                juce::StringArray seen;
+
+                for (auto& [id, who] : players)
+                    for (auto& [name, patternId] : patternsOf (id))
+                        if (const auto* p = song.findPattern (patternId))
+                        {
+                            const auto [beats, unit] = song.meterOf (*p);
+                            const bool bridge = isBridge (name);
+                            int bars = 0;
+
+                            for (auto& s : groove.sections)
+                                if (s.name == name)
+                                    bars = (int) s.bars.size();
+
+                            right = right && beats == (bridge ? 7 : 4) && unit == (bridge ? 8 : 4) && song.patternLength (*p) == bars * (bridge ? 336 : 384);
+
+                            if (bridge)
+                                seen.add (who + " " + juce::String (song.patternLength (*p) / 336) + " bars of 7/8");
+                        }
+
+                check (right && seen.size() == 5, "played into patterns: each player's bridge in 7/8 (" + seen.joinIntoString (", ") + "), the rest in 4/4");
+            }
+
+            // Arrange: the song's bars in 7/8 where each bridge is and 4/4 again after it; every player's clips on bar lines of
+            // their own time signature, no change inside one
+            std::vector<std::pair<int, int>> bridges;          // start, length (the drummer's clips)
+            {
+                for (auto& clip : song.playlist)
+                    for (auto& [name, patternId] : song.findChannel (drumsId)->drummer.patterns)
+                        if (clip.patternId == patternId && isBridge (name))
+                            bridges.emplace_back (clip.start, song.clipLength (clip));
+
+                std::sort (bridges.begin(), bridges.end());
+                bool changes = ! bridges.empty();
+                juce::StringArray where;
+
+                for (auto [start, length] : bridges)
+                {
+                    const auto in = song.meterAt (start), after = song.meterAt (start + length);
+                    changes = changes && in.beats == 7 && in.unit == 8 && in.start == start && after.beats == 4 && after.unit == 4 && after.start == start + length;
+                    where.add ("bar " + juce::String (song.barAt (start) + 1));
+                }
+
+                bool onBars = true;
+                int clips = 0;
+
+                for (auto& clip : song.playlist)
+                    if (const auto* p = song.findPattern (clip.patternId))
+                    {
+                        const auto [beats, unit] = song.meterOf (*p);
+                        const auto there = song.meterAt (clip.start);
+                        const int end = clip.start + song.patternLength (*p);
+                        const bool inside = std::any_of (song.meterChanges.begin(), song.meterChanges.end(), [&] (auto& m) { return m.tick > clip.start && m.tick < end; });
+                        onBars = onBars && there.beats == beats && there.unit == unit && song.barStart (song.barAt (clip.start)) == clip.start && ! inside;
+                        ++clips;
+                    }
+
+                check (changes && song.meterChanges.size() == bridges.size() * 2,
+                       "laid out in Arrange, the song's bars go to 7/8 where each bridge starts (" + where.joinIntoString (", ") + ") and back to 4/4 after it");
+                check (onBars && clips >= 5 * 6, "every player's " + juce::String (clips) + " clips start on a bar line of their own time signature, no change inside one");
+            }
+
+            // Measured bar by bar: each 7/8 bar of the first bridge, as the song's bars have it, holds every note of that bar of
+            // each player's part, played where the part puts it in a bar of 7/8 (within 25 ticks: the feel, a strum); the
+            // kick and the bass on its one
+            {
+                const auto [start, length] = bridges.empty() ? std::pair<int, int> { 0, 0 } : bridges.front();
+                const int firstBar = song.barAt (start), lastBar = song.barAt (start + std::max (1, length) - 1);
+                juce::StringArray wrong;
+                int downbeats = 0, bassOnOne = 0, measured = 0, matched = 0;
+
+                auto played = [&] (int channelId, int key, double tick)
+                {
+                    for (auto& clip : song.playlist)
+                        if (const auto* p = song.findPattern (clip.patternId))
+                            if (const auto* notes = p->findNotes (channelId))
+                                for (auto& note : *notes)
+                                    if (note.key == key && std::abs (clip.start + note.start - tick) <= 25.0)
+                                        return true;
+
+                    return false;
+                };
+
+                auto measure = [&] (const juce::String& who, int channelId, int b, auto&& notesOfBar)
+                {
+                    const int from = song.barStart (b), to = song.barStart (b + 1);
+
+                    for (auto [key, step, steps] : notesOfBar)
+                    {
+                        const double tick = start + (b - firstBar) * 336.0 + step * 336.0 / steps;
+
+                        if (tick < from || tick >= to || ! played (channelId, key, tick))
+                        {
+                            wrong.add (who + " bar " + juce::String (b + 1) + " step " + juce::String (step) + " of " + juce::String (steps));
+                            break;
+                        }
+
+                        ++matched;
+                    }
+                };
+
+                auto partNotes = [&] (const auto& sections, int index)
+                {
+                    std::vector<std::tuple<int, int, int>> list;        // key, step, steps
+
+                    for (auto& s : sections)
+                        if (isBridge (s.name) && juce::isPositiveAndBelow (index, (int) s.bars.size()))
+                            for (auto& n : s.bars[(size_t) index].notes)
+                                list.emplace_back (n.pitch, n.step, s.bars[(size_t) index].steps);
+
+                    return list;
+                };
+
+                for (int b = firstBar; b <= lastBar && length > 0; ++b)
+                {
+                    const int from = song.barStart (b), to = song.barStart (b + 1), index = b - firstBar;
+                    const auto m = song.meterAt (from);
+                    ++measured;
+
+                    if (m.beats != 7 || m.unit != 8 || to - from != 336 || from != start + index * 336)
+                        wrong.add ("bar " + juce::String (b + 1) + " " + m.name());
+
+                    std::vector<std::tuple<int, int, int>> drums;
+
+                    for (auto& s : groove.sections)
+                        if (isBridge (s.name) && juce::isPositiveAndBelow (index, (int) s.bars.size()))
+                            for (auto& lane : s.bars[(size_t) index].lanes)
+                                if (const int key = gmKeys (lane.voice); key >= 0)
+                                    for (int i = 0; i < lane.hits.length(); ++i)
+                                        if (lane.hits[i] != '.' && lane.hits[i] != '-' && lane.hits[i] != '0')
+                                            drums.emplace_back (key, i, s.bars[(size_t) index].steps);
+
+                    measure ("drums", drumsId, b, drums);
+                    measure ("bass", bassId, b, partNotes (bassPart.sections, index));
+                    measure ("guitar", guitarId, b, partNotes (guitarPart.sections, index));
+                    measure ("keys", keysId, b, partNotes (keysPart.sections, index));
+                    measure ("synth", synthId, b, partNotes (synthPart.sections, index));
+
+                    downbeats += played (drumsId, gmKeys ("kick"), from) ? 1 : 0;
+
+                    for (auto [key, step, steps] : partNotes (bassPart.sections, index))
+                        if (step == 0)
+                        {
+                            ++bassOnOne;
+                            break;
+                        }
+                }
+
+                check (measured >= 4 && wrong.isEmpty() && matched > measured * 20,
+                       "measured bar by bar: each of the bridge's " + juce::String (measured) + " bars of the song is a 7/8 bar of 336 ticks holding that bar's notes of "
+                           "every player's part where a bar of 7/8 puts them (" + juce::String (matched) + " notes)"
+                           + (wrong.isEmpty() ? juce::String() : "; not: " + wrong.joinIntoString (", ")));
+                check (downbeats * 4 >= measured * 3 && bassOnOne * 4 >= measured * 3,
+                       "the kick on the one of " + juce::String (downbeats) + " of the " + juce::String (measured) + " bars of 7/8, the bass on it in " + juce::String (bassOnOne));
+            }
+
+            // Saved and opened: the patterns' time signatures and the song's changes
+            {
+                Song saved;
+                saved.fromVar (song.toVar());
+                bool same = saved.meterChanges == song.meterChanges && saved.meterBeats == song.meterBeats && saved.patterns.size() == song.patterns.size();
+
+                for (size_t i = 0; same && i < song.patterns.size(); ++i)
+                    same = saved.patterns[i].meterBeats == song.patterns[i].meterBeats && saved.patterns[i].meterUnit == song.patterns[i].meterUnit;
+
+                check (same, "saved and opened, the song keeps its time signature changes and each pattern its own");
+            }
+
+            // The metronome over the first bridge: the bar before it in 4/4, then 7/8's eighths, each bar's one strongest
+            if (! bridges.empty())
+            {
+                for (auto& c : song.channels)
+                    c.muted = true;
+
+                song.loopOn = false;
+                song.notify (Song::Change::everything);
+                AudioEngine audio (song, false);
+                audio.syncNow();
+                auto o = audio.getOptions();
+                o.metronome = true;
+                o.clickRhythm = 0;
+                audio.setOptions (o);
+
+                const double sr = 48000.0;
+                const int block = 512;
+                auto listen = [&] (double seconds)
+                {
+                    juce::AudioBuffer<float> out (2, (int) (seconds * sr) / block * block), buffer (2, block);
+
+                    for (int b = 0; b < out.getNumSamples() / block; ++b)
+                    {
+                        buffer.clear();
+                        audio.processHostedBlock (buffer);
+
+                        for (int ch = 0; ch < 2; ++ch)
+                            out.copyFrom (ch, b * block, buffer, ch, 0, block);
+
+                        if (b % 4 == 0)
+                            juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                    }
+
+                    return out;
+                };
+
+                const int from = song.barStart (song.barAt (bridges.front().first) - 1);
+                std::vector<double> expected;
+                std::vector<bool> downbeat;
+
+                for (int b = song.barAt (from); b < song.barAt (from) + 4; ++b)
+                {
+                    const auto m = song.meterAt (song.barStart (b));
+
+                    for (int beat = 0; beat < m.beats; ++beat)
+                    {
+                        expected.push_back (song.secondsAt (song.barStart (b) + beat * m.beatTicks()) - song.secondsAt (from));
+                        downbeat.push_back (beat == 0);
+                    }
+                }
+
+                listen (0.3);
+                audio.setPlayheadTicks (from);
+                audio.togglePlay();
+                const auto heard = listen (expected.back() + 0.3);
+                audio.stop();
+
+                struct Click { int at; float peak; };
+                std::vector<Click> clicks;
+                {
+                    const float* x = heard.getReadPointer (0);
+                    int quiet = 100000;
+
+                    for (int i = 0; i < heard.getNumSamples(); ++i)
+                    {
+                        const float v = std::abs (x[i]);
+
+                        if (v > 0.003f && quiet > 240)
+                        {
+                            float peak = 0.0f;
+
+                            for (int j = i; j < std::min (heard.getNumSamples(), i + 480); ++j)
+                                peak = std::max (peak, std::abs (x[j]));
+
+                            clicks.push_back ({ i, peak });
+                        }
+
+                        quiet = v <= 0.003f ? quiet + 1 : 0;
+                    }
+                }
+
+                bool timed = clicks.size() >= expected.size();
+                float strongest = 0.0f;
+
+                for (auto& c : clicks)
+                    strongest = std::max (strongest, c.peak);
+
+                bool accented = timed;
+
+                for (size_t i = 0; timed && i < expected.size(); ++i)
+                {
+                    timed = std::abs ((clicks[i].at - clicks[0].at) - expected[i] * sr) <= 2.0;
+                    accented = accented && (clicks[i].peak > strongest * 0.85f) == downbeat[i];
+                }
+
+                check (timed && accented, "playing, the metronome follows the band: a 4/4 bar, then the bridge's 7/8 bars in eighths, each bar's one strongest ("
+                           + juce::String ((int) clicks.size()) + " clicks for " + juce::String ((int) expected.size()) + " beats)");
+            }
+
+            // A song whose time signature already changes (7/8 from bar 17, then from bar 13), the drummer asked for rock with
+            // none named: its sections laid out from bar 1, each in the time signature where it starts, ending where that changes
+            {
+                Song later;
+                later.loadBlank();
+                later.setMeterAt (16 * 384, 7, 8);
+                const auto g = drummer::offline::write ("rock", later, nullptr, {}, false, {}, false, 5).groove;
+                juce::StringArray said;
+
+                for (auto& s : g.sections)
+                    said.add (s.name + " " + juce::String ((int) s.bars.size()) + " bars of " + drummer::meterText (s.meterBeats, s.meterUnit));
+
+                const auto* bridge = g.sections.size() == 3 ? &g.sections[2] : nullptr;
+                const int rowsBefore = (int) later.playlist.size();
+                drummer::render (later, later.addChannel ("Drums", InstrumentType::kit).id, g, gmKeys);
+                drummer::placeInArrange (later, later.channels.back().id, g);
+                check (bridge != nullptr && isBridge (bridge->name) && bridge->meterBeats == 7 && g.sections[0].meterBeats == 4 && g.sections[1].meterBeats == 4
+                           && later.meterChanges.size() == 1 && later.meterChanges[0].tick == 16 * 384 && (int) later.playlist.size() == rowsBefore + 3
+                           && later.playlist.back().start == 16 * 384,
+                       "a song in 7/8 from bar 17: the drummer's bridge (from bar 17) in 7/8, the song's own change kept (" + said.joinIntoString (", ") + ")");
+
+                Song sooner;
+                sooner.loadBlank();
+                sooner.setMeterAt (12 * 384, 7, 8);
+                const auto h = drummer::offline::write ("rock", sooner, nullptr, {}, false, {}, false, 5).groove;
+                said.clear();
+
+                for (auto& s : h.sections)
+                    said.add (s.name + " " + juce::String ((int) s.bars.size()) + " bars of " + drummer::meterText (s.meterBeats, s.meterUnit));
+
+                check (h.sections.size() == 3 && h.sections[1].bars.size() == 4 && h.sections[2].meterBeats == 7 && h.sections[0].bars.size() == 8,
+                       "7/8 from bar 13: the chorus ends there, four bars long, the bridge in 7/8 (" + said.joinIntoString (", ") + ")");
+            }
+
+            // The song agent in the studio: a whole song, its bridge in 7/8 in every player's part and in Arrange, and said so
+            if (! drumkits::ids().isEmpty())
+            {
+                Song studioSong;
+                studioSong.loadDemo();
+                studioSong.markSaved();
+                AudioEngine audio (studioSong, false);
+                audio.syncNow();
+                MainComponent main (studioSong, audio);
+                main.setSize (1600, 940);
+                main.setVisible (true);
+                main.openAgent (MainComponent::Panel::song);
+                auto& bar = main.getDrummerBar();
+                auto& panel = main.getSongPanel();
+                bar.setText (bridgeWords);
+                bar.getEditor().keyPressed (juce::KeyPress (juce::KeyPress::returnKey));
+
+                for (int i = 0; i < 4000 && (i < 4 || panel.isWorking()); ++i)
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+                int bridgeClips = 0, inSeven = 0;
+
+                for (auto& clip : studioSong.playlist)
+                    if (const auto* p = studioSong.findPattern (clip.patternId); p != nullptr && p->name.containsIgnoreCase ("bridge"))
+                    {
+                        ++bridgeClips;
+                        const auto m = studioSong.meterAt (clip.start);
+                        inSeven += studioSong.meterOf (*p) == M (7, 8) && m.beats == 7 && m.unit == 8 && m.start == clip.start ? 1 : 0;
+                    }
+
+                check (bridgeClips >= 4 && inSeven == bridgeClips && studioSong.secondsAt (studioSong.songLengthInTicks()) >= 120.0
+                           && studioSong.songReply.contains ("the Bridge in 7/8"),
+                       "the song agent in the studio: " + juce::String (bridgeClips) + " bridge clips across the band, every one in 7/8 where the song's bars are; it says \""
+                           + studioSong.songReply.fromFirstOccurrenceOf ("sections: ", false, false).upToFirstOccurrenceOf ("Played by", false, false).trim() + "\"");
+            }
+            else
+            {
+                std::cout << "      (no drum kits here: the song agent in the studio not tried)" << std::endl;
+            }
+
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--songtest"))
         {
             // The AI song agent from the studio: the AI tab's list of seven, a click on one; a song
@@ -14042,7 +14722,9 @@ namespace
                 { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
                 { "automation lanes", "--automationdemo" }, { "a bus's automation lanes", "--buses --automationdemo --busautomation" },
-                { "recording automation", "--automationdemo --recordautomation" }, { "editing", "--editdemo" },
+                { "recording automation", "--automationdemo --recordautomation" },
+                { "tempo changes, glides curved", "--tempodemo --curved" }, { "the tempo dialog", "--tempodemo --curved --tempodialog" },
+                { "editing", "--editdemo" },
                 { "audio clips in time with the song, pitched and stretched", "--stretchdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
@@ -14565,6 +15247,479 @@ namespace
 
                 song.undo();
                 check (song.tempoChanges.size() == 1, "undo takes the dialog's change away");
+            }
+
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--tempocurvetest"))
+        {
+            // Curved tempo glides: easing in (gentle at first) and out (gentle at the end) as Tracktion
+            // bends them; the song's timing against Tracktion's (a straight glide between changes off the
+            // beat too, where Tracktion's own straight line goes wrong); saved and opened; rendered kicks
+            // where the curve puts them, the metronome following it; Arrange's curve handle dragged with
+            // real mouse events, its menu and the tempo dialog; the top bar's tempo along the curve
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto about = [] (double a, double b, double within) { return std::abs (a - b) <= within; };
+            const int bar = ticksPerBeat * 4;
+
+            // The song's timing on its own: 60 to 120 over bars 3 and 4, straight, eased in, eased out
+            {
+                Song song;
+                song.loadBlank();
+                song.bpm = 60.0;
+                song.setTempoAt (2 * bar, 60.0);
+                song.setTempoAt (4 * bar, 120.0, true);
+                const double straight = song.secondsAt (4 * bar) - song.secondsAt (2 * bar);
+                const double straightHalf = song.bpmAt (3 * bar);
+
+                song.setTempoAt (4 * bar, 120.0, true, 1.0f);
+                const double easedIn = song.secondsAt (4 * bar) - song.secondsAt (2 * bar);
+                const double inHalf = song.bpmAt (3 * bar), inQuarter = song.bpmAt (2 * bar + bar / 2), inLate = song.bpmAt (4 * bar - bar / 2);
+                const bool roundTrip = about (song.tickAt (song.secondsAt (3 * bar + 17)), 3 * bar + 17, 1.0e-6);
+
+                song.setTempoAt (4 * bar, 120.0, true, -1.0f);
+                const double easedOut = song.secondsAt (4 * bar) - song.secondsAt (2 * bar);
+                const double outHalf = song.bpmAt (3 * bar), outQuarter = song.bpmAt (2 * bar + bar / 2);
+
+                check (about (straightHalf, 90.0, 1.0e-9) && inHalf > 74.0 && inHalf < 78.0 && outHalf > 102.0 && outHalf < 106.0,
+                       "halfway along 60 to 120: straight 90 bpm, eased in " + juce::String (inHalf, 1) + " (gentle at first), eased out "
+                           + juce::String (outHalf, 1) + " (most of the change at first)");
+                check (inQuarter - 60.0 < (inLate - inQuarter) / 2.0 && outQuarter - 60.0 > 0.4 * 60.0,
+                       "easing in changes little at first and most near the end (" + juce::String (inQuarter, 1) + " a quarter in, "
+                           + juce::String (inLate, 1) + " three quarters in); easing out the other way (" + juce::String (outQuarter, 1) + " a quarter in)");
+                check (easedIn > straight + 0.3 && easedOut < straight - 0.3 && roundTrip,
+                       "eased in, bars 3 and 4 take " + juce::String (easedIn, 3) + " s, straight " + juce::String (straight, 3) + ", eased out "
+                           + juce::String (easedOut, 3) + "; a tick to seconds and back is the same tick");
+
+                // Ritardando: 120 to 60, eased in holds the fast tempo longer
+                song.setTempoAt (2 * bar, 120.0);
+                song.setTempoAt (4 * bar, 60.0, true, 1.0f);
+                const double ritIn = song.bpmAt (3 * bar);
+                song.setTempoAt (4 * bar, 60.0, true, -1.0f);
+                const double ritOut = song.bpmAt (3 * bar);
+                check (ritIn > 102.0 && ritOut < 78.0, "slowing down from 120 to 60: eased in still " + juce::String (ritIn, 1) + " bpm halfway, eased out already "
+                           + juce::String (ritOut, 1));
+
+                // A curve through a point, as the handle finds it: the same curve back
+                bool through = true;
+
+                for (float curve : { -1.0f, -0.55f, -0.2f, 0.0f, 0.35f, 0.8f, 1.0f })
+                {
+                    const double mid = Song::glideBpm (0.0, 100.0, 1000.0, 140.0, curve, 500.0);
+                    through = through && std::abs (Song::glideCurveThrough (0.0, 100.0, 1000.0, 140.0, 500.0, mid) - curve) < 1.0e-3f;
+                }
+
+                check (through && Song::glideCurveThrough (0.0, 100.0, 1000.0, 140.0, 500.0, 50.0) == 1.0f
+                           && Song::glideCurveThrough (0.0, 100.0, 1000.0, 140.0, 500.0, 200.0) == -1.0f,
+                       "the curve through a glide's middle tempo is found again (and past the strongest, the strongest)");
+
+                // Saved and opened: the curve after [tick, bpm, glide]; a straight glide still three long; an older
+                // project's glide straight; out of range held to -1..1
+                song.setTempoAt (4 * bar, 60.0, true, -0.45f);
+                song.setTempoAt (6 * bar, 90.0, true);
+                Song saved;
+                const auto asSaved = song.toVar();
+                saved.fromVar (asSaved);
+                const auto* list = asSaved.getProperty ("tempoChanges", {}).getArray();
+                auto old = song.toVar();
+                old.getDynamicObject()->setProperty ("tempoChanges", juce::Array<juce::var> { juce::Array<juce::var> { 2 * bar, 80.0, true },
+                                                                                              juce::Array<juce::var> { 4 * bar, 70.0, true, 7.5 } });
+                Song older;
+                older.fromVar (old);
+                check (saved.tempoChanges == song.tempoChanges && saved.tempoChanges[1].curve == -0.45f && list != nullptr && list->size() == 3
+                           && (*list)[1].size() == 4 && (*list)[2].size() == 3
+                           && older.tempoChanges.size() == 2 && older.tempoChanges[0].curve == 0.0f && older.tempoChanges[1].curve == 1.0f,
+                       "a glide's curve is saved after its tick, tempo and glide, and opened again; a straight one as before; an older project's "
+                           "glides straight; a curve past 1 held at 1");
+
+                // Undo
+                song.checkpoint();
+                song.tempoChanges[1].curve = 0.9f;
+                song.undo();
+                check (song.tempoChanges[1].curve == -0.45f, "undo puts a curve back");
+            }
+
+            // The engine: Tracktion's map the song's to a microsecond through curves either way, and through a
+            // straight glide whose changes aren't on a beat (ticks 1000 and 2017)
+            {
+                Song song;
+                song.loadEmpty();
+                song.bpm = 100.0;
+                song.mode = PlayMode::song;
+                song.setTempoAt (2 * bar, 70.0);
+                song.setTempoAt (4 * bar, 150.0, true, 1.0f);
+                song.setTempoAt (6 * bar, 90.0, true, -0.6f);
+                song.notify (Song::Change::everything);
+                AudioEngine audio (song, false);
+                audio.syncNow();
+                auto& tempo = audio.getEdit().tempoSequence;
+
+                auto agrees = [&] (int from, int to, double& worst)
+                {
+                    worst = 0.0;
+
+                    for (int t = from; t <= to; t += 7)
+                        worst = std::max (worst, std::abs (tempo.toTime (tracktion::BeatPosition::fromBeats (t / (double) ticksPerBeat)).inSeconds() - song.secondsAt (t)));
+
+                    return worst < 1.0e-6;
+                };
+
+                double worst = 0.0;
+                const bool curved = tempo.getNumTempos() == 4 && agrees (0, 8 * bar, worst);
+                check (curved && tempo.getTempo (1)->getCurve() == 0.5f && tempo.getTempo (2)->getCurve() == -0.3f,
+                       "Tracktion has an eased-in glide (curve 0.5, its strongest) and an eased-out one (-0.3), and its times are the song's "
+                       "(" + juce::String (worst * 1.0e6, 3) + " microseconds apart at most)");
+
+                // Halfway along the eased-in glide (bars 3 and 4) Tracktion plays about 91 bpm, as the song says (a step of it)
+                const auto middle = tracktion::TimePosition::fromSeconds (song.secondsAt (3 * bar));
+                const double playing = tempo.getBpmAt (middle);
+                check (about (playing, song.bpmAt (3 * bar), 4.0) && playing < 95.0,
+                       "Tracktion plays the eased-in glide at " + juce::String (playing, 1) + " bpm halfway (the song's curve: "
+                           + juce::String (song.bpmAt (3 * bar), 1) + "; straight it would be 110)");
+
+                // A straight glide from tick 1000 to tick 2017 (neither on a beat): Tracktion's straight line there
+                // (its curve 0) solves for the wrong tempos; a hair's bend keeps it right
+                song.tempoChanges.clear();
+                song.setTempoAt (1000, 80.0);
+                song.setTempoAt (2017, 140.0, true);
+                song.notify (Song::Change::transport);
+                audio.syncNow();
+                const bool offBeat = agrees (0, 3000, worst);
+                check (offBeat && std::abs (tempo.getTempo (1)->getCurve()) < 0.001f && std::abs (tempo.getTempo (1)->getCurve()) > 0.0f,
+                       "a straight glide between ticks 1000 and 2017: Tracktion's times are the song's (" + juce::String (worst * 1.0e6, 3)
+                           + " microseconds apart at most), its curve a hair off straight");
+
+                // Tracktion's own straight line between them, for comparison: its tempos go wrong
+                {
+                    std::vector<tracktion::tempo::TempoChange> changes { { tracktion::BeatPosition(), 80.0, 1.0f },
+                                                                         { tracktion::BeatPosition::fromBeats (1000.0 / ticksPerBeat), 80.0, 0.0f },
+                                                                         { tracktion::BeatPosition::fromBeats (2017.0 / ticksPerBeat), 140.0, 1.0f } };
+                    tracktion::tempo::Sequence straightLine (changes, { { tracktion::BeatPosition(), 4, 4, false } }, tracktion::tempo::LengthOfOneBeat::dependsOnTimeSignature);
+                    double off = 0.0;
+
+                    for (int t = 1000; t < 2017; t += 24)
+                    {
+                        const double want = 80.0 + 60.0 * (t - 1000) / 1017.0;
+                        off = std::max (off, std::abs (straightLine.getBpmAt (straightLine.toTime (tracktion::BeatPosition::fromBeats (t / (double) ticksPerBeat))) - want));
+                    }
+
+                    std::cout << "      (Tracktion's own straight line, its curve 0, there: up to " << juce::String (off, 1) << " bpm off the line)" << std::endl;
+                }
+            }
+
+            // Rendered: a kick every half bar through an eased-in glide lands where the curve puts it, later than a
+            // straight glide would
+            {
+                Song song;
+                song.loadEmpty();
+                song.bpm = 90.0;
+                song.mode = PlayMode::song;
+                const int kick = song.channels.front().id;
+                auto& pattern = song.currentPattern();
+
+                for (int step = 0; step < 16; step += 8)
+                    steps::set (pattern.notesFor (kick), step, true, defaultRootKey, 127);
+
+                song.setTempoAt (bar, 90.0);
+                song.setTempoAt (3 * bar, 180.0, true, 1.0f);
+
+                for (int b = 0; b < 6; ++b)
+                    song.playlist.push_back ({ pattern.id, 0, song.barStart (b) });
+
+                song.notify (Song::Change::everything);
+                AudioEngine audio (song, false);
+                audio.syncNow();
+
+                const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-tempocurvetest.wav");
+                audio.renderToFile (file, 0.5);
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+                juce::Array<double> onsets;
+
+                if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file)); reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b ((int) reader->numChannels, (int) reader->lengthInSamples);
+                    reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+                    int quietFor = 48000;
+
+                    for (int i = 0; i < b.getNumSamples(); ++i)
+                    {
+                        if (std::abs (b.getSample (0, i)) > 0.05f)
+                        {
+                            if (quietFor > 4800)
+                                onsets.add (i / 48000.0);
+
+                            quietFor = 0;
+                        }
+                        else
+                        {
+                            ++quietFor;
+                        }
+                    }
+                }
+
+                file.deleteFile();
+                bool placed = onsets.size() == 12;
+                double worst = 0.0;
+
+                for (int i = 0; i < std::min (12, onsets.size()); ++i)
+                {
+                    const double want = song.secondsAt (i * 2 * ticksPerBeat);
+                    worst = std::max (worst, std::abs (onsets[i] - want));
+                }
+
+                placed = placed && worst < 0.005;
+                const double curved = song.secondsAt (2 * bar + 2 * ticksPerBeat);
+                song.tempoChanges[1].curve = 0.0f;                  // (the song only: the engine keeps the curve)
+                const double later = curved - song.secondsAt (2 * bar + 2 * ticksPerBeat);
+                song.tempoChanges[1].curve = 1.0f;
+                check (placed && later > 0.05, "rendered, 12 kicks a half bar apart land where the curve puts them (" + juce::String (worst * 1000.0, 2)
+                           + " ms out at most, " + juce::String (onsets.size()) + " heard); halfway along the glide that's " + juce::String (later * 1000.0, 0)
+                           + " ms later than a straight glide");
+
+                // The metronome follows the curve: clicks a beat apart as the curve has them (the kicks taken out)
+                pattern.notesFor (kick).clear();
+                song.loopOn = false;
+                song.notify (Song::Change::notes);
+                audio.setPlayheadTicks (0.0);
+                auto o = audio.getOptions();
+                o.metronome = true;
+                o.clickRhythm = 0;
+                audio.setOptions (o);
+                audio.syncNow();
+
+                const double sr = 48000.0;
+                const int block = 512;
+                auto listen = [&] (double seconds)
+                {
+                    juce::AudioBuffer<float> out (2, (int) (seconds * sr) / block * block), buffer (2, block);
+
+                    for (int b = 0; b < out.getNumSamples() / block; ++b)
+                    {
+                        buffer.clear();
+                        audio.processHostedBlock (buffer);
+
+                        for (int ch = 0; ch < 2; ++ch)
+                            out.copyFrom (ch, b * block, buffer, ch, 0, block);
+
+                        if (b % 4 == 0)
+                            juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                    }
+
+                    return out;
+                };
+
+                listen (0.3);
+                audio.togglePlay();
+                const auto heard = listen (song.secondsAt (4 * bar) + 0.2);
+                audio.stop();
+                std::vector<int> clicks;
+                {
+                    const float* x = heard.getReadPointer (0);
+                    int quiet = 100000;
+
+                    for (int i = 0; i < heard.getNumSamples(); ++i)
+                    {
+                        const float v = std::abs (x[i]);
+
+                        if (v > 0.003f && quiet > 240)
+                            clicks.push_back (i);
+
+                        quiet = v <= 0.003f ? quiet + 1 : 0;
+                    }
+                }
+
+                bool timed = clicks.size() >= 16;
+                double worstClick = 0.0;
+
+                for (size_t i = 1; i < std::min<size_t> (16, clicks.size()); ++i)
+                {
+                    const double want = (song.secondsAt ((int) i * ticksPerBeat) - song.secondsAt (0)) * sr;
+                    worstClick = std::max (worstClick, std::abs ((clicks[i] - clicks[0]) - want));
+                }
+
+                timed = timed && worstClick <= 2.0;
+                check (timed, "playing, the metronome's clicks follow the curve beat by beat (" + juce::String ((int) clicks.size()) + " clicks, "
+                           + juce::String (worstClick, 1) + " samples out at most)");
+            }
+
+            // A loop following the tempo (a 120 BPM loop of clicks, stretched as the song goes) through an eased-in glide
+            // from 90 to 135 over its two bars: rendered, its clicks on the song's beats
+            {
+                const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift tempo curve test");
+                folder.deleteRecursively();
+                folder.createDirectory();
+                const auto loop = folder.getChildFile ("Clicks 120 bpm.wav");
+                constexpr double sr = 48000.0;
+                {
+                    const int n = (int) (4.0 * sr);
+                    juce::AudioBuffer<float> b (2, n);
+                    b.clear();
+
+                    for (int k = 0; k < 8; ++k)
+                        for (int ch = 0; ch < 2; ++ch)
+                            b.setSample (ch, (int) std::round (k * 0.5 * sr), 0.5f);
+
+                    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (loop);
+
+                    if (auto writer = juce::WavAudioFormat().createWriterFor (stream, juce::AudioFormatWriterOptions{}.withSampleRate (sr).withNumChannels (2).withBitsPerSample (24)))
+                        writer->writeFromAudioSampleBuffer (b, 0, n);
+                }
+
+                Song song;
+                song.loadBlank();
+                song.tracks.clear();
+                song.bpm = 90.0;
+                song.mode = PlayMode::song;
+                const int loopChannel = song.addChannel ("Loop", InstrumentType::audio).id;
+                {
+                    Track t;
+                    t.channelId = loopChannel;
+                    song.insertTrack (t);
+                }
+                song.addAudioFile (loop, loopChannel, 0, 0, 4.0, 120.0);
+                song.setTempoAt (8 * ticksPerBeat, 135.0, true, 1.0f);
+                AudioEngine audio (song, false);
+                audio.syncNow();
+
+                const auto file = folder.getChildFile ("render.wav");
+                audio.renderToFile (file, 0.5);
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+                std::vector<double> clicks;
+
+                if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file)); reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b ((int) reader->numChannels, (int) reader->lengthInSamples);
+                    reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+                    const float threshold = 0.33f * b.getMagnitude (1, 0, b.getNumSamples());
+
+                    // (the click on the clip's first sample is under its edge fade: from 0.1 s)
+                    for (int i = (int) (sr * 0.1); i < b.getNumSamples(); ++i)
+                        if (threshold > 0.0f && std::abs (b.getSample (1, i)) > threshold)
+                        {
+                            int loudest = i;
+
+                            for (int j = i; j < std::min (b.getNumSamples(), i + (int) (sr * 0.04)); ++j)
+                                if (std::abs (b.getSample (1, j)) > std::abs (b.getSample (1, loudest)))
+                                    loudest = j;
+
+                            clicks.push_back (loudest / sr);
+                            i = loudest + (int) (sr * 0.15);
+                        }
+                }
+
+                folder.deleteRecursively();
+                double worst = clicks.size() == 7 ? 0.0 : 1.0e9;
+
+                for (size_t k = 0; k < clicks.size() && k < 7; ++k)
+                    worst = std::max (worst, std::abs (clicks[k] - song.secondsAt ((double) (k + 1) * ticksPerBeat)));
+
+                check (worst < 0.005, "a 120 BPM loop following the tempo through an eased-in glide from 90 to 135: its clicks on the song's beats ("
+                           + juce::String ((int) clicks.size()) + " of 7 heard, " + juce::String (worst * 1000.0, 2) + " ms off at most)");
+            }
+
+            // Arrange: the curve handle with real mouse events, the menu, the dialog, the top bar's tempo
+            {
+                Song song;
+                song.loadBlank();
+                song.bpm = 120.0;
+                song.mode = PlayMode::song;
+                song.showAutomation = true;
+                song.setTempoAt (4 * bar, 100.0);
+                song.setTempoAt (8 * bar, 140.0, true);
+                song.notify (Song::Change::everything);
+                AudioEngine audio (song, false);
+                audio.syncNow();
+                Playlist playlist (song, audio);
+                playlist.setSize (1600, 800);
+
+                auto mouse = [&playlist] (juce::Point<float> from, juce::Point<float> to, int mods = juce::ModifierKeys::leftButtonModifier, int clicks = 1)
+                {
+                    const auto now = juce::Time::getCurrentTime();
+                    auto event = [&] (juce::Point<float> p, bool dragged)
+                    {
+                        return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), p, juce::ModifierKeys (mods), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                                 &playlist, &playlist, now, from, now, clicks, dragged);
+                    };
+
+                    playlist.mouseDown (event (from, false));
+
+                    if (from != to)
+                        for (int i = 1; i <= 6; ++i)
+                            playlist.mouseDrag (event (from + (to - from) * (i / 6.0f), true));
+
+                    playlist.mouseUp (event (to, from != to));
+                };
+
+                // The handle sits halfway along the glide (bar 7, 120 bpm on the straight line); dragged down it eases in
+                const auto handle = playlist.curveHandlePosition (1);
+                const float pxPerTick = 72.0f / bar;
+                const bool where = about (handle.x, Playlist::headerWidth + 6 * bar * pxPerTick, 0.5);
+                mouse (handle, handle + juce::Point<float> (0.0f, 6.0f));
+                const float down = song.tempoChanges[1].curve;
+                const double halfway = song.bpmAt (6 * bar);
+                check (where && down > 0.2f && halfway < 118.0, "the curve handle is halfway along the glide; dragged down it eases in (curve "
+                           + juce::String (down, 2) + ", " + juce::String (halfway, 1) + " bpm halfway)");
+
+                mouse (playlist.curveHandlePosition (1), playlist.curveHandlePosition (1) + juce::Point<float> (0.0f, -12.0f));
+                const float up = song.tempoChanges[1].curve;
+                check (up < -0.2f && song.bpmAt (6 * bar) > 122.0, "dragged up it eases out (curve " + juce::String (up, 2) + ", "
+                           + juce::String (song.bpmAt (6 * bar), 1) + " bpm halfway)");
+
+                mouse (playlist.curveHandlePosition (1), playlist.curveHandlePosition (1), juce::ModifierKeys::leftButtonModifier, 2);
+                check (song.tempoChanges[1].curve == 0.0f && song.tempoChanges[1].glide, "a double-click on the handle makes it straight again");
+
+                song.undo();
+                check (song.tempoChanges[1].curve == up, "undo puts the curve back");
+
+                // Right-clicked, the handle opens the glide's menu
+                mouse (playlist.curveHandlePosition (1), playlist.curveHandlePosition (1), juce::ModifierKeys::rightButtonModifier);
+                check (juce::PopupMenu::dismissAllActiveMenus(), "right-clicking the handle opens the glide's menu");
+
+                // The dialog: easing in picked; asked again with a curve the handle bent, Set keeps that curve
+                auto answer = [&] (int how)
+                {
+                    playlist.askTempo (8 * bar);
+
+                    if (auto* window = dynamic_cast<juce::AlertWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (0)))
+                    {
+                        if (auto* combo = window->getComboBoxComponent ("how"); combo != nullptr && how >= 0)
+                            combo->setSelectedItemIndex (how);
+
+                        window->exitModalState (1);
+                    }
+
+                    for (int i = 0; i < 10; ++i)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+                };
+
+                answer (2);
+                const float easedIn = song.tempoChanges[1].curve;
+                answer (3);
+                const float easedOut = song.tempoChanges[1].curve;
+                song.tempoChanges[1].curve = -0.37f;
+                answer (-1);
+                const float kept = song.tempoChanges[1].curve;
+                answer (1);
+                check (easedIn == 1.0f && easedOut == -1.0f && kept == -0.37f && song.tempoChanges[1].curve == 0.0f && song.tempoChanges[1].glide,
+                       "the tempo dialog: easing in, easing out, a bent curve kept when it's set as it is, a straight line");
+
+                // The top bar's tempo along the curve
+                song.tempoChanges[1].curve = 0.8f;
+                song.notify (Song::Change::transport);
+                audio.syncNow();
+                audio.setPlayheadTicks (6 * bar);
+                check (about (audio.getTempoNow(), song.bpmAt (6 * bar), 1.0e-6) && audio.getTempoNow() < 117.0,
+                       "the top bar's tempo halfway along an eased-in glide: " + juce::String (audio.getTempoNow(), 1) + " bpm");
             }
 
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
@@ -17802,7 +18957,8 @@ namespace
             const bool ok = audio.renderToFile (out);
             const auto m = mastering::measureFile (out);
 
-            // Each section's level (RMS over its bars, in song order), to check the quiet parts stay quiet
+            // Each section's level (RMS over its bars, in song order), to check the quiet parts stay quiet: where the
+            // drummer's clips are, through the song's tempo and time signatures
             juce::String levels;
             {
                 juce::AudioFormatManager formats;
@@ -17810,20 +18966,22 @@ namespace
 
                 if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (out)); reader != nullptr && song.bpm > 0.0)
                 {
-                    const double barSeconds = song.meterBeats * (4.0 / juce::jmax (1, song.meterUnit)) * 60.0 / song.bpm;
-                    double at = 0.0;
+                    std::vector<std::pair<int, juce::String>> sections;     // start, name
 
-                    for (auto& name : groove.arrangement)
+                    for (auto& clip : song.playlist)
+                        for (auto& [name, patternId] : song.findChannel (drumsId)->drummer.patterns)
+                            if (clip.patternId == patternId)
+                                sections.emplace_back (clip.start, name);
+
+                    std::sort (sections.begin(), sections.end());
+
+                    for (auto& [start, name] : sections)
                     {
-                        int bars = 0;
-
-                        for (auto& s : groove.sections)
-                            if (s.name == name)
-                                bars = (int) s.bars.size();
-
-                        const int length = (int) (bars * barSeconds * reader->sampleRate);
+                        const auto* p = song.findPattern (song.findChannel (drumsId)->drummer.patterns[name]);
+                        const double from = song.secondsAt (start), to = song.secondsAt (start + (p != nullptr ? song.patternLength (*p) : 0));
+                        const int length = (int) ((to - from) * reader->sampleRate);
                         juce::AudioBuffer<float> buffer ((int) reader->numChannels, juce::jmax (1, length));
-                        reader->read (&buffer, 0, length, (juce::int64) (at * reader->sampleRate), true, true);
+                        reader->read (&buffer, 0, length, (juce::int64) (from * reader->sampleRate), true, true);
                         double sum = 0.0;
 
                         for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
@@ -17832,7 +18990,6 @@ namespace
 
                         const auto rms = (float) std::sqrt (sum / juce::jmax (1, length * buffer.getNumChannels()));
                         levels << (levels.isEmpty() ? "" : ", ") << name << " " << juce::String (juce::Decibels::gainToDecibels (rms, -100.0f), 1);
-                        at += bars * barSeconds;
                     }
                 }
             }
@@ -18321,20 +19478,69 @@ namespace
             }
 
             // Tempo and time signature changes as they look: a jump at bar 5, a glide back by bar 9,
-            // 7/8 from bar 7 and 4/4 again from bar 9, the tempo lane shown, Song mode at bar 7
+            // 7/8 from bar 7 and 4/4 again from bar 9, the tempo lane shown, Song mode at bar 7.
+            // --curved: the glide eases out and a second one eases in to bar 13, its curve handle held
+            // as it's dragged (saying which way it eases); --tempodialog: the tempo dialog for bar 9's
             if (args.has ("--tempodemo"))
             {
                 const int bar = song.ticksPerBar();
                 song.mode = PlayMode::song;
                 song.setTempoAt (4 * bar, song.bpm + 32.0);
-                song.setTempoAt (8 * bar, song.bpm, true);
+                song.setTempoAt (8 * bar, song.bpm, true, args.has ("--curved") ? -0.8f : 0.0f);
                 song.setMeterAt (6 * bar, 7, 8);
                 song.setMeterAt (song.barStart (8), 4, 4);
+
+                if (args.has ("--curved"))
+                    song.setTempoAt (song.barStart (12), song.bpm + 24.0, true, 0.7f);
+
                 song.showAutomation = true;
                 song.notify (Song::Change::transport);
                 song.notify (Song::Change::automation);
                 audio.syncNow();
-                audio.setPlayheadTicks (song.barStart (6) + 48);
+                audio.setPlayheadTicks (args.has ("--curved") ? song.barStart (10) + 192 : song.barStart (6) + 48);    // (curved: along the eased-in glide)
+                main.repaint();
+
+                for (int i = 0; i < 5; ++i)
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+                if (args.has ("--curved"))
+                {
+                    // The second glide's handle held, dragged a little further down (easing in more)
+                    auto& playlist = main.getPlaylist();
+                    const auto at = playlist.curveHandlePosition (2);
+                    const auto now = juce::Time::getCurrentTime();
+                    auto event = [&] (juce::Point<float> p, bool dragged)
+                    {
+                        return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), p, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                                 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &playlist, &playlist, now, at, now, 1, dragged);
+                    };
+
+                    playlist.mouseDown (event (at, false));
+                    playlist.mouseDrag (event (at + juce::Point<float> (0.0f, 3.0f), true));
+                    main.repaint();
+                }
+
+                if (args.has ("--tempodialog"))
+                    main.getPlaylist().askTempo (8 * bar);
+            }
+
+            // The song agent writing a song from words, as its prompt does (--songwords "a rock song with verses in 4/4 and a
+            // bridge in 7/8"; it needs the drum kits); --arrangeat <bar> scrolls Arrange to that bar
+            if (const auto words = args.valueAfter ("--songwords").unquoted(); words.isNotEmpty())
+            {
+                main.openAgent (MainComponent::Panel::song);
+                auto& prompt = main.getDrummerBar();
+                song.markSaved();
+                prompt.setText (words);
+                prompt.getEditor().keyPressed (juce::KeyPress (juce::KeyPress::returnKey));
+
+                for (int i = 0; i < 4000 && (i < 4 || main.getSongPanel().isWorking()); ++i)
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+            }
+
+            if (const int at = args.valueAfter ("--arrangeat").getIntValue(); at > 0)
+            {
+                main.getPlaylist().scrollToTick (song.barStart (at - 1));
                 main.repaint();
             }
 
@@ -18766,6 +19972,10 @@ namespace
                 main.confirmDiscard ([] {});
                 closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
             }
+
+            // The tempo dialog (--tempodemo --tempodialog), opened above
+            if (args.has ("--tempodialog"))
+                closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
 
             // Export MIDI file's question: the whole song or a pattern (as it looks; nothing is saved)
             if (args.has ("--exportmidi"))

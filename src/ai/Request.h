@@ -17,6 +17,11 @@ namespace nightshift::agents
         juce::String style;                 // see styles(); empty until one is named
         int tempo = 0;                      // asked for, else 0
         int meterBeats = 0, meterUnit = 0;  // asked for, else 0
+
+        // A section's own time signature, asked for: "verses in 4/4 and a bridge in 7/8", "a 7/8
+        // bridge", "the chorus goes to 6/8". By section kind; the rest of the song plays the one above
+        // (or the song's). A section named this way is in the song even if its style's form hasn't one
+        std::map<juce::String, std::pair<int, int>> meterIn;
         bool halfTime = false, doubleTime = false;
         bool brushes = false, blasts = false, ghostNotes = false, gallops = false;
         float energy = 0.5f;                // 0 gentle .. 1 all out
@@ -82,7 +87,12 @@ namespace nightshift::agents
     const Style* findStyle (const juce::String& id);
 
     /** The words (spaced, lower case) without how their sections are played ("soft verses", "a heavy
-        half-time chorus", "builds"), as the request reads them: for a reader that rebuilds the words
-        (the song agent's, for its drummer) and says that part again on its own. */
+        half-time chorus", "builds") or their own time signatures ("a bridge in 7/8"), as the request
+        reads them: for a reader that rebuilds the words (the song agent's, for its drummer) and says
+        that part again on its own. */
     juce::String withoutSectionFeel (const juce::String& words);
+
+    /** A section's time signature as the request asks it: its own (meterIn), else the whole song's
+        asked for, else `otherwise` (the song's). */
+    std::pair<int, int> meterFor (const Request&, const juce::String& kind, std::pair<int, int> otherwise);
 }

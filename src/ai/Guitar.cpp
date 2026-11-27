@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "Guitar.h"
+#include "Drummer.h"
 
 namespace nightshift::guitar
 {
@@ -108,6 +109,10 @@ juce::var Part::toJson() const
 
         auto* section = new juce::DynamicObject();
         section->setProperty ("name", s.name);
+
+        if (s.meterBeats > 0 && s.meterUnit > 0)
+            section->setProperty ("meter", drummer::meterText (s.meterBeats, s.meterUnit));
+
         section->setProperty ("bars", bars);
         list.add (juce::var (section));
     }
@@ -162,6 +167,7 @@ std::optional<Part> Part::fromJson (const juce::var& v)
     {
         Section s;
         s.name = sv.getProperty ("name", {}).toString();
+        std::tie (s.meterBeats, s.meterUnit) = drummer::meterFromText (sv.getProperty ("meter", {}).toString());
 
         if (auto* bars = sv.getProperty ("bars", {}).getArray())
             for (auto& bv : *bars)
@@ -370,7 +376,6 @@ void render (Song& song, int channelId, const Part& part)
         return;
 
     auto& g = c->guitar;
-    const int barTicks = song.ticksPerBar();
     const double ticksPerMs = song.bpm / 60.0 * ticksPerBeat / 1000.0;
     std::set<int> used;
 
@@ -392,22 +397,19 @@ void render (Song& song, int channelId, const Part& part)
 
         used.insert (pattern->id);
 
+        // In its section's time signature (the drummer's): its pattern's own where that isn't the song's at the start
+        const auto [beats, unit] = section.meterBeats > 0 ? std::pair (section.meterBeats, section.meterUnit)
+                                 : part.meterBeats > 0 ? std::pair (part.meterBeats, part.meterUnit) : std::pair (song.meterBeats, song.meterUnit);
+        const int barTicks = beats * ticksPerBeat * 4 / unit;
+        const bool startsMeter = beats == song.meterBeats && unit == song.meterUnit;
+        pattern->meterBeats = startsMeter ? 0 : beats;
+        pattern->meterUnit = startsMeter ? 0 : unit;
+
         struct Placed { int start, end, pitch, velocity, string; bool palmMute, muted, legato; };
         std::vector<Placed> placed;
 
-        auto swung = [&] (double t)
-        {
-            const double beats = t / ticksPerBeat;
-            const double frac = beats - std::floor (beats);
-
-            if (! part.swingSixteenths && std::abs (frac - 0.5) < 1.0e-6)
-                return t + part.swing * ticksPerBeat / 6.0;
-
-            if (part.swingSixteenths && (std::abs (frac - 0.25) < 1.0e-6 || std::abs (frac - 0.75) < 1.0e-6))
-                return t + part.swing * ticksPerBeat / 12.0;
-
-            return t;
-        };
+        // Swing: the bar's off-beat 8ths (or 16ths) late, as the drums swing them
+        auto swung = [&] (double t, double barStart) { return drummer::swung (t, barStart, part.swing, part.swingSixteenths); };
 
         for (size_t bi = 0; bi < section.bars.size(); ++bi)
         {
@@ -433,8 +435,8 @@ void render (Song& song, int channelId, const Part& part)
                 juce::Random random ((juce::int64) (s * 1000003 + bi * 10007 + ni * 101) ^ 0x6017a5);
                 const double feel = (part.pushMs + wobble (random) * part.looseMs * 0.6f) * ticksPerMs;
                 const double at = (double) bi * barTicks;
-                const double start = swung (at + n.step * stepTicks) + feel + strum;
-                const double end = swung (at + (n.step + n.length) * stepTicks) + feel;
+                const double start = swung (at + n.step * stepTicks, at) + feel + strum;
+                const double end = swung (at + (n.step + n.length) * stepTicks, at) + feel;
                 const int velocity = juce::jlimit (1, 127, n.velocity + juce::roundToInt (wobble (random) * 3.0f) - (inChord > 1 ? order * 2 : 0));
 
                 placed.push_back ({ std::max (0, juce::roundToInt (start)), std::max (1, juce::roundToInt (end)), n.pitch, velocity, n.string,
@@ -565,11 +567,19 @@ void placeInArrange (Song& song, int channelId, const Part& part)
                 end = std::max (end, at + song.patternLength (*p));
 
     const int row = song.trackForChannel (c->id, starts.front().first, end);
+    const auto meters = song.meterChanges;
+    const auto startMeter = std::pair (song.meterBeats, song.meterUnit);
 
     for (auto& [at, name] : starts)
         if (auto it = c->guitar.patterns.find (name); it != c->guitar.patterns.end())
             if (song.findPattern (it->second) != nullptr)
+            {
                 song.playlist.push_back ({ it->second, row, at });
+                song.fitMeterToClip (it->second, at);       // a section in a time signature of its own: the bars there in it
+            }
+
+    if (song.meterChanges != meters || std::pair (song.meterBeats, song.meterUnit) != startMeter)
+        song.notify (Song::Change::transport);
 
     song.notify (Song::Change::playlist);
 }

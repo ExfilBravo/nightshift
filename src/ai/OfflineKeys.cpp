@@ -1022,9 +1022,6 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
     const auto& defaults = defaultsFor (style->id);
     juce::Random rng (seed);
     const auto key = theory::keyFrom (bassLine.key);
-    const int beats = g.meterBeats > 0 ? g.meterBeats : song.meterBeats;
-    const int unit = g.meterUnit > 0 ? g.meterUnit : song.meterUnit;
-    const int sixteenthsInBar = juce::jmax (1, beats * 16 / unit);
 
     Ctx c { req, *style, rng, key };
     c.busy = req.busy;
@@ -1072,6 +1069,10 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
         c.kind = theory::kindOf (ds.name);
         c.soft = req.softIn.contains (c.kind);
         const bool lastSection = si + 1 == g.sections.size();
+
+        // In the drummer's section's time signature (its own where it has one, else the song's)
+        const auto [beats, unit] = drummer::meterOf (g, ds, { song.meterBeats, song.meterUnit });
+        const int sixteenthsInBar = juce::jmax (1, beats * 16 / unit);
         std::vector<BarIn> ins;
 
         for (size_t b = 0; b < ds.bars.size(); ++b)
@@ -1128,6 +1129,8 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
         c.right = bestRight;
         Section section;
         section.name = ds.name;
+        section.meterBeats = ds.meterBeats;         // in the drummer's section's own time signature, where it has one
+        section.meterUnit = ds.meterUnit;
 
         for (size_t b = 0; b < best.size(); ++b)
         {

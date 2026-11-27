@@ -47,6 +47,12 @@ namespace nightshift::theory
     /** The lowest pitch at or above `from` with this pitch class. */
     inline int atOrAbove (int pc, int from)    { return from + ((((pc - from) % 12) + 12) % 12); }
 
+    /** How a bar's beats group, in 16ths, as the band counts it: a quarter note's four for each beat
+        of 4/4 (and 3/4, 5/4...), 6/8 and 9/8 in dotted quarters, the odd eighths and sixteenths as
+        the metronome groups them first (7/8 in 2+2+3, 5/8 in 3+2, 11/8 in 3+3+3+2), so the drums
+        lean where the click does. */
+    std::vector<int> meterGroups (int beats, int unit);
+
     /** Where each counted beat starts in a bar of `steps` (4/4 in four, 7/8 in 2+2+3 eighths...). */
     std::vector<int> beatStarts (int steps, int beats, int unit);
 

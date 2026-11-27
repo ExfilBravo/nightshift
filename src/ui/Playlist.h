@@ -174,6 +174,12 @@ public:
     /** Asks for the tempo from `tick` (the start's at 0) and sets it, changing the one there. */
     void askTempo (int tick);
 
+    /** Where a glide's curve handle is drawn, halfway along it (for the tests and snapshots). */
+    juce::Point<float> curveHandlePosition (int index) const    { return tempoCurveHandle (index, tempoLaneRange()); }
+
+    /** Scrolls so `tick` is at the grid's left edge (for snapshots). */
+    void scrollToTick (double tick);
+
     static constexpr int headerWidth = 216, rulerHeight = 30, rowHeight = 54, laneHeight = 30, loopStripHeight = 10;
     static constexpr int automationLaneHeight = 44;
 
@@ -212,7 +218,7 @@ public:
     juce::Rectangle<float> iconBounds (int row) const;
 
 private:
-    enum class Drag { none, move, moveAudio, erase, scrub, loop, comp, box, trim, stretch, fade, point, tempo, bend };
+    enum class Drag { none, move, moveAudio, erase, scrub, loop, comp, box, trim, stretch, fade, point, tempo, tempoCurve, bend };
 
     /** A point on an automation lane, by its lane (owner and parameter) and place in it. */
     struct PointRef
@@ -287,17 +293,29 @@ private:
     bool bendCheckpointed = false;
 
     // The tempo lane, along the top while automation shows (Logic's tempo track): the start's
-    // tempo and each change as a point, held or gliding to the next
+    // tempo and each change as a point, held or gliding to the next (along a curve: a glide's
+    // handle, halfway along it, bends it as it's dragged up or down, FL's tension handle)
     juce::Rectangle<int> tempoArea, tempoHeaderArea;
     static constexpr int noTempoPoint = -2;     // else -1 for the start's, or a change's index
-    int dragTempo = noTempoPoint;
+    int dragTempo = noTempoPoint;               // the point dragged, or the glide whose curve is
     juce::Range<double> dragTempoRange;         // the lane's tempos while one is dragged (it holds still)
+    bool tempoCurveCheckpointed = false;        // a curve dragged has its undo step (once it bends)
 
     juce::Range<double> tempoLaneRange() const;
     float tempoToY (double bpm, juce::Range<double>) const;
     double yToTempo (float y, juce::Range<double>) const;
     juce::Point<float> tempoPoint (int index, juce::Range<double>) const;
     int tempoPointAt (juce::Point<float>) const;
+
+    /** A glide's curve handle, halfway along it; whether that glide has one to show (it changes
+        the tempo, and has room); the glide whose handle is under a point (-1: none). */
+    juce::Point<float> tempoCurveHandle (int index, juce::Range<double>) const;
+    bool hasTempoCurveHandle (int index) const;
+    int tempoCurveHandleAt (juce::Point<float>) const;
+
+    /** Sets a glide's curve (0 straight), as one change undo takes back. */
+    void setTempoCurve (int index, float curve);
+
     void tempoMouseDown (const juce::MouseEvent&);
     void showTempoMenu (int index, int tick);
     void paintTempoLane (juce::Graphics&);

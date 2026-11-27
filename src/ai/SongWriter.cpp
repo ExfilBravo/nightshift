@@ -163,23 +163,38 @@ juce::StringArray formFor (const juce::String& style, const juce::String& words)
     else
         form = { "intro", "verse", "chorus", "verse", "chorus", "bridge", "chorus", "outro" };
 
-    // Sections the words ask for that the form hasn't: in before the last chorus (or hook)
-    const auto asked = agents::Request::parse (words).sections;
+    // Sections the words ask for that the form hasn't (asked for, or in a time signature of their own: "a
+    // breakdown in 7/8"): in before the last chorus (or hook); an intro first, an outro last
+    const auto request = agents::Request::parse (words);
+    auto asked = request.sections;
+
+    for (auto& [kind, meter] : request.meterIn)
+        asked.addIfNotAlreadyThere (kind);
 
     for (auto& kind : asked)
-        if (! form.contains (kind) && kind != "intro" && kind != "outro")
+    {
+        if (form.contains (kind))
+            continue;
+
+        if (kind == "intro" || kind == "outro")
         {
-            int at = form.size() - 1;
+            if (request.meterIn.count (kind) > 0)
+                form.insert (kind == "intro" ? 0 : form.size(), kind);
 
-            for (int i = form.size() - 1; i > 0; --i)
-                if (form[i] == "chorus" || form[i] == "hook")
-                {
-                    at = i;
-                    break;
-                }
-
-            form.insert (at, kind);
+            continue;
         }
+
+        int at = form.size() - 1;
+
+        for (int i = form.size() - 1; i > 0; --i)
+            if (form[i] == "chorus" || form[i] == "hook")
+            {
+                at = i;
+                break;
+            }
+
+        form.insert (at, kind);
+    }
 
     return form;
 }
@@ -230,30 +245,41 @@ juce::String drummerWords (const juce::String& words, const juce::String& style)
     const double eightBarSong = (middle * 8 + 8) * 4.0 * 60.0 / tempo;
     const bool longer = eightBarSong < 90.0 && request.bars == 0;
 
-    // How the sections are played, each on its own ("soft verses, heavy half-time choruses")
+    // How the sections are played, each on its own ("soft verses, heavy half-time choruses"), and the time
+    // signatures some are in ("the bridge in 7/8")
     juce::String feel;
 
     for (auto& k : request.softIn)      feel << ", soft " << k;
     for (auto& k : request.heavyIn)     feel << ", heavy " << k;
     for (auto& k : request.halfTimeIn)  feel << ", halftime " << k;
 
+    for (auto& [kind, m] : request.meterIn)
+        feel << ", the " << kind << " in " << m.first << "/" << m.second;
+
     return kinds.joinIntoString (" ") + " " + t.trim() + (longer ? " 16 bars" : "") + feel;
 }
 
-double lengthOf (const drummer::Groove& g, const juce::StringArray& order, double secondsPerBar)
+double lengthOf (const drummer::Groove& g, const juce::StringArray& order, double secondsPerBar, std::pair<int, int> barMeter)
 {
+    // A bar of `barMeter` (the groove's own if it names one) takes secondsPerBar; a section in a time
+    // signature of its own, its bars as long as they are
+    if (g.meterBeats > 0 && g.meterUnit > 0)
+        barMeter = { g.meterBeats, g.meterUnit };
+
+    const double quarters = barMeter.first * 4.0 / std::max (1, barMeter.second);
     double seconds = 0.0;
 
     for (auto& name : order)
         for (auto& s : g.sections)
             if (s.name == name)
-                seconds += (double) s.bars.size() * secondsPerBar;
+                seconds += (double) s.bars.size() * secondsPerBar
+                             * (s.meterBeats > 0 && s.meterUnit > 0 ? s.meterBeats * 4.0 / s.meterUnit / quarters : 1.0);
 
     return seconds;
 }
 
 juce::StringArray arrange (const drummer::Groove& g, const juce::String& style, const juce::String& words,
-                           double secondsPerBar, double minimumSeconds)
+                           double secondsPerBar, double minimumSeconds, std::pair<int, int> barMeter)
 {
     // Each kind's section, as the drummer named it (Head and Solos in jazz)
     std::map<juce::String, juce::String> nameOf;
@@ -305,7 +331,7 @@ juce::StringArray arrange (const drummer::Groove& g, const juce::String& style, 
 
     // Longer until it's long enough: another verse and chorus, just before the last chorus (and
     // the outro) - so the song still ends on its biggest section
-    for (int guard = 0; guard < 24 && ! cycle.isEmpty() && lengthOf (g, toNames (kinds), secondsPerBar) < minimumSeconds; ++guard)
+    for (int guard = 0; guard < 24 && ! cycle.isEmpty() && lengthOf (g, toNames (kinds), secondsPerBar, barMeter) < minimumSeconds; ++guard)
     {
         int at = kinds.size();
 

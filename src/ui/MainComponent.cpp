@@ -1398,7 +1398,8 @@ void MainComponent::writeSongParts (const juce::String& words)
         return;
     }
 
-    const auto order = songwriter::arrange (*groove, style, words, song.secondsAt (song.ticksPerBar()));
+    // (a bar at the start's tempo in the start's time signature; a section in one of its own as long as its bars)
+    const auto order = songwriter::arrange (*groove, style, words, song.secondsAt (song.ticksPerBar()), 125.0, { song.meterBeats, song.meterUnit });
     {
         auto v = juce::JSON::parse (turn.groove);
         juce::Array<juce::var> list;
@@ -1482,7 +1483,7 @@ void MainComponent::finishSong (bool mastered)
     // What it made, in words
     const auto* style = agents::findStyle (agents::Request::parse (songWords).style);
     const int seconds = juce::roundToInt (song.secondsAt (song.songLengthInTicks()));
-    juce::String key;
+    juce::String key, meters;
     juce::StringArray players, order;
 
     for (auto& c : song.channels)
@@ -1492,7 +1493,17 @@ void MainComponent::finishSong (bool mastered)
             players.add ("drums on " + (c.type == InstrumentType::kit ? drumkits::displayName (c.kit) : c.name));
 
             if (auto g = drummer::Groove::fromJson (juce::JSON::parse (c.drummer.turns[(size_t) c.drummer.shown].groove)))
+            {
                 order = g->arrangement;
+
+                // Sections in a time signature of their own: "in 4/4, the Bridge in 7/8"
+                for (auto& s : g->sections)
+                    if (s.meterBeats > 0 && (s.meterBeats != song.meterBeats || s.meterUnit != song.meterUnit))
+                        meters << ", the " << s.name << " in " << drummer::meterText (s.meterBeats, s.meterUnit);
+
+                if (meters.isNotEmpty())
+                    meters = "In " + song.meterName() + meters + ". ";
+            }
         }
         else if (! c.bass.turns.empty())
         {
@@ -1536,7 +1547,7 @@ void MainComponent::finishSong (bool mastered)
     reply << "A " << (style != nullptr ? juce::String (style->name).toLowerCase() : juce::String ("rock")) << " song"
           << (key.isNotEmpty() ? " in " + key : juce::String()) << " at " << juce::roundToInt (song.bpm) << " bpm, "
           << seconds / 60 << ":" << juce::String (seconds % 60).paddedLeft ('0', 2) << " long, in " << order.size() << " sections: " << form << ". "
-          << "Played by " << players.joinIntoString (", ") << ". ";
+          << meters << "Played by " << players.joinIntoString (", ") << ". ";
 
     if (mastered && juce::isPositiveAndBelow (song.masterShown, (int) song.masterTurns.size()))
     {
