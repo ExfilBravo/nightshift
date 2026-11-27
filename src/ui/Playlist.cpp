@@ -3,10 +3,12 @@
 
 #include "Playlist.h"
 #include "Theme.h"
+#include "TextAudit.h"
 #include "TrackIcons.h"
 #include "Widgets.h"
 #include "audio/Kits.h"
 #include "audio/Instruments.h"
+#include "audio/LoopTempo.h"
 
 namespace nightshift
 {
@@ -354,12 +356,12 @@ juce::String Playlist::describeTick (int tick) const
 
 float Playlist::secondsToX (const AudioClip& clip, double seconds) const
 {
-    return tickToX (song.tickAt (song.secondsAt (clip.start) + seconds));
+    return tickToX (song.audioTickAt (clip, seconds));
 }
 
 double Playlist::xToSeconds (const AudioClip& clip, float x) const
 {
-    return song.secondsBetween (clip.start, xToTick (x));
+    return song.audioSecondsAt (clip, xToTick (x));
 }
 
 juce::Rectangle<float> Playlist::clipBounds (const PlaylistClip& clip) const
@@ -370,7 +372,7 @@ juce::Rectangle<float> Playlist::clipBounds (const PlaylistClip& clip) const
 
 juce::Rectangle<float> Playlist::clipBounds (const AudioClip& clip) const
 {
-    const float width = (float) ((song.tickAt (song.secondsAt (clip.start) + clip.length) - clip.start) * pxPerTick);
+    const float width = (float) ((song.audioTickAt (clip, clip.length) - clip.start) * pxPerTick);
     return { tickToX (clip.start) + 1.0f, rowToY (clip.track) + 4.0f, std::max (3.0f, width - 2.0f), rowHeight - 8.0f };
 }
 
@@ -394,6 +396,125 @@ juce::Point<float> Playlist::fadeDot (const AudioClip& clip, bool in) const
     const float x = in ? std::max (r.getX() + 6.0f, secondsToX (clip, clip.fadeIn))
                        : std::min (r.getRight() - 6.0f, secondsToX (clip, clip.length - clip.fadeOut));
     return { juce::jlimit (r.getX() + 6.0f, std::max (r.getX() + 6.0f, r.getRight() - 6.0f), x), r.getY() + 21.0f };
+}
+
+juce::String Playlist::speedBadgeText (const AudioClip& clip)
+{
+    // In the fewest words: following the tempo, its speed, its pitch (sentence case, the first
+    // word's capital only)
+    juce::StringArray parts;
+
+    if (Song::followsTempo (clip))
+        parts.add ("in time");
+
+    if (std::abs (clip.speed - 1.0) > 0.0005)
+        parts.add (juce::String (juce::roundToInt (clip.speed * 100.0)) + "%");
+
+    if (const int semitones = juce::roundToInt (clip.pitch); semitones != 0)
+        parts.add ((semitones > 0 ? "up " : "down ") + juce::String (std::abs (semitones)));
+
+    auto words = parts.joinIntoString (juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")));
+    return words.substring (0, 1).toUpperCase() + words.substring (1);
+}
+
+juce::Rectangle<float> Playlist::speedBadgeBounds (const AudioClip& clip) const
+{
+    // On the title strip's right, clear of the end's trim zone and the fade-out dot under it; only
+    // where the clip has room for it beside a little of its name
+    const auto r = clipBounds (clip);
+    const auto words = speedBadgeText (clip);
+    const float width = words.isEmpty() ? 22.0f : juce::GlyphArrangement::getStringWidth (font (15.0f, true), words) + 34.0f;
+
+    if (r.getWidth() < width + 60.0f)
+        return {};
+
+    return { r.getRight() - 16.0f - width, r.getY() + 1.0f, width, 18.0f };
+}
+
+juce::PopupMenu Playlist::createSpeedMenu (int folder)
+{
+    juce::PopupMenu menu;
+
+    if (! juce::isPositiveAndBelow (folder, (int) song.audioClips.size()))
+        return menu;
+
+    const auto& clip = song.audioClips[(size_t) folder];
+
+    // Each change one undo, made to the folder if it's still there
+    auto change = [this, folder] (std::function<void (AudioClip&)> how)
+    {
+        return [this, folder, how]
+        {
+            if (! juce::isPositiveAndBelow (folder, (int) song.audioClips.size()))
+                return;
+
+            song.checkpoint();
+            how (song.audioClips[(size_t) folder]);
+            song.notify (Song::Change::playlist);
+        };
+    };
+
+    auto tempoText = [] (double bpm) { return juce::String (bpm, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".") + " BPM"; };
+    const bool following = Song::followsTempo (clip);
+
+    menu.addSectionHeader ("Speed and pitch");
+    menu.addItem ("Keep it in time with the song's tempo", true, following,
+                  change ([this, following] (AudioClip& c) { song.setFollowTempo (c, ! following); }));
+    menu.addItem (clip.sourceBpm > 0.0 ? "Its own tempo: " + tempoText (clip.sourceBpm) + "..." : juce::String ("Its own tempo..."),
+                  [this, folder] { askClipTempo (folder); });
+    menu.addItem ("Play it at its own speed", std::abs (clip.speed - 1.0) > 1.0e-6, false, change ([] (AudioClip& c) { c.speed = 1.0; }));
+
+    juce::PopupMenu pitch;
+    const int now = juce::roundToInt (clip.pitch);
+
+    for (int semitones = 12; semitones >= -12; --semitones)
+    {
+        const int n = std::abs (semitones);
+        const auto name = semitones == 0 ? juce::String ("As played")
+                                         : (semitones > 0 ? "Up " : "Down ") + juce::String (n) + (n == 1 ? " semitone" : " semitones")
+                                             + (n == 12 ? " (an octave)" : "");
+        pitch.addItem (name, true, now == semitones, change ([semitones] (AudioClip& c) { c.pitch = (float) semitones; }));
+    }
+
+    menu.addSubMenu (now == 0 ? juce::String ("Pitch: as played") : "Pitch: " + juce::String (now > 0 ? "up " : "down ") + juce::String (std::abs (now)),
+                     pitch);
+    menu.addSeparator();
+    menu.addItem (shortcutText ("Stretch it to fit: Ctrl+drag either end"), false, false, nullptr);
+    return menu;
+}
+
+void Playlist::askClipTempo (int folder)
+{
+    if (! juce::isPositiveAndBelow (folder, (int) song.audioClips.size()))
+        return;
+
+    const auto& clip = song.audioClips[(size_t) folder];
+    const double now = clip.sourceBpm > 0.0 ? clip.sourceBpm : song.bpmAt (clip.start);
+    auto* window = new juce::AlertWindow ("Its own tempo", "The tempo it was played at. Kept in time with the song, it plays "
+                                                         "faster or slower by as much as the song's tempo is from this.",
+                                          juce::MessageBoxIconType::NoIcon);
+    window->addTextEditor ("bpm", juce::String (now, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd ("."), "Beats a minute (quarter notes)");
+    window->addButton ("Set", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([this, window, folder] (int result)
+    {
+        const double bpm = window->getTextEditorContents ("bpm").trim().getDoubleValue();
+
+        if (result != 1 || ! juce::isPositiveAndBelow (folder, (int) song.audioClips.size()))
+            return;
+
+        if (bpm < 20.0 || bpm > 400.0)
+        {
+            if (onMessage != nullptr)
+                onMessage ("A tempo goes from 20 to 400 BPM");
+
+            return;
+        }
+
+        song.checkpoint();
+        song.audioClips[(size_t) folder].sourceBpm = bpm;
+        song.notify (Song::Change::playlist);
+    }), true);
 }
 
 Playlist::Edge Playlist::edgeAt (juce::Point<float> p) const
@@ -1203,6 +1324,9 @@ Playlist::Hit Playlist::clipAt (juce::Point<float> p) const
         if (clip.takes.size() > 1 && toggleBounds (clip).contains (p))
             return { true, i, -1, true };
 
+        if (speedBadgeBounds (clip).contains (p))
+            return { true, i, -1, false, true };
+
         if (clipBounds (clip).contains (p))
             return { true, i };
 
@@ -1971,9 +2095,35 @@ void Playlist::paintAudioClip (juce::Graphics& g, const AudioClip& clip, bool ch
         title << "  " << juce::File (clip.takes.front().file).getFileNameWithoutExtension();
     }
 
+    // Its speed and pitch button, at the strip's right: what's set ("In time", "125%", "Up 3"), or
+    // a metronome alone when it plays as it was played
+    const auto badge = speedBadgeBounds (clip);
+
+    if (! badge.isEmpty())
+    {
+        const auto words = speedBadgeText (clip);
+        label.setRight (std::max (label.getX(), badge.getX() - 6.0f));
+        g.setColour (background.withAlpha (words.isEmpty() ? 0.3f : 0.72f));
+        g.fillRoundedRectangle (badge, 5.0f);
+
+        auto metronome = icons::metronomeLine();
+        metronome.applyTransform (juce::AffineTransform::scale (1.5f).translated (badge.getX() + 4.0f, badge.getY() + 1.5f));
+        g.setColour (words.isEmpty() ? colour.interpolatedWith (juce::Colours::white, 0.45f).withAlpha (0.8f) : juce::Colours::white);
+        g.strokePath (metronome, juce::PathStrokeType (1.3f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        if (words.isNotEmpty())
+        {
+            g.setFont (font (15.0f, true));
+            g.drawText (words, badge.withTrimmedLeft (24.0f).withTrimmedRight (6.0f), juce::Justification::centredLeft, false);
+        }
+    }
+
     g.setColour (colour.interpolatedWith (juce::Colours::white, 0.35f));
     g.setFont (font (15.0f, true));
-    g.drawText (title, label, juce::Justification::centredLeft, true);
+    {
+        textaudit::TheirWords theirs;       // its channel's and its take's names, cut short where it's narrow
+        g.drawText (title, label, juce::Justification::centredLeft, true);
+    }
 
     // The comp: each segment drawn from the take it comes from
     auto body = r.withTrimmedTop (18.0f).reduced (2.0f, 3.0f);
@@ -2174,12 +2324,18 @@ juce::String Playlist::getTooltip()
         if (const auto edge = edgeAt (p.toFloat()); edge.found())
             return edge.fade ? (edge.left ? "Drag to fade in: from silence, up to full volume where you let go"
                                           : "Drag to fade out: from where you let go, down to silence")
-                             : "Drag to trim this clip (drag back out to get it back)";
+                 : edge.audio ? shortcutText ("Drag to trim this clip (drag back out to get it back). Ctrl+drag to stretch it to fit: "
+                                              "its audio plays faster or slower, at the same pitch")
+                              : juce::String ("Drag to trim this clip (drag back out to get it back)");
 
     if (const auto hit = clipAt (p.toFloat()); hit.audio)
     {
         if (hit.toggle)
             return "Show or hide the takes";
+
+        if (hit.speedMenu)
+            return shortcutText ("Speed and pitch: keep it in time with the song's tempo (it stretches, its pitch kept), set the tempo it "
+                                 "was played at, or move its pitch up or down (its length kept). Ctrl+drag an end to stretch it to fit");
 
         if (hit.lane >= 0)
             return "Drag across this take to use that part of it; click to use all of it. Right-click for more.";
@@ -2227,7 +2383,7 @@ void Playlist::mouseMove (const juce::MouseEvent& e)
         }
 
     setMouseCursor (hit.lane >= 0 ? juce::MouseCursor::IBeamCursor
-                  : hit.toggle ? juce::MouseCursor::PointingHandCursor
+                  : hit.toggle || hit.speedMenu ? juce::MouseCursor::PointingHandCursor
                   : hit.found() ? juce::MouseCursor::DraggingHandCursor
                                 : juce::MouseCursor::NormalCursor);
 }
@@ -2817,6 +2973,16 @@ void Playlist::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
+    // A take folder's speed and pitch button opens its menu
+    if (hit.speedMenu && ! e.mods.isPopupMenu() && tool != Tool::erase)
+    {
+        selectChannel (song.audioClips[(size_t) hit.index].channelId);
+        selectOnly (true, hit.index);
+        const auto area = speedBadgeBounds (song.audioClips[(size_t) hit.index]).toNearestInt() + getScreenPosition();
+        createSpeedMenu (hit.index).showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (area));
+        return;
+    }
+
     if (e.mods.isPopupMenu() || tool == Tool::erase)
     {
         song.checkpoint();
@@ -2849,11 +3015,12 @@ void Playlist::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    // A clip's ends trim it; a take folder's corner dots drag out its fades
+    // A clip's ends trim it (a take folder's, with Ctrl, stretch it to fit); a take folder's
+    // corner dots drag out its fades
     if (auto edge = edgeAt (e.position); edge.found())
     {
         song.checkpoint();
-        drag = edge.fade ? Drag::fade : Drag::trim;
+        drag = edge.fade ? Drag::fade : edge.audio && e.mods.isCommandDown() ? Drag::stretch : Drag::trim;
         trimAudio = edge.audio;
         trimLeft = edge.left;
         dragIndex = edge.index;
@@ -3134,17 +3301,18 @@ void Playlist::mouseDrag (const juce::MouseEvent& e)
                     latestAudio = std::max (latestAudio, t.to);
                 }
 
+                // (in its audio's own seconds: stretched, a tick of the song is more or less of it)
                 if (trimLeft)
                 {
                     const int end = song.audioClipEnd (clip);
-                    const int earliest = std::max (0, (int) std::ceil (song.tickAt (song.secondsAt (clip.start) + earliestAudio) - 1.0e-6));
+                    const int earliest = std::max (0, (int) std::ceil (song.audioTickAt (clip, earliestAudio) - 1.0e-6));
                     const int newStart = juce::jlimit (earliest, std::max (earliest, end - least), at);
-                    song.setAudioRange (clip, newStart, clip.length - song.secondsBetween (clip.start, newStart));
+                    song.setAudioRange (clip, newStart, clip.length - song.audioSecondsAt (clip, newStart));
                 }
                 else
                 {
-                    const double shortest = song.secondsBetween (clip.start, clip.start + least);
-                    song.setAudioRange (clip, clip.start, juce::jlimit (shortest, std::max (shortest, latestAudio), song.secondsBetween (clip.start, at)));
+                    const double shortest = song.audioSecondsAt (clip, clip.start + least);
+                    song.setAudioRange (clip, clip.start, juce::jlimit (shortest, std::max (shortest, latestAudio), song.audioSecondsAt (clip, at)));
                 }
 
                 song.audioClips[(size_t) dragIndex] = clip;
@@ -3163,6 +3331,32 @@ void Playlist::mouseDrag (const juce::MouseEvent& e)
             }
 
             notifyPlaylist();
+            break;
+        }
+
+        case Drag::stretch:
+        {
+            if (! dragMoved || originAudio.size() != song.audioClips.size() || ! juce::isPositiveAndBelow (dragIndex, (int) originAudio.size()))
+                break;
+
+            // The edge it's dragged by lands on the snap, the other stays put, and the audio plays
+            // faster or slower to fill what's between (as far as it goes: past that, it stays at the
+            // last stretch that fit)
+            const int s = snapTicks (e.mods);
+            const int at = snapped (xToTick (e.position.x), e.mods);
+            const int least = s == 1 ? ticksPerStep : song.gridStep (s, at);
+            auto clip = originAudio[(size_t) dragIndex];
+            const double end = song.audioTickAt (clip, clip.length);
+
+            const bool fit = trimLeft ? song.stretchAudioTo (clip, std::min (at, (int) std::floor (end) - least), end)
+                                      : song.stretchAudioTo (clip, clip.start, std::max (at, clip.start + least));
+
+            if (fit)
+            {
+                song.audioClips[(size_t) dragIndex] = clip;
+                notifyPlaylist();
+            }
+
             break;
         }
 
@@ -3287,6 +3481,13 @@ void Playlist::mouseUp (const juce::MouseEvent&)
         const auto& take = clip.takes[(size_t) dragLane];
         clip.setComp (take.from, take.to, dragLane);
         song.notify (Song::Change::playlist);
+    }
+    else if (drag == Drag::stretch && dragMoved && juce::isPositiveAndBelow (dragIndex, (int) song.audioClips.size()) && onMessage != nullptr)
+    {
+        // What it plays at now
+        const auto& clip = song.audioClips[(size_t) dragIndex];
+        onMessage ("Stretched to fit: it plays at " + juce::String (juce::roundToInt (clip.speed * 100.0)) + "% of "
+                     + (Song::followsTempo (clip) ? "its speed in time with the song" : "the speed it was played at"));
     }
 
     if (drag == Drag::move || drag == Drag::moveAudio)
@@ -3841,6 +4042,159 @@ void Playlist::itemDropped (const SourceDetails& details)
         case DropTarget::Kind::none:
             break;
     }
+}
+
+//==============================================================================
+namespace
+{
+    juce::StringArray droppableAudio (const juce::StringArray& files)
+    {
+        juce::StringArray audio;
+
+        for (auto& f : files)
+            if (juce::File (f).hasFileExtension ("wav;aif;aiff;flac;ogg;mp3"))
+                audio.add (f);
+
+        return audio;
+    }
+}
+
+bool Playlist::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return ! droppableAudio (files).isEmpty();
+}
+
+Playlist::DropTarget Playlist::fileDropTargetAt (juce::Point<int> p) const
+{
+    DropTarget t;
+
+    if (! gridArea.contains (p) && ! headerArea.contains (p))
+        return t;
+
+    // From the snap at or before where it's let go (over the track names: the first in view)
+    const auto mods = juce::ModifierKeys::getCurrentModifiers();
+    t.tick = p.x >= gridArea.getX() ? snapped (xToTick ((float) p.x), mods, -1) : snapped (scrollTicks, mods, 1);
+    const int row = yToRow ((float) p.y);
+
+    if (row < song.numTracks())
+        if (auto c = song.findChannel (song.trackChannel (row)); c != nullptr && c->type == InstrumentType::audio)
+        {
+            t.kind = DropTarget::Kind::clip;
+            t.row = row;
+            return t;
+        }
+
+    t.kind = DropTarget::Kind::newTrack;
+    t.row = row < song.numTracks() ? row + 1 : song.numTracks();
+    return t;
+}
+
+void Playlist::fileDragEnter (const juce::StringArray& files, int x, int y)
+{
+    fileDragMove (files, x, y);
+}
+
+void Playlist::fileDragMove (const juce::StringArray& files, int x, int y)
+{
+    const auto audioFiles = droppableAudio (files);
+    const auto target = fileDropTargetAt ({ x, y });
+    const auto what = audioFiles.size() == 1 ? juce::File (audioFiles[0]).getFileNameWithoutExtension()
+                                             : juce::String (audioFiles.size()) + " audio files";
+    const auto when = " at " + describeTick (target.tick).replace (", beat", " beat");
+    const auto label = target.kind == DropTarget::Kind::clip ? what + " on " + trackInfo (target.row).name + when
+                     : target.kind == DropTarget::Kind::newTrack ? what + " on a new audio track" + when
+                                                                 : juce::String();
+
+    if (target.kind != drop.kind || target.row != drop.row || target.tick != drop.tick || label != dropLabel)
+    {
+        drop = target;
+        dropLabel = label;
+        dropPatternId = 0;
+        repaint();
+    }
+}
+
+void Playlist::fileDragExit (const juce::StringArray&)
+{
+    setDrop ({}, {});
+}
+
+void Playlist::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    setDrop ({}, {});
+    dropAudioFiles (files, { x, y });
+}
+
+int Playlist::dropAudioFiles (const juce::StringArray& files, juce::Point<int> p)
+{
+    const auto audioFiles = droppableAudio (files);
+    const auto target = fileDropTargetAt (p);
+
+    if (audioFiles.isEmpty() || target.kind == DropTarget::Kind::none)
+        return 0;
+
+    // Read first: what each is and how long, its tempo if it's a loop
+    std::vector<std::pair<juce::File, looptempo::Found>> found;
+
+    for (auto& f : audioFiles)
+        if (auto loop = looptempo::find (juce::File (f)); loop.seconds > 0.0)
+            found.emplace_back (juce::File (f), loop);
+
+    if (found.empty())
+    {
+        if (onMessage != nullptr)
+            onMessage ("NightShift couldn't read " + juce::File (audioFiles[0]).getFileName());
+
+        return 0;
+    }
+
+    song.checkpoint();
+    int row = target.row, channelId = 0;
+
+    if (target.kind == DropTarget::Kind::clip)
+    {
+        channelId = song.trackChannel (row);
+    }
+    else
+    {
+        // An audio track of its own, named after the (first) file, recording from the first input as a new one does
+        auto& channel = song.addChannel (found.front().first.getFileNameWithoutExtension(), InstrumentType::audio);
+        channel.input = audio.getInputNames()[0];
+        channelId = channel.id;
+        Track t;
+        t.channelId = channelId;
+        row = song.insertTrack (t, target.row);
+        song.notify (Song::Change::channels);
+    }
+
+    // One after another along the track, each from where the last ends
+    int tick = target.tick;
+    juce::String said;
+
+    for (auto& [file, loop] : found)
+    {
+        auto& clip = song.addAudioFile (file, channelId, row, tick, loop.seconds, loop.bpm);
+        tick = song.audioClipEnd (clip);
+
+        if (said.isEmpty())
+        {
+            const auto how = loop.how == "file" ? "its file says" : loop.how == "name" ? "its name says" : "it's whole bars";
+            const auto bpm = juce::String (loop.bpm, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".");
+            said = loop.bpm > 0.0 ? file.getFileNameWithoutExtension() + ": a " + bpm + " BPM loop (" + how + "), kept in time with the song"
+                                  : file.getFileNameWithoutExtension() + " plays as it is: its tempo isn't known (its button sets one)";
+        }
+    }
+
+    if (found.size() > 1)
+        said << " (and " << (int) found.size() - 1 << " more after it)";
+
+    song.notify (Song::Change::playlist);
+    selectChannel (channelId);
+
+    if (onMessage != nullptr)
+        onMessage (said);
+
+    return (int) found.size();
 }
 
 void Playlist::paintDrop (juce::Graphics& g)

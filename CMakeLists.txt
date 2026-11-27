@@ -87,7 +87,10 @@ target_compile_definitions(Nightshift PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Nightshift,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:Nightshift,JUCE_VERSION>"
-    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1)
+    # Time-stretching and pitch-shifting audio clips: Signalsmith Stretch (MIT, in the engine's 3rd_party), which
+    # keeps chords and voices clean, and SoundTouch (LGPL 2.1) beside it. Both ship with the engine (NOTICES.txt)
+    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1
+    TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH=1)
 
 # Selawik (Microsoft, SIL Open Font License 1.1: resources/fonts/Selawik-OFL.txt): Segoe UI's stand-in where
 # it isn't installed (a Mac), Regular and Semibold (NightShift's bold)

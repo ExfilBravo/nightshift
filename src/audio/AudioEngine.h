@@ -162,6 +162,10 @@ public:
     /** Crossfade at each join between comp segments, and the fade at a folder's free edges. */
     static constexpr double compCrossfadeSeconds = 0.010, edgeFadeSeconds = 0.002;
 
+    /** The time-stretcher a stretched take folder plays through (Song::isStretched): Signalsmith
+        Stretch, which keeps chords and voices clean. Tests compare it with SoundTouch. */
+    static inline te::TimeStretcher::Mode stretchMode = te::TimeStretcher::signalsmithDefault;
+
     /** Audio is being recorded. */
     bool isRecording() const;
 
@@ -661,6 +665,11 @@ private:
         length in ticks; -1 for all of it). */
     void fillClip (te::MidiClip&, const std::vector<Note>*, int offset = 0, int length = -1);
     void removeAllClips();
+
+    /** Plays a comp segment of a stretched take folder through the time-stretcher, live (no
+        rendered copy): following the tempo beat by beat (the file's beats at the folder's tempo),
+        else at its speed; at its pitch. `fileSeconds` is where in the file it starts. */
+    void stretchClip (te::WaveAudioClip&, const AudioClip&, double fileSeconds, te::ClipPosition);
 
     /** Each instrument's clips under the playhead, as text that changes if they do. */
     std::map<int, juce::String> clipsUnderPlayhead() const;

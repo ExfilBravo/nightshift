@@ -2260,7 +2260,10 @@ void AudioEngine::syncClips (bool notesOnly)
             // One clip per comp segment. Where two segments meet, each runs on by half a
             // crossfade and they fade across each other (equal power: takes aren't
             // correlated); free edges get a short fade so nothing starts with a click.
-            const double folderStart = ticksToSeconds (folder.start);
+            // The folder's times are its audio's: stretched, they land in the song through its
+            // speed, or (following the tempo) its beats on the song's
+            const bool stretched = song.isStretched (folder);
+            auto songSeconds = [this, &folder] (double t) { return ticksToSeconds (song.audioTickAt (folder, t)); };
 
             for (size_t i = 0; i < folder.comp.size(); ++i)
             {
@@ -2280,28 +2283,34 @@ void AudioEngine::syncClips (bool notesOnly)
                 const double from = std::max ({ segment.from - (joinsBefore ? compCrossfadeSeconds * 0.5 : 0.0), take.from, 0.0 });
                 const double to = std::min ({ segment.to + (joinsAfter ? compCrossfadeSeconds * 0.5 : 0.0), take.to, folder.length });
 
-                if (to - from < 0.005)
+                const double start = songSeconds (from), end = songSeconds (to);
+
+                if (to - from < 0.005 || end - start < 0.005)
                     continue;
 
-                te::ClipPosition position { { te::TimePosition::fromSeconds (folderStart + from), te::TimeDuration::fromSeconds (to - from) },
+                te::ClipPosition position { { te::TimePosition::fromSeconds (start), te::TimeDuration::fromSeconds (end - start) },
                                             te::TimeDuration::fromSeconds (take.fileOffset + from) };
 
                 if (auto clip = it->second.track->insertWaveClip (file.getFileNameWithoutExtension(), file, position, false))
                 {
+                    if (stretched)
+                        stretchClip (*clip, folder, take.fileOffset + from, position);
+
                     clip->setMuted (! song.isTrackAudible (folder.track));
                     rowClips.emplace_back (clip, folder.track);
                     clip->setFadeInType (te::AudioFadeCurve::convex);
                     clip->setFadeOutType (te::AudioFadeCurve::convex);
 
-                    // The folder's own fades (its handles in Arrange) on its first and last parts
+                    // The folder's own fades (its handles in Arrange) on its first and last parts, in
+                    // the song's seconds (the joins' and edges' short fades are the song's already)
                     double fadeIn = joinsBefore ? compCrossfadeSeconds : edgeFadeSeconds;
                     double fadeOut = joinsAfter ? compCrossfadeSeconds : edgeFadeSeconds;
 
-                    if (i == 0 && folder.fadeIn > fadeIn)
-                        fadeIn = std::min (folder.fadeIn - from, to - from);
+                    if (i == 0 && folder.fadeIn > 0.0)
+                        fadeIn = std::max (fadeIn, std::min (songSeconds (folder.fadeIn) - start, end - start));
 
-                    if (i + 1 == folder.comp.size() && folder.fadeOut > fadeOut)
-                        fadeOut = std::min (to - (folder.length - folder.fadeOut), to - from - fadeIn);
+                    if (i + 1 == folder.comp.size() && folder.fadeOut > 0.0)
+                        fadeOut = std::max (fadeOut, std::min (end - songSeconds (folder.length - folder.fadeOut), end - start - fadeIn));
 
                     clip->setFadeIn (te::TimeDuration::fromSeconds (std::max (edgeFadeSeconds, fadeIn)));
                     clip->setFadeOut (te::TimeDuration::fromSeconds (std::max (edgeFadeSeconds, fadeOut)));
@@ -2321,6 +2330,46 @@ void AudioEngine::syncClips (bool notesOnly)
 
     builtMode = song.mode;
     syncLooping();
+}
+
+void AudioEngine::stretchClip (te::WaveAudioClip& clip, const AudioClip& folder, double fileSeconds, te::ClipPosition position)
+{
+    // Stretched live, by the stretcher, rather than into a copy rendered in the background (which
+    // would be silent until it's done)
+    clip.setUsesProxy (false);
+    clip.setTimeStretchMode (stretchMode);
+    clip.setResamplingQuality (te::ResamplingQuality::sincMedium);
+    clip.setPitchChange (juce::jlimit (-24.0f, 24.0f, folder.pitch));
+    const double speed = juce::jlimit (AudioClip::slowest, AudioClip::fastest, folder.speed);
+
+    if (Song::followsTempo (folder))
+    {
+        // The file's beats at the folder's tempo as it now plays (its speed in it), counted in the
+        // song's beat (Tracktion's beat is the time signature's unit), so beat for beat on the song
+        const auto info = clip.getAudioFile().getInfo();
+        const double length = info.sampleRate > 0.0 ? (double) info.lengthInSamples / info.sampleRate : 0.0;
+        const double bpm = folder.sourceBpm / speed;
+        auto& loop = clip.getLoopInfo();
+        loop.setNumerator (song.meterBeats);
+        loop.setDenominator (song.meterUnit);
+        loop.setInMarker (0);
+        loop.setOutMarker (-1);
+        loop.setNumBeats (length * bpm / 60.0);
+        clip.setAutoTempo (true);
+
+        // Tracktion takes a beat-based clip's offset in beats at the tempo where it starts: the
+        // beats into the file it starts at, as many seconds of that tempo
+        const double beatsIn = fileSeconds * bpm / 60.0 * song.meterUnit / 4.0;
+        position.offset = te::TimeDuration::fromSeconds (beatsIn / edit->tempoSequence.getBeatsPerSecondAt (position.getStart()));
+    }
+    else
+    {
+        // At its speed: Tracktion reads the file at (time in the clip + offset) times the speed
+        clip.setSpeedRatio (speed);
+        position.offset = te::TimeDuration::fromSeconds (fileSeconds / speed);
+    }
+
+    clip.setPosition (position);
 }
 
 void AudioEngine::syncLooping()

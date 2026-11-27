@@ -37,6 +37,7 @@ namespace nightshift
 class Playlist : public juce::Component,
                  public juce::TooltipClient,
                  public juce::DragAndDropTarget,
+                 public juce::FileDragAndDropTarget,
                  private Song::Listener,
                  private juce::ScrollBar::Listener,
                  private juce::ChangeListener
@@ -87,6 +88,21 @@ public:
 
     DropTarget dropTargetAt (juce::Point<int> position, const juce::String& description) const;
 
+    /** Audio files dropped on Arrange (from the computer's files): on an audio track they go in as
+        clips there, from the snap where they're let go, one after another; anywhere else onto a new
+        audio track, under the track they're over (or the last). A loop whose tempo is known (its file
+        or name says, or it's whole bars: looptempo::find) is kept in time with the song's tempo. */
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void fileDragEnter (const juce::StringArray&, int x, int y) override;
+    void fileDragMove (const juce::StringArray&, int x, int y) override;
+    void fileDragExit (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
+
+    DropTarget fileDropTargetAt (juce::Point<int>) const;
+
+    /** Puts audio files into the song as a drop at `position` does; returns how many went in. */
+    int dropAudioFiles (const juce::StringArray& files, juce::Point<int> position);
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -115,6 +131,19 @@ public:
 
     /** The Edit menu: those commands with their keys. */
     juce::PopupMenu createEditMenu();
+
+    /** A take folder's speed and pitch (its button on the clip): keep it in time with the song's
+        tempo, its own tempo, back to its own speed, and its pitch up or down by semitones. */
+    juce::PopupMenu createSpeedMenu (int folder);
+
+    /** Asks for a take folder's own tempo (what it was played at) and sets it. */
+    void askClipTempo (int folder);
+
+    /** The button on a take folder's title strip that opens its speed and pitch menu (empty where
+        the clip is too narrow for it), and what it says: "In time", "125%", "Up 3"... (empty for
+        as played: an icon then). */
+    juce::Rectangle<float> speedBadgeBounds (const AudioClip&) const;
+    static juce::String speedBadgeText (const AudioClip&);
 
     /** The selected clips: pattern clips and take folders, by index into their lists. */
     const std::set<int>& getSelectedClips() const   { return chosenClips; }
@@ -158,7 +187,7 @@ public:
     juce::Rectangle<float> iconBounds (int row) const;
 
 private:
-    enum class Drag { none, move, moveAudio, erase, scrub, loop, comp, box, trim, fade, point, tempo };
+    enum class Drag { none, move, moveAudio, erase, scrub, loop, comp, box, trim, stretch, fade, point, tempo };
 
     /** A point on an automation lane, by its lane (owner and parameter) and place in it. */
     struct PointRef
@@ -193,12 +222,13 @@ private:
     enum class TrackButton { solo, mute, arm };
 
     /** What's under the mouse: a pattern clip, or a take folder (audio) - its body, its
-        show-takes arrow, or one of its take lanes. */
+        show-takes arrow, its speed and pitch button, or one of its take lanes. */
     struct Hit
     {
         bool audio = false;
         int index = -1, lane = -1;
         bool toggle = false;
+        bool speedMenu = false;
         bool found() const      { return index >= 0; }
     };
 
