@@ -178,9 +178,13 @@ void Mixer::addMeteredIds (std::vector<int>& ids) const
 void Mixer::refreshMeters()
 {
     for (auto* strip : strips)
+    {
         strip->pushLevel (audio.getPeak (strip->getChannel()));
+        strip->followAutomation();
+    }
 
     masterStrip.pushLevel (audio.getLastMasterPeak());
+    masterStrip.followAutomation();
 }
 
 ChannelStrip* Mixer::findStrip (int id)

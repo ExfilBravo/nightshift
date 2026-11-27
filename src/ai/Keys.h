@@ -32,6 +32,7 @@ namespace nightshift::keys
     {
         juce::String name;
         std::vector<Bar> bars;
+        int meterBeats = 0, meterUnit = 0;      // its own time signature (the drummer's section's), else 0: the part's
     };
 
     struct Part

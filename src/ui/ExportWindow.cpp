@@ -43,7 +43,8 @@ juce::String ExportWindow::describeBitRate (int kbps)
 ExportWindow::ExportWindow (const Choice& start, bool song)
     : wholeSong (song), choice (start)
 {
-    kindBox.addItemList ({ "The song as a WAV file", "The song as an MP3 file", "Each channel and bus as its own WAV (stems)" }, 1);
+    kindBox.addItemList ({ "The song as a WAV file", "The song as an MP3 file", "Each channel and bus as its own WAV (stems)",
+                           "The notes as a MIDI file" }, 1);
     masterBox.addItemList ({ "Before the master's effects: for mixing them elsewhere",
                              "Through the master's effects and loudness, as in the song" }, 1);
 
@@ -61,7 +62,7 @@ ExportWindow::ExportWindow (const Choice& start, bool song)
     addAndMakeVisible (choose);
     addAndMakeVisible (cancel);
 
-    kindBox.setSelectedItemIndex (juce::jlimit (0, 2, choice.kind), juce::dontSendNotification);
+    kindBox.setSelectedItemIndex (juce::jlimit (0, 3, choice.kind), juce::dontSendNotification);
     masterBox.setSelectedItemIndex (choice.throughMaster ? 1 : 0, juce::dontSendNotification);
     fillQualities();
 
@@ -83,7 +84,7 @@ ExportWindow::ExportWindow (const Choice& start, bool song)
 
 void ExportWindow::setKind (int kind)
 {
-    kindBox.setSelectedItemIndex (juce::jlimit (0, 2, kind), juce::sendNotificationSync);
+    kindBox.setSelectedItemIndex (juce::jlimit (0, 3, kind), juce::sendNotificationSync);
 }
 
 void ExportWindow::fillQualities()
@@ -120,6 +121,9 @@ void ExportWindow::fillQualities()
         qualityBox.setSelectedItemIndex (index, juce::dontSendNotification);
     }
 
+    // (a MIDI file has notes, not sound: no quality to choose)
+    qualityLabel.setVisible (choice.kind != midi);
+    qualityBox.setVisible (choice.kind != midi);
     masterLabel.setVisible (choice.kind == stems);
     masterBox.setVisible (choice.kind == stems);
 }
@@ -127,7 +131,7 @@ void ExportWindow::fillQualities()
 ExportWindow::Choice ExportWindow::getChoice() const
 {
     auto c = choice;
-    c.kind = juce::jlimit (0, 2, kindBox.getSelectedItemIndex());
+    c.kind = juce::jlimit (0, 3, kindBox.getSelectedItemIndex());
     const int q = qualityBox.getSelectedItemIndex();
 
     if (c.kind == mp3)
@@ -151,6 +155,10 @@ juce::String ExportWindow::note() const
         case stems:
             return "A WAV for each channel and bus that makes a sound, named after it. Each is as long as " + what
                      + ", so they line up when you bring them into other music software.";
+
+        case midi:
+            return "The notes, with the tempo and time signature, for other music software or a synth. Next you choose "
+                   "which: the whole song or one pattern.";
 
         default:
             break;
@@ -187,7 +195,9 @@ void ExportWindow::resized()
     };
 
     row (kindLabel, kindBox);
-    row (qualityLabel, qualityBox);
+
+    if (choice.kind != midi)
+        row (qualityLabel, qualityBox);
 
     if (choice.kind == stems)
         row (masterLabel, masterBox);

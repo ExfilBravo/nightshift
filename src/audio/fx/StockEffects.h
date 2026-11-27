@@ -237,7 +237,13 @@ private:
     and a noise gate (as NAM's own plugin has); after, output gain, and each model's loudness evened out to -18 dB so
     swapping amps doesn't jump in level. A model trained at another sample rate than the song's runs at its own rate
     between two resamplers (NAM's). The files' paths are kept in the effect's state, so a song opens with its amp.
-    Mono in (both sides mixed), the same out of both. */
+    Mono in (both sides mixed), the same out of both.
+
+    Input calibration, as NAM's plugin has it: a model that says how loud its amp was played when it was captured
+    (input_level_dbu, the level of a sine at 0 dBFS there) is played as loud from the audio interface, whose own
+    level (the same, for its input) is one setting for every amp (setInterfaceLevel). The input gain gains the
+    difference, the interface's level less the model's. A "slimmable" model comes in sizes: smaller ones take less
+    of the computer and sound a little less like the amp (setSize; kept with the song). */
 class NightAmp : public StockEffect
 {
 public:
@@ -272,10 +278,28 @@ public:
         juce::String name, gear, toneType, modeledBy;
         double sampleRate = 0.0;
         bool levelled = false;      // it says how loud it is, so it can be evened out
+        bool hasInputLevel = false; // it says how loud its amp was played (input calibration)
+        double inputLevelDbu = 0.0;
     };
 
     Description describeModel() const                       { return description; }
     static Description describe (const juce::File& namFile);
+
+    /** The audio interface's input level for every amp: the dBu a sine peaking at 0 dBFS has at its input (its
+        manual's maximum input level). NAM's plugin starts it at 12; the studio sets it from its options. */
+    static void setInterfaceLevel (double dBu);
+    static double getInterfaceLevel();
+    static constexpr double defaultInterfaceLevel = 12.0;
+
+    /** What input calibration adds to the input gain now, in dB: the interface's level less the model's, when
+        Match input level is on and the model says its level; else 0. */
+    float calibrationDb() const;
+
+    /** The sizes the model comes in (1 when it isn't slimmable, or there's no model), and the one it runs at:
+        0 the smallest, numSizes() - 1 the whole model (where a new model starts). The size is kept in the state. */
+    int numSizes() const;
+    int getSize() const;
+    void setSize (int index);
 
     /** What's wrong with the files, or empty: the model's problem (missing, not a model), then the cabinet's. */
     juce::String getProblem() const                         { return (modelProblem + "\n" + cabinetProblem).trim(); }
@@ -293,7 +317,7 @@ private:
     juce::dsp::Convolution cabinet;
     bool cabinetLoaded = false;
 
-    Param *input, *output, *gate, *evenOut, *cabinetOn;
+    Param *input, *output, *gate, *evenOut, *cabinetOn, *calibrate;
     int maxBlock = 512;
     bool initialised = false;
     std::vector<float> mono, amped;
@@ -304,9 +328,109 @@ private:
     Description description;
     juce::String modelProblem, cabinetProblem;
 
+    // The model's input level, for the audio thread (set as a model comes in and goes)
+    std::atomic<bool> modelHasInputLevel { false };
+    std::atomic<float> modelInputLevelDbu { 0.0f };
+    static std::atomic<double> interfaceLevel;
+
     void prepare() override;
     void configure (Model&) const;
     void loadSavedFiles (const juce::ValueTree&);
+};
+
+//==============================================================================
+/** Pitch correction, for a voice or a guitar: it hears the note being sung or played and pulls it to the nearest
+    note of a key - the song's (heard from its notes: songkey::find, kept up to date by the engine), every note, or a
+    key of its own. Speed is how fast it gets there, from natural (slow enough to keep a singer's slides and vibrato)
+    to instant, the hard robotic sound; Amount how far (none of the way leaves the sound alone).
+
+    Hearing: YIN (de Cheveigne and Kawahara) on the sound low-passed and brought down to about 24 kHz, every 2.5 ms,
+    from 60 Hz to 1.4 kHz, on the latest period of the lowest note; a jump of more than a semitone is believed on its
+    second hearing. Which note it's singing is told
+    from the pitch over about 80 ms (a vibrato's swing isn't a new note); the correction is from the pitch now, so at
+    the robotic speed the vibrato is ironed flat. Moving the pitch without the
+    length: the sound is read back from a delay line a little faster or slower, and when the reading has drifted half
+    a period from where it should be it steps back or on by whole periods, crossfaded across one (pitch-synchronous,
+    so the step doesn't show). The reading sits a fixed delay behind (half the lowest period, and room for a
+    crossfade's drift): reported as its latency, so the engine lines the track up with the rest. Mono hearing, the
+    same correction on both sides. */
+class NightTune : public StockEffect
+{
+public:
+    explicit NightTune (tracktion::PluginCreationInfo);
+    ~NightTune() override;
+
+    static const char* xmlTypeName;
+    juce::String getName() const override                   { return "Nightshift Pitch Correction"; }
+    juce::String getPluginType() override                   { return xmlTypeName; }
+    void applyToBuffer (const tracktion::PluginRenderContext&) override;
+    void reset() override;
+    double getLatencySeconds() override;
+
+    static constexpr double lowestHz = 60.0, highestHz = 1400.0;
+
+    /** The song's key from its notes (root -1: not known, every note then). The engine keeps it up to date. */
+    void setSongKey (int keyRoot, bool minor)               { songMinor = minor; songRoot = keyRoot; }
+    int getSongRoot() const                                 { return songRoot.load(); }
+    bool isSongMinor() const                                { return songMinor.load(); }
+
+    /** The notes it pulls to now (all twelve for every note), and in words: "A minor, the song's key". */
+    std::array<bool, 12> targetNotes() const;
+    juce::String describeTarget() const;
+
+    /** How long a correction takes at a Speed (0 at the top: at once). */
+    static double retuneSeconds (float speed);
+
+    /** What it heard and what came out, a frame every hop, for the panel's graph: MIDI note numbers (fractional), -1
+        where nothing had a pitch. copyHistory fills `dest` (historySize of them), oldest first. */
+    struct Frame
+    {
+        float heard = -1.0f, sung = -1.0f;
+    };
+
+    static constexpr int historySize = 1024;
+    void copyHistory (Frame* dest) const;
+    double framesPerSecond() const                          { return analysisRate / std::max (1, hop); }
+
+    /** The note heard last (fractional MIDI, -1 for none) and the one it's pulling to (-1 for none). */
+    float lastHeard() const                                 { return heardNow.load(); }
+    int lastTarget() const                                  { return targetNow.load(); }
+
+private:
+    Param *notes = nullptr, *root = nullptr, *scale = nullptr, *speed = nullptr, *amount = nullptr;
+    std::atomic<int> songRoot { -1 };
+    std::atomic<bool> songMinor { false };
+
+    // Hearing: low-passed, one sample kept in `decimation`, analysed every `hop` of those
+    int decimation = 2, window = 512, minLag = 17, maxLag = 400, hop = 120, ringMask = 4095;
+    double analysisRate = 24000.0;
+    dsp::Biquad antiAlias[2];
+    int decimationCount = 0, ringWrite = 0, sinceAnalysis = 0;
+    std::vector<float> ring, frame, diff, normalised;
+
+    // What it's heard: the note (fractional MIDI), its period in samples at the song's rate (0 for none), a big jump
+    // waiting to be heard again, how long since it last heard a note
+    double heard = 0.0, period = 0.0, pending = 0.0, steady = 0.0;      // (steady: the pitch over 80 ms, which note it is)
+    bool hasHeard = false, hasPending = false, hasSteady = false;
+    int unvoicedSamples = 0, target = -1;
+    double correctionTarget = 0.0, correctionNow = 0.0;     // semitones
+
+    // Reading back: the delay it reads at, and while stepping, the one it's crossing to
+    dsp::DelayLine lines[2];
+    int baseDelay = 452, fadeLeft = 0, fadeLength = 1;
+    double delay = 452.0, delayNext = 452.0;
+    bool fadePower = false;
+
+    Frame history[historySize];
+    std::atomic<int> historyWrite { 0 };
+    std::atomic<float> heardNow { -1.0f };
+    std::atomic<int> targetNow { -1 };
+
+    void prepare() override;
+    void listen (float x);
+    void analyse();
+    void startStep (double to, int length, bool equalPower);
+    static int baseDelayFor (double sampleRate);
 };
 
 //==============================================================================

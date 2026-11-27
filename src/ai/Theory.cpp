@@ -2,6 +2,8 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "Theory.h"
+#include "audio/Metronome.h"
+#include <numeric>
 
 namespace nightshift::theory
 {
@@ -100,24 +102,49 @@ Key keyFrom (const juce::String& text)
     return k;
 }
 
-std::vector<int> beatStarts (int steps, int beats, int unit)
+std::vector<int> meterGroups (int beats, int unit)
 {
     std::vector<int> groups;
+    unit = std::max (1, unit);
 
     if (unit == 4 || unit == 2)
+    {
         for (int b = 0; b < beats; ++b)
             groups.push_back (16 / unit);
+    }
     else if (unit == 8 && beats % 3 == 0)
+    {
         for (int b = 0; b < beats / 3; ++b)
             groups.push_back (6);
+    }
     else
-        for (int left = beats; left > 0;)
+    {
+        // The metronome's first grouping for it (7/8: 2+2+3), else twos with a three at the end
+        const auto signature = metronome::find (beats, unit);
+        std::vector<int> counts = signature.groups;
+
+        if (std::accumulate (counts.begin(), counts.end(), 0) != beats)
         {
-            const int g = left == 3 || left == 5 ? 3 : 2;
-            groups.push_back (g * 16 / unit);
-            left -= g;
+            counts.clear();
+
+            for (int left = beats; left > 0;)
+            {
+                const int g = left == 3 ? 3 : 2;
+                counts.push_back (std::min (g, left));
+                left -= g;
+            }
         }
 
+        for (auto g : counts)
+            groups.push_back (std::max (1, g * 16 / unit));
+    }
+
+    return groups;
+}
+
+std::vector<int> beatStarts (int steps, int beats, int unit)
+{
+    const auto groups = meterGroups (beats, unit);
     int total = 0;
 
     for (auto g : groups)

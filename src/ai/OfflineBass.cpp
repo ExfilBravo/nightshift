@@ -361,35 +361,10 @@ namespace
         int prevPitch = -1;                 // the last note of the bar before
     };
 
+    // Where each counted beat starts, as the drummer counts them (7/8 in 2+2+3)
     std::vector<int> beatStarts (int steps, int beats, int unit)
     {
-        std::vector<int> groups;            // in 16ths, as the drummer counts them
-
-        if (unit == 4 || unit == 2)
-            for (int b = 0; b < beats; ++b)
-                groups.push_back (16 / unit);
-        else if (unit == 8 && beats % 3 == 0)
-            for (int b = 0; b < beats / 3; ++b)
-                groups.push_back (6);
-        else
-            for (int left = beats; left > 0;)
-            {
-                const int g = left == 3 || left == 5 ? 3 : 2;
-                groups.push_back (g * 16 / unit);
-                left -= g;
-            }
-
-        const int total = std::accumulate (groups.begin(), groups.end(), 0);
-        std::vector<int> starts;
-        int at = 0;
-
-        for (auto g : groups)
-        {
-            starts.push_back (at * steps / std::max (1, total));
-            at += g;
-        }
-
-        return starts;
+        return theory::beatStarts (steps, beats, unit);
     }
 
     //==============================================================================
@@ -1795,9 +1770,9 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
     key.bottom = key.floor;
     key.top = key.low + 21;
 
-    const int beats = g.meterBeats > 0 ? g.meterBeats : (req.meterBeats > 0 ? req.meterBeats : song.meterBeats);
-    const int unit = g.meterUnit > 0 ? g.meterUnit : (req.meterUnit > 0 ? req.meterUnit : song.meterUnit);
-    const int sixteenthsInBar = juce::jmax (1, beats * 16 / unit);
+    // The whole song's time signature; a drummer's section in one of its own plays in that
+    const int songBeats = g.meterBeats > 0 ? g.meterBeats : (req.meterBeats > 0 ? req.meterBeats : song.meterBeats);
+    const int songUnit = g.meterUnit > 0 ? g.meterUnit : (req.meterUnit > 0 ? req.meterUnit : song.meterUnit);
 
     Ctx c { req, *style, rng, key };
     c.busy = req.busy;
@@ -1852,6 +1827,8 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
         c.soft = req.softIn.contains (kind);
         c.energy = juce::jlimit (0.0f, 1.0f, req.energy + (kind == "chorus" || kind == "breakdown" || kind == "hook" ? 0.15f : kind == "intro" ? -0.1f : 0.0f));
         const bool lastSection = si + 1 == g.sections.size();
+        const auto [beats, unit] = drummer::meterOf (g, ds, { songBeats, songUnit });
+        const int sixteenthsInBar = juce::jmax (1, beats * 16 / unit);
 
         std::vector<BarIn> ins;
 
@@ -1917,6 +1894,8 @@ Result write (const juce::String& prompt, const Song& song, const Request* previ
         lastPitch = bestLast;
         Section section;
         section.name = ds.name;
+        section.meterBeats = ds.meterBeats;         // in the drummer's section's own time signature, where it has one
+        section.meterUnit = ds.meterUnit;
 
         for (size_t b = 0; b < best.size(); ++b)
         {

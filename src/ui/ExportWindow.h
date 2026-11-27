@@ -8,13 +8,13 @@
 namespace nightshift
 {
 
-/** Export's window (Ctrl+R, the top bar's Export): what to make - the song as a WAV file or an MP3, or
-    stems, each channel and bus as a WAV of its own - at what quality, and for stems whether they go
-    through the master's effects; then Choose where to save... */
+/** Export's window (Ctrl+R, the top bar's Export): what to make - the song as a WAV file or an MP3,
+    stems (each channel and bus as a WAV of its own), or the notes as a MIDI file - at what quality, and
+    for stems whether they go through the master's effects; then Choose where to save... */
 class ExportWindow : public juce::Component
 {
 public:
-    enum Kind { wav = 0, mp3 = 1, stems = 2 };
+    enum Kind { wav = 0, mp3 = 1, stems = 2, midi = 3 };
 
     /** What's chosen: the kind, a WAV's (or stems') bits, an MP3's bit rate, stems through the master. */
     struct Choice

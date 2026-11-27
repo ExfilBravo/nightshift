@@ -10,6 +10,8 @@
 #include "ai/Drummer.h"
 #include "audio/Nova.h"
 #include "audio/GuitarSound.h"
+#include "audio/MidiFiles.h"
+#include <set>
 
 namespace nightshift
 {
@@ -73,6 +75,7 @@ namespace
             case InstrumentType::audio:   return "Audio";
             case InstrumentType::kit:     return "Drums";
             case InstrumentType::instrument: return isGuitar (c) ? "Guitar" : "Instrument";
+            case InstrumentType::midiOut: return "Plugged in";
             case InstrumentType::sampler: break;
         }
 
@@ -1028,7 +1031,83 @@ juce::PopupMenu ChannelRack::createAddMenu (std::function<void (int channelId)> 
     menu.addSubMenu ("Sampler", samplerMenu);
     menu.addSubMenu ("NightShift Synth", synthMenu);
     menu.addSubMenu ("Plugin instrument", pluginMenu);
+    menu.addSubMenu ("Synth plugged in (MIDI out)", createMidiOutMenu ([this, then] (const juce::String& output) { then (addMidiOutChannel (output)); }));
     return menu;
+}
+
+juce::PopupMenu ChannelRack::createMidiOutMenu (std::function<void (const juce::String&)> chosen, const juce::String& ticked)
+{
+    juce::PopupMenu menu;
+    const auto outputs = audio.getMidiOutputNames();
+
+    for (auto& name : outputs)
+        menu.addItem (name, true, name == ticked, [chosen, name] { chosen (name); });
+
+    if (outputs.isEmpty())
+        menu.addItem ("None plugged in", false, false, nullptr);
+
+    return menu;
+}
+
+namespace
+{
+    /** The first MIDI channel no other channel plays on an output (a synth that plays several parts
+        at once takes each on a channel of its own); 10 is General MIDI's drums, so it comes last. */
+    int freeMidiChannel (const Song& song, const juce::String& output, int except)
+    {
+        std::set<int> used;
+
+        for (auto& c : song.channels)
+            if (c.id != except && c.type == InstrumentType::midiOut && c.midiOutDevice == output)
+                used.insert (c.midiOutChannel);
+
+        for (int ch : { 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 10 })
+            if (used.count (ch) == 0)
+                return ch;
+
+        return 1;
+    }
+}
+
+int ChannelRack::addMidiOutChannel (const juce::String& output)
+{
+    const int midiChannel = freeMidiChannel (song, output, 0);
+    song.checkpoint();
+    auto& c = song.addChannel (output, InstrumentType::midiOut);
+    c.midiOutDevice = output;
+    c.midiOutChannel = midiChannel;
+    song.selectedChannelId = c.id;
+    const int id = c.id;
+    song.notify (Song::Change::channels);
+    song.notify (Song::Change::selection);
+    return id;
+}
+
+void ChannelRack::playOnMidiOut (int channelId, const juce::String& output)
+{
+    auto c = song.findChannel (channelId);
+
+    if (c == nullptr || c->type == InstrumentType::audio)
+        return;
+
+    // Called after its old sound, it takes the output's name; one you named keeps yours. Drums go
+    // on General MIDI's drum channel, the drummer's part on its keys
+    const bool named = c->name != defaultNameFor (*c);
+    const bool drums = c->type == InstrumentType::kit || ! c->drummer.turns.empty();
+    const int midiChannel = drums ? 10 : freeMidiChannel (song, output, channelId);
+    song.checkpoint();
+    c->type = InstrumentType::midiOut;
+    c->midiOutDevice = output;
+    c->midiOutChannel = midiChannel;
+    c->sample = c->synthPreset = c->pluginId = c->pluginState = c->kit = c->instrument = {};
+
+    if (! named)
+        c->name = output;
+
+    song.notify (Song::Change::channels);
+
+    if (! c->drummer.turns.empty())
+        drummer::rerender (song, channelId);
 }
 
 juce::PopupMenu ChannelRack::createInstrumentMenu (std::function<void (const juce::String&)> chosen, const juce::String& ticked)
@@ -1228,7 +1307,27 @@ int ChannelRack::addSound (const juce::String& description)
     if (auto desc = sound.startsWith ("plugin:") ? audio.getKnownPlugins().getTypeForIdentifierString (name) : nullptr)
         return addPluginChannel (*desc);
 
+    // A sample from the sidebar's Samples: a sampler channel playing it
+    if (sound.startsWith ("sample:"))
+        return addSamplerChannel (name);
+
     return 0;
+}
+
+int ChannelRack::addSamplerChannel (const juce::String& path)
+{
+    const juce::File file (path);
+
+    if (! juce::File::isAbsolutePath (path) || ! file.existsAsFile() || ! isAudioFile (path))
+        return 0;
+
+    song.checkpoint();
+    auto& c = song.addChannel (file.getFileNameWithoutExtension(), InstrumentType::sampler);
+    c.sample = file.getFullPathName();
+    song.selectedChannelId = c.id;
+    const int id = c.id;
+    song.notify (Song::Change::channels);
+    return id;
 }
 
 juce::String ChannelRack::soundName (const juce::String& description) const
@@ -1239,6 +1338,7 @@ juce::String ChannelRack::soundName (const juce::String& description) const
     if (sound.startsWith ("drumkit:"))     return drumkits::displayName (name);
     if (sound.startsWith ("instrument:"))  return instruments::displayName (name).upToFirstOccurrenceOf (",", false, false);
     if (sound.startsWith ("effect:"))      return audio.findEffectType (name) != nullptr ? audio.findEffectType (name)->name : juce::String();
+    if (sound.startsWith ("sample:"))      return juce::File (name).getFileNameWithoutExtension();
 
     if (sound.startsWith ("plugin:"))
         if (auto desc = audio.getKnownPlugins().getTypeForIdentifierString (name))
@@ -1255,6 +1355,7 @@ juce::String ChannelRack::defaultNameFor (const Channel& c) const
         case InstrumentType::instrument:  return instruments::displayName (c.instrument).upToFirstOccurrenceOf (",", false, false);
         case InstrumentType::synth:       return c.synthPreset;
         case InstrumentType::audio:       return c.name;
+        case InstrumentType::midiOut:     return c.midiOutDevice.isNotEmpty() ? c.midiOutDevice : juce::String ("Synth");
 
         case InstrumentType::plugin:
             if (auto desc = audio.getKnownPlugins().getTypeForIdentifierString (c.pluginId))
@@ -1283,7 +1384,7 @@ bool ChannelRack::replaceInstrument (int channelId, const juce::String& descript
     // The new instrument, on a copy of the channel: everything else (its notes, levels,
     // effects, sends, the drummer's conversation) stays
     Channel next = *c;
-    next.sample = next.synthPreset = next.pluginId = next.pluginState = next.kit = next.instrument = {};
+    next.sample = next.synthPreset = next.pluginId = next.pluginState = next.kit = next.instrument = next.midiOutDevice = {};
     next.rootKey = defaultRootKey;
     next.oneShot = true;
 
@@ -1657,6 +1758,84 @@ void ChannelRack::showChannelMenu (int channelId)
 
         menu.addSubMenu ("Kit", kitMenu);
     }
+    else if (c->type == InstrumentType::midiOut)
+    {
+        // A synth plugged in: which, on which MIDI channel, the sound it's asked for
+        menu.addSubMenu ("Plays on", createMidiOutMenu ([this, channelId] (const juce::String& output)
+        {
+            if (auto ch = song.findChannel (channelId); ch != nullptr && ch->midiOutDevice != output)
+            {
+                song.checkpoint();
+
+                if (ch->name == ch->midiOutDevice)
+                    ch->name = output;      // named after it, it follows
+
+                ch->midiOutDevice = output;
+                song.notify (Song::Change::channels);
+            }
+        }, c->midiOutDevice));
+
+        juce::PopupMenu channelMenu;
+
+        for (int ch = 1; ch <= 16; ++ch)
+            channelMenu.addItem ("Channel " + juce::String (ch) + (ch == 10 ? " (drums)" : ""), true, c->midiOutChannel == ch, [this, channelId, ch]
+            {
+                if (auto chosen = song.findChannel (channelId); chosen != nullptr && chosen->midiOutChannel != ch)
+                {
+                    song.checkpoint();
+                    chosen->midiOutChannel = ch;
+                    song.notify (Song::Change::channels);
+                }
+            });
+
+        menu.addSubMenu ("MIDI channel " + juce::String (c->midiOutChannel), channelMenu);
+
+        // General MIDI's sounds, by family (a synth of its own has its own at those numbers)
+        juce::PopupMenu programMenu;
+        auto setProgram = [this, channelId] (int program)
+        {
+            if (auto chosen = song.findChannel (channelId); chosen != nullptr && chosen->midiProgram != program)
+            {
+                song.checkpoint();
+                chosen->midiProgram = program;
+                song.notify (Song::Change::channels);
+                audio.sendMidiProgram (channelId);
+            }
+        };
+
+        programMenu.addItem ("None: the sound it's on", true, c->midiProgram < 0, [setProgram] { setProgram (-1); });
+        const char* families[] = { "Piano", "Chromatic percussion", "Organ", "Guitar", "Bass", "Strings", "Ensemble", "Brass",
+                                   "Reed", "Pipe", "Synth lead", "Synth pad", "Synth effects", "Ethnic", "Percussive", "Sound effects" };
+
+        for (int f = 0; f < 16; ++f)
+        {
+            juce::PopupMenu family;
+
+            for (int p = f * 8; p < f * 8 + 8; ++p)
+                family.addItem (juce::String (p + 1) + "  " + midifile::programName (p), true, c->midiProgram == p, [setProgram, p] { setProgram (p); });
+
+            programMenu.addSubMenu (families[f], family, true, nullptr, c->midiProgram >= f * 8 && c->midiProgram < f * 8 + 8);
+        }
+
+        menu.addSubMenu ("Sound on the synth", programMenu);
+        menu.addItem ("Play a test note", [this, channelId] { audio.sendTestNote (channelId); });
+        menu.addItem ("Timing and tempo...", [this] { if (onShowAudioSettings != nullptr) onShowAudioSettings(); });
+
+        if (c->midiOutChannel == 10)
+            menu.addItem ("AI drummer (General MIDI)...", [this, channelId] { if (onOpenDrummer != nullptr) onOpenDrummer (channelId); });
+
+        menu.addSubMenu ("Play a NightShift sound instead", createSoundMenu ([this, channelId] (const juce::String& preset)
+        {
+            replaceInstrument (channelId, juce::String (soundDragPrefix) + "synth:" + preset);
+        }));
+    }
+
+    // Any instrument can play a synth plugged in instead
+    if (! isAudio && c->type != InstrumentType::midiOut)
+        menu.addSubMenu ("Play it on a synth plugged in", createMidiOutMenu ([this, channelId] (const juce::String& output)
+        {
+            playOnMidiOut (channelId, output);
+        }));
 
     menu.addSubMenu ("Effects" + (c->effects.empty() ? juce::String() : "  (" + juce::String ((int) c->effects.size()) + ")"),
                      createEffectsMenu (channelId));
@@ -1685,7 +1864,8 @@ void ChannelRack::showChannelMenu (int channelId)
     menu.addSeparator();
 
     // Freeze: its instrument and effects played into audio, which plays in their place with them switched off
-    if (! isAudio)
+    // (not a synth plugged in: NightShift doesn't hear it)
+    if (! isAudio && c->type != InstrumentType::midiOut)
     {
         if (! c->freeze.on)
         {

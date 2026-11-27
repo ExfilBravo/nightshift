@@ -29,7 +29,9 @@ juce_add_gui_app(Nightshift
     DOCUMENT_EXTENSIONS nsproj      # macOS: the bundle claims .nsproj, so Finder opens projects in NightShift
     # macOS: without this the audio interface's inputs are silent (the system asks the first time)
     MICROPHONE_PERMISSION_ENABLED TRUE
-    MICROPHONE_PERMISSION_TEXT "NightShift records your guitar, bass and voice through your audio interface.")
+    MICROPHONE_PERMISSION_TEXT "NightShift records your guitar, bass and voice through your audio interface."
+    # macOS asks before an app reads Downloads: the sidebar's Samples lists it (asked the first time Samples opens)
+    PLIST_TO_MERGE "<plist><dict><key>NSDownloadsFolderUsageDescription</key><string>NightShift lists the sounds in your Downloads in the sidebar's Samples, to hear them and drag them into a song.</string></dict></plist>")
 
 juce_generate_juce_header(Nightshift)
 
@@ -153,7 +155,11 @@ target_compile_definitions(Nightshift PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Nightshift,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:Nightshift,JUCE_VERSION>"
-    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1)
+    # The engine's time-stretchers: SoundTouch (LGPL 2.1) and Signalsmith Stretch (MIT), both in its 3rd_party
+    # (NOTICES.txt). NightShift renders stretched audio clips with Signalsmith Stretch itself (src/audio/Stretcher),
+    # lined up to the sample; --stretchtest holds SoundTouch beside it
+    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1
+    TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH=1)
 
 # Selawik (Microsoft, SIL Open Font License 1.1: resources/fonts/Selawik-OFL.txt): Segoe UI's stand-in where
 # it isn't installed (a Mac), Regular and Semibold (NightShift's bold)

@@ -4,15 +4,19 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <set>
 #include "model/Song.h"
 #include "Nova.h"
 #include "Metronome.h"
 #include "Mastering.h"
+#include "MidiOut.h"
 
 namespace te = tracktion;
 
 namespace nightshift
 {
+
+class AutomationRecorder;
 
 /** Mirrors the Song into a Tracktion Edit: one audio track per channel holding its
     instrument, and MIDI clips generated from the patterns (the current pattern in
@@ -91,6 +95,13 @@ public:
     void setPractising (bool);
     bool isPractising() const;
 
+    /** A sample heard from the sidebar's Samples: the file played through the studio's output (after the master, as
+        the metronome is), from its start, whether or not the song plays; stopPreview() or its end stops it. False
+        when it can't be read. getPreviewing() is the file playing, or none. */
+    bool previewSample (const juce::File&);
+    void stopPreview();
+    juce::File getPreviewing() const;
+
     /** The time signature playing now: the song's at its position in Song mode, the pattern's in
         Pattern mode. Changing it changes the stretch the song position is in (the start's, or a
         change's), or in Pattern mode the pattern's own if it has one, else the song's at the start. */
@@ -162,6 +173,15 @@ public:
     /** Crossfade at each join between comp segments, and the fade at a folder's free edges. */
     static constexpr double compCrossfadeSeconds = 0.010, edgeFadeSeconds = 0.002;
 
+    /** A stretched take folder (Song::isStretched) plays its takes as rendered by stretch::render
+        (Signalsmith Stretch, lined up to the sample): a render up to this long is made at once,
+        a longer one in the background (the folder silent until it's done; renders and exports
+        wait for it). */
+    static constexpr double stretchNowSeconds = 30.0;
+
+    /** Whether any stretched take is still being rendered in the background. */
+    bool isStretching() const;
+
     /** Audio is being recorded. */
     bool isRecording() const;
 
@@ -202,6 +222,7 @@ public:
     {
         bool lowLatencyMonitoring = true;   // bypass plugins that add delay while monitoring an armed track
         bool preferInterface = true;        // open the preferred interface with ASIO at startup
+        double interfaceInputDbu = 12.0;    // the interface's input level (dBu at 0 dBFS), for the NAM amps' input calibration
         int countInBars = 1;                // countdown before recording: 0, 1 or 2 bars
         bool computerKeyboard = true;       // the PC keyboard plays the selected channel
 
@@ -220,6 +241,7 @@ public:
         // Starting up
         bool startScreen = true;            // open on "What do you want to do?" (templates, recent projects)
         juce::StringArray recentProjects;   // newest first, full paths
+        juce::StringArray sampleFolders;    // folders added to the sidebar's Samples (beside Downloads and Music), full paths
         bool donationAsked = false;         // the start screen's "NightShift is free" banner has been shown (it asks once)
 
         // Export: 24 (for more work on it), 16 (with dither: CDs and most uploads) or 32 (float)
@@ -233,6 +255,9 @@ public:
 
         // MIDI inputs switched off in Audio settings (the rest play the selected channel)
         juce::StringArray disabledMidiInputs;
+
+        // Synths plugged in: each MIDI output's timing and whether it follows the tempo, by its name
+        std::map<juce::String, MidiOutHub::OutputSettings> midiOuts;
 
         bool operator== (const Options&) const = default;
     };
@@ -289,6 +314,50 @@ public:
     /** What a lane is called: "Volume", "Send to Reverb", "Delay: Feedback". */
     juce::String automationName (int owner, const juce::String& param) const;
 
+    /** A lane's points as its parameter's curve takes them, ticks and values: a bent line as
+        short straight ones (see syncAutomation). */
+    static std::vector<std::pair<double, float>> curvePoints (const AutomationLane&);
+
+    /** Recording automation (Logic's touch, FL's automation recording): switched on, a control
+        moved while the song plays in Song mode writes its lane, from where it was grabbed to where
+        it was let go (see AutomationRecorder). Off each time NightShift opens. */
+    void setAutomationRecording (bool);
+    bool isAutomationRecording() const;
+
+    /** Switched on, and the song playing in Song mode past any count-in: a control moved now is
+        written. */
+    bool isWritingAutomation() const;
+
+    /** Whether a lane is being written now (its header shows it). */
+    bool isWritingLane (int owner, const juce::String& param) const;
+
+    /** One of the song's own controls grabbed (down) or let go, by its lane's key: a fader, a pan
+        bar, a send. Not `held`: a change with no holding (the wheel, a double-click), written until
+        it's left alone a moment. */
+    void touchControl (int owner, const juce::String& param, bool down, bool held = true);
+
+    /** A knob's parameter grabbed or let go (a stock effect's, Nova's); `held` as above. */
+    void touchParameter (te::AutomatableParameter&, bool down, bool held = true);
+
+    /** A lane has started being written: the studio makes sure it's on show. */
+    std::function<void (int owner, const juce::String& param)> onAutomationWriting;
+
+    /** Where in the song what's heard now is, in ticks: the playhead less the output's delay. */
+    double getHeardTicks() const;
+
+    /** Every parameter automation can drive now: the channels', buses' and the master's. */
+    std::vector<te::AutomatableParameter*> allAutomationParameters() const;
+
+    /** Puts a parameter's value (in its own units) into its control: the song's own (volume, pan,
+        a send, the master volume) through the song, so their faders show it; anything else
+        straight into the parameter. */
+    void takeParameterValue (int owner, const juce::String& param, float value);
+
+    /** What one of the song's own controls (volume, pan, a send, the master volume) is at while its
+        automation drives it, in the song's units: Song mode playing a lane with points; else
+        nothing, and it's where the song has it. */
+    std::optional<float> getAutomatedControl (int owner, const juce::String& param) const;
+
     //==============================================================================
     /** MIDI keyboards and controllers. Every MIDI input (bar those switched off in Audio
         settings) plays the channel getMidiTargetChannel names, straight through the engine
@@ -327,6 +396,24 @@ public:
     /** Tests: that one input is routed as a MIDI keyboard is (to the channel being played,
         always heard), so MIDI handed to processHostedBlock plays through the engine. */
     static inline bool routeHostedMidi = false;
+
+    //==============================================================================
+    /** Synths plugged in (MIDI out). A channel whose instrument is one (InstrumentType::midiOut)
+        sends its notes out of a MIDI output on a MIDI channel, in time with the song: its patterns
+        and clips as they play, and what a keyboard plays on it, at once. An output can be timed
+        earlier for a synth slow to sound (or later), and can follow the tempo: MIDI clock, start
+        and stop. The outputs there are (a command-line run's: MidiOutHub::testOutputs). */
+    juce::StringArray getMidiOutputNames() const;
+    MidiOutHub::OutputSettings getMidiOutSettings (const juce::String& output) const;
+    void setMidiOutSettings (const juce::String& output, MidiOutHub::OutputSettings);
+
+    /** A short middle C (or the channel's root) on a channel's synth plugged in, to hear it's connected. */
+    void sendTestNote (int channelId);
+
+    /** Asks a channel's synth for its program (Channel::midiProgram) now. */
+    void sendMidiProgram (int channelId);
+
+    MidiOutHub& getMidiOut()                        { return *midiOut; }
 
     //==============================================================================
     /** Renders the current pattern (pattern mode) or the whole song, plus a tail. */
@@ -616,6 +703,17 @@ private:
     std::optional<MidiLearn> midiLearn;
 
     void syncMidiInputs();
+
+    /** The song's notes on synths plugged in, as the MIDI out plays them (see MidiOutHub). */
+    void syncMidiOut();
+
+    /** Tells every pitch correction (NightTune) the song's key, heard from its notes (songkey::find). */
+    void syncSongKey();
+
+    /** Tracktion's own MIDI outputs closed: the hub opens the ones it needs (a port open twice fails on Windows). */
+    void closeTracktionMidiOutputs();
+    std::unique_ptr<MidiOutHub> midiOut;
+    int midiOutRefresh = 0;
     void drainMidi();
     void recordNoteOn (int channelId, int key, int velocity, double secondsAgo);
     void recordNoteOff (int channelId, int key, double secondsAgo);
@@ -629,6 +727,7 @@ private:
     double countInEnd = -1.0e9;
 
     te::Plugin::Ptr metronomePlugin;
+    te::Plugin::Ptr previewPlugin;      // a SamplePreview, after the metronome
 
     /** Where in the take the sound being heard now is, in ticks (negative in the count-in). */
     double heardTakeTicks (double secondsAgo = 0.0) const;
@@ -686,6 +785,9 @@ private:
 
     std::map<juce::String, WrittenAutomation> writtenAutomation;
 
+    // Recording automation: made with the edit, gone before it
+    std::unique_ptr<AutomationRecorder> automationRecorder;
+
     void songChanged (Song::Change) override;
     void handleAsyncUpdate() override;
     void timerCallback() override;
@@ -720,6 +822,19 @@ private:
         length in ticks; -1 for all of it). */
     void fillClip (te::MidiClip&, const std::vector<Note>*, int offset = 0, int length = -1);
     void removeAllClips();
+
+    /** A stretched take folder's take rendered over [fromSeconds, toSeconds) of its own time (into
+        the cache: stretch::cachedFile), with the song second where the render starts; the file is
+        empty while it's still being rendered in the background. */
+    std::pair<juce::File, double> stretchedTake (const AudioClip&, const Take&, double fromSeconds, double toSeconds);
+
+    std::set<juce::String> stretching;          // renders under way in the background, by their files' names
+    juce::CriticalSection stretchingLock;
+    std::atomic<bool> stopStretching { false };
+    bool stretchAllNow = false;                 // a render or export: every stretched take rendered first, here
+    bool stretchDeferred = false;               // a take was left to render in the background (its folder silent)
+    juce::ThreadPool stretchPool { juce::ThreadPoolOptions{}.withThreadName ("Stretching audio").withNumberOfThreads (1)
+                                                            .withDesiredThreadPriority (juce::Thread::Priority::low) };
 
     /** Each instrument's clips under the playhead, as text that changes if they do. */
     std::map<int, juce::String> clipsUnderPlayhead() const;

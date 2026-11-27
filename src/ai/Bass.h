@@ -32,6 +32,7 @@ namespace nightshift::bass
     {
         juce::String name;
         std::vector<Bar> bars;
+        int meterBeats = 0, meterUnit = 0;      // its own time signature (the drummer's section's), else 0: the part's
     };
 
     struct Part
@@ -55,7 +56,8 @@ namespace nightshift::bass
     };
 
     /** Plays a part into patterns for the channel, one per section (made or reused), named after
-        the channel and section. Sets the tempo and meter first if the part has them. */
+        the channel and section. Sets the tempo and meter first if the part has them. A section in
+        a time signature of its own plays into a pattern in it. */
     void render (Song&, int channelId, const Part&);
 
     /** Lays the sections out in Arrange: under the drummer's clips of the same sections where

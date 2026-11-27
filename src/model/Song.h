@@ -34,8 +34,9 @@ struct Note
 };
 
 /** sampler/synth/plugin/kit channels play notes; an audio channel is a track you record into.
-    A kit channel plays a multi-sampled drum kit, and has an AI drummer to write for it. */
-enum class InstrumentType { sampler, synth, plugin, audio, kit, instrument };
+    A kit channel plays a multi-sampled drum kit, and has an AI drummer to write for it. A midiOut
+    channel plays a synth plugged in: its notes go out of a MIDI output, in time with the song. */
+enum class InstrumentType { sampler, synth, plugin, audio, kit, instrument, midiOut };
 
 /** An effect plugin in a channel's chain or the master's. */
 struct Effect
@@ -192,6 +193,11 @@ struct Channel
 
     juce::String kit;                // kit: the drum kit (a folder under drumkits::folder())
     juce::String instrument;         // instrument: a sampled instrument's SFZ (under SfzPlugin::folder())
+
+    juce::String midiOutDevice;      // midiOut: the MIDI output it plays, by the name the system gives it
+    int midiOutChannel = 1;          // midiOut: the MIDI channel its notes go out on, 1..16
+    int midiProgram = -1;            // the sound a synth is asked for (a program change, 0..127) before it
+                                     // plays, -1 for none: a MIDI file's comes in here and goes out again
     Drummer drummer;                 // kit (or a drum plugin): the AI drummer writing for it
     Bassist bass;                    // synth (or a bass plugin): the AI bassist writing for it
     Guitarist guitar;                // a guitar: the AI guitarist writing for it
@@ -233,17 +239,29 @@ struct CompSegment
 /** Recorded audio in the playlist: a take folder, like Logic's. A single recording is a
     folder with one take. The comp picks which take plays where; gaps are silent. Its
     length is real time, so it keeps its speed when the tempo changes; only its start is
-    in ticks. */
+    in ticks.
+
+    Stretched (Logic's Flex Time, FL's stretched audio clips) it plays faster or slower without
+    its pitch changing, or higher or lower without its length changing. Following the tempo, its
+    beats stay on the song's beats whatever the tempo does. Its own times (length, takes, comp,
+    fades) stay in its audio's seconds either way: Song::audioTickAt says where they land. */
 struct AudioClip
 {
     int channelId = 0;
     int track = 0;                   // playlist row
     int start = 0;                   // ticks
-    double length = 0.0;             // seconds
+    double length = 0.0;             // seconds of its own audio
     std::vector<Take> takes;
     std::vector<CompSegment> comp;
     bool expanded = false;           // take lanes showing in the playlist
     double fadeIn = 0.0, fadeOut = 0.0;   // seconds it takes to come in from silence, and to go back out
+
+    bool followTempo = false;        // its beats stay on the song's when the tempo changes
+    double sourceBpm = 0.0;          // the tempo its audio was played at (a recording's, a loop's); 0: not known
+    double speed = 1.0;              // how much faster than it was played (stretched to fit: 2 is twice as fast)
+    float pitch = 0.0f;              // semitones up (down if negative), its length kept
+
+    static constexpr double slowest = 0.25, fastest = 4.0;     // how far it stretches either way
 
     /** Makes `take` the one heard over [from, to), trimming whatever was there. */
     void setComp (double from, double to, int take);
@@ -288,28 +306,47 @@ struct PlaylistClip
     int length = 0;                  // ticks it plays for; 0: on to the end of its pattern
 };
 
-/** A point on an automation lane: the parameter's value at a moment of the song. */
+/** A point on an automation lane: the parameter's value at a moment of the song, and how the
+    line on to the next point bends (FL's curves): 0 straight; towards 1 it eases in (it starts
+    slowly and gets there quickly), towards -1 it eases out. */
 struct AutomationPoint
 {
     int tick = 0;
     float value = 0.0f;              // in the parameter's own units (pan -1..1, a fader's 0..1...)
+    float curve = 0.0f;              // the bend of the line from here to the next point, -1..1
     bool operator== (const AutomationPoint&) const = default;
 };
 
+/** The shape of a bent automation line. A bend is where the line's middle (in time) gets to: a
+    bend of `c` puts it (1 - c) / 2 of the way from the first value to the second, so dragging the
+    middle of a line up or down sets its bend. Easing in is a power curve, easing out its mirror. */
+namespace automationcurve
+{
+    constexpr float most = 0.95f;    // as far as a line bends either way (its middle 2.5% of the way)
+
+    /** How far along a line its value has got (0..1) at `along` (0..1) of the way in time. */
+    float shape (float along, float curve);
+
+    /** The bend that puts the middle `fraction` (0..1) of the way, and back. */
+    inline float fromMiddle (float fraction)        { return juce::jlimit (-most, most, 1.0f - 2.0f * fraction); }
+    inline float middleOf (float curve)             { return (1.0f - curve) * 0.5f; }
+}
+
 /** One parameter changing over the song (Logic's automation), drawn as a lane under its
-    channel's track in Arrange, or along the bottom for the master's. Song mode plays it; in
-    Pattern mode the parameter stays where its control is. Its parameter, by key:
+    channel's track in Arrange, or along the bottom for a bus's and the master's. Song mode plays
+    it; in Pattern mode the parameter stays where its control is. Its parameter, by key:
     "volume", "pan", "send:<bus id>", "fx:<effect id>:<parameter id>", "instrument:<parameter id>";
-    the master (owner 0) has "volume" and "fx:...". */
+    a bus has "volume", "pan" and "fx:...", the master (owner 0) "volume" and "fx:...". */
 struct AutomationLane
 {
-    int owner = 0;                   // the channel, or 0 for the master
+    int owner = 0;                   // the channel or bus, or 0 for the master
     juce::String param;
     juce::String name;               // what it was called, for when its plugin isn't there
     std::vector<AutomationPoint> points;     // in time order
 
-    /** Its value at `tick`: straight lines between points, level before the first and after the last. */
-    float valueAt (int tick) const;
+    /** Its value at `tick`: lines between points (bent as each point says), level before the
+        first and after the last. */
+    float valueAt (double tick) const;
 };
 
 /** A knob or fader on a MIDI controller linked to one of NightShift's (MIDI learn): moving it
@@ -319,18 +356,21 @@ struct ControllerLink
     juce::String device;             // the MIDI input it comes from
     int midiChannel = 1;             // 1..16
     int controller = 0;              // the CC number
-    int owner = 0;                   // the channel, or 0 for the master
+    int owner = 0;                   // the channel or bus, or 0 for the master
     juce::String param;              // "volume", "pan", "send:<bus id>", "fx:<effect id>:<parameter id>", "instrument:<parameter id>"
 };
 
 /** A tempo change along the song (Logic's tempo track): from `tick` it plays at `bpm`, quarter
     notes a minute. It jumps there, or with `glide` gets there gradually, from the tempo before,
-    over the stretch since the change before (an accelerando or a ritardando). */
+    over the stretch since the change before (an accelerando or a ritardando), in a straight line
+    or along a curve: `curve` above 0 eases in (gentle at first, most of the change near the end),
+    below 0 eases out (most of the change at first, settling gently), 1 and -1 the most. */
 struct TempoChange
 {
     int tick = 0;
     double bpm = 120.0;
     bool glide = false;
+    float curve = 0.0f;              // -1..1, a glide's
     bool operator== (const TempoChange&) const = default;
 };
 
@@ -441,8 +481,27 @@ public:
     double secondsAt (double tick) const;
     double tickAt (double seconds) const;
 
-    /** The tempo at `tick`, part way along a glide in between. */
+    /** The tempo at `tick`, part way along a glide in between (on its curve). */
     double bpmAt (double tick) const;
+
+    /** Part way along a glide as Tracktion plays it (its tempo curve, tracktion_Bezier.h): a
+        quadratic bezier from (`from`, `fromBpm`) to (`to`, `toBpm`) bent by `tracktionCurve`
+        (-0.5..0.5, half a TempoChange's curve), its tempo where it crosses `at`. */
+    static double bezierBpm (double from, double fromBpm, double to, double toBpm, double tracktionCurve, double at);
+
+    /** The curve Tracktion's tempo before `change` gets: 1 holds it until it jumps there; a
+        glide bends by half its curve (Tracktion's strongest bezier is 0.5), and a straight one
+        by 1/2048, never 0: Tracktion's bezier loses its way on a straight line between changes
+        that aren't on exact binary fractions of a beat (tempos 20 bpm out), a hair's bend doesn't
+        (0.01 bpm from straight). */
+    static float tracktionCurve (const TempoChange& change);
+
+    /** The curve (-1..1) a glide from (`from`, `fromBpm`) to (`to`, `toBpm`) needs to pass
+        through `bpm` at `at`, or as near as a curve gets (a curve's handle dragged). */
+    static float glideCurveThrough (double from, double fromBpm, double to, double toBpm, double at, double bpm);
+
+    /** The tempo along a glide's curve as drawn: a straight line, or the bezier it bends into. */
+    static double glideBpm (double from, double fromBpm, double to, double toBpm, float curve, double at);
 
     /** The tempo change in effect at `tick`; -1 for the start's tempo. */
     int tempoChangeAt (double tick) const;
@@ -467,13 +526,23 @@ public:
     int gridStep (int grid, double tick) const;
 
     /** Sets the tempo at `tick` (the start's at 0 or before): changes the one there, or adds one
-        that jumps there. Keeps them in order. */
-    void setTempoAt (int tick, double newBpm, bool glide = false);
+        that jumps there (or glides, along `curve`). Keeps them in order. */
+    void setTempoAt (int tick, double newBpm, bool glide = false, float curve = 0.0f);
 
     /** Sets the time signature from the bar starting at `tick` (the start's at 0): changes the one
         there or adds one, and takes away a change that would repeat the one before it. */
     void setMeterAt (int tick, int beats, int unit);
     void removeMeterChange (int index);
+
+    /** Puts `beats`/`unit` over the bars from `from` (a bar's start) to `to`: the changes inside
+        taken away, and what played from `to` before put back there. At the start it's the start's
+        time signature: the patterns that had the start's keep it as their own. */
+    void setMeterOver (int from, int to, int beats, int unit);
+
+    /** A clip placed at `start` of a pattern in a time signature of its own: the song's bars in it
+        there (setMeterOver over the clip), unless they are already. A pattern in the start's
+        changes nothing. */
+    void fitMeterToClip (int patternId, int start);
 
     /** Puts tempo and time signature changes in order, after the start, one per tick. */
     void tidyTimeline();
@@ -555,8 +624,11 @@ public:
     /** The lane for a parameter, added (with no points) if there isn't one. */
     AutomationLane& laneFor (int owner, const juce::String& param, const juce::String& name);
 
-    /** The lanes of a channel (or of the master, for 0), in the order they were added. */
+    /** The lanes of a channel or bus (or of the master, for 0), in the order they were added. */
     std::vector<const AutomationLane*> lanesOf (int owner) const;
+
+    /** Whether lanes can belong to it: the master (0), a channel or a bus. */
+    bool canOwnAutomation (int owner) const          { return owner == 0 || findChannel (owner) != nullptr || findBus (owner) != nullptr; }
 
     // MIDI controllers' knobs linked to controls (MIDI learn), saved with the song
     std::vector<ControllerLink> controllerLinks;
@@ -654,8 +726,36 @@ public:
     bool splitClip (int index, int tick);
     bool splitAudioClip (int index, int tick);
 
-    /** Where a take folder ends: its length is real time, through the tempo where it plays. */
-    int audioClipEnd (const AudioClip& c) const      { return (int) std::ceil (tickAt (secondsAt (c.start) + c.length) - 1.0e-6); }
+    /** Where a take folder ends: its length is its audio's, through its speed and the tempo where it plays. */
+    int audioClipEnd (const AudioClip& c) const      { return (int) std::ceil (audioTickAt (c, c.length) - 1.0e-6); }
+
+    /** Where `seconds` into a take folder's own audio lands in the song, in ticks, and back. As
+        recorded it's real time from its start (`speed` times faster); following the tempo, its
+        beats (at `sourceBpm`, `speed` times faster) are the song's beats. */
+    double audioTickAt (const AudioClip&, double seconds) const;
+    double audioSecondsAt (const AudioClip&, double tick) const;
+
+    /** Following the tempo: switched on, and its own tempo known. */
+    static bool followsTempo (const AudioClip& c)   { return c.followTempo && c.sourceBpm > 0.0; }
+
+    /** Whether it plays through the time-stretcher: faster or slower than it was played, pitched,
+        or following a tempo somewhere along it that isn't its own. */
+    bool isStretched (const AudioClip&) const;
+
+    /** How much faster than it was played it is at `tick` (1: as played). */
+    double stretchRatioAt (const AudioClip&, double tick) const;
+
+    /** Switches following the tempo on or off. A folder whose tempo isn't known takes the song's
+        where it starts, so it doesn't jump now; one that is, comes back into time with the song. */
+    void setFollowTempo (AudioClip&, bool on) const;
+
+    /** Stretches a take folder to play its audio over [startTick, endTick): faster to fit a shorter
+        stretch, slower a longer one (within AudioClip's slowest and fastest). Returns whether it fit. */
+    bool stretchAudioTo (AudioClip&, int startTick, double endTick) const;
+
+    /** A take folder of a whole audio file at `tick` on a track: a loop, a sample, a recording from
+        elsewhere. A loop whose tempo is known (`bpm` > 0) follows the song's tempo. */
+    AudioClip& addAudioFile (const juce::File&, int channelId, int track, int tick, double seconds, double bpm);
 
     /** Seconds from one tick to another, through the tempo between. */
     double secondsBetween (double fromTick, double toTick) const     { return secondsAt (toTick) - secondsAt (fromTick); }
@@ -676,7 +776,8 @@ public:
     Bus& addBus (const juce::String& name = {});
     void removeChannel (int id);
 
-    /** Takes a bus away, and every output and send to it (those channels go to the master). */
+    /** Takes a bus away, and every output and send to it (those channels go to the master), with
+        its automation lanes and MIDI links and those of the sends to it. */
     void removeBus (int id);
     void removePattern (int id);
 
