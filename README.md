@@ -1589,8 +1589,8 @@ room it takes in Segoe UI on Windows.
 
 ## Not yet
 
-Recording automation by moving a control (or a controller's knob) while it plays (it's drawn for now), MIDI out to
-hardware synths, curved automation, buses' automation, curved tempo glides (they're straight lines), the AI band
-writing across a time signature change (it writes in the start's), stem export, freeze, MP3 export, MIDI file import
-and export, time-stretching and pitch correction, NAM's input calibration (the model's input level in dBu) and its
-newer "slimmable" size control, a sample browser.
+Latch and write modes for recording automation (it records while you hold a control), warp markers inside an audio
+clip, a note editor for pitch correction, pitch shifting that keeps a voice's character (formants), plugins hearing
+time signature changes (they hear the song's first), a hardware synth's sound in exports (record it on an audio track
+instead), freezing an audio track's effects, waveforms and favourites in Samples, a chooser for a TONE3000 tone's
+several models, and the vibe listener hearing time signature changes (it hears 4/4).

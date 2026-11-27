@@ -1,0 +1,17 @@
+﻿# NightShift's TONE3000 publishable key
+#
+# This tells TONE3000 that a request comes from NightShift. It is not a login: everyone who uses
+# NightShift signs in with their own TONE3000 account in their browser.
+#
+# How to get it:
+#   1. Sign in at tone3000.com and open Settings, then the API keys section.
+#   2. Create a key for NightShift. If it asks for a redirect address, enter:  nightshift://callback
+#   3. Copy the Publishable key and paste it right after "publishable_key=" below (no spaces), then save.
+#
+# The publishable key is public on purpose: TONE3000 says it is safe in app code, and NightShift's
+# code is public, so this file is published with the release.
+#
+# NEVER paste the Secret key here (it starts with t3k_cs_). NightShift doesn't need it, and the
+# build refuses it.
+
+publishable_key=t3k_pub_JR436Gys_o8KNusY40L1Z0eSWBt2_dva
