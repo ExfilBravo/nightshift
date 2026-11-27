@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "GuitarPanel.h"
+#include "FreezeGuard.h"
 #include "ai/OfflineGuitar.h"
 #include "ai/OfflineBass.h"
 #include "ai/OfflineDrummer.h"
@@ -394,6 +395,10 @@ void GuitarPanel::refresh()
 void GuitarPanel::ask (const juce::String& words)
 {
     if (words.trim().isEmpty())
+        return;
+
+    // A frozen channel's notes can't change: it asks to unfreeze it first
+    if (auto frozen = channel(); frozen != nullptr && ! freezing::mayEdit (frozen->id))
         return;
 
     if (channel() == nullptr && onNeedChannel != nullptr)

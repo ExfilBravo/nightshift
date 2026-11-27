@@ -158,6 +158,23 @@ struct SynthPlayer
     bool pickSound = false;          // made for the synth player: its first answer chooses the sound (not saved)
 };
 
+/** A channel frozen (its menu's Freeze): its instrument and effects rendered to audio, which plays in
+    their place while they're switched off, to save the computer's power. Its fader, pan and sends stay
+    live. The audio is 32-bit float WAVs in the project's audio folder (Frozen), kept with the project.
+    Each file was rendered from a state of the song, its stamp (freeze::songStamp, freeze::patternStamp):
+    while the song still matches, the file plays; after a change it was rendered without (its notes
+    moved in Arrange, the tempo), the channel plays live again until it's frozen afresh. */
+struct Freeze
+{
+    bool on = false;
+    std::map<int, juce::String> rows;            // Song mode: an Arrange row the channel's notes are on -> its file
+    juce::String songStamp;                      // what those were rendered from
+    std::map<int, juce::String> patterns;        // Pattern mode: a pattern with its notes -> that pattern as a loop
+    std::map<int, juce::String> patternStamps;   // what each of those was rendered from
+
+    bool operator== (const Freeze&) const = default;
+};
+
 struct Channel
 {
     int id = 0;
@@ -193,6 +210,8 @@ struct Channel
 
     int output = 0;                  // the bus it plays into, or 0 for the master
     std::vector<Send> sends;         // at most one per bus
+
+    Freeze freeze;                   // frozen: played from audio, its instrument and effects switched off
 };
 
 /** One recorded pass. Several takes can share a file: loop recording records one file and

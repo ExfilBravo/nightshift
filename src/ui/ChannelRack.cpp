@@ -312,6 +312,21 @@ public:
             g.drawText (label, fxArea, juce::Justification::centred, true);
         }
 
+        // Frozen: a chip before that (dim while it plays live for now, the song having changed since)
+        if (c->freeze.on)
+        {
+            const juce::String frozen ("Frozen");
+            g.setFont (font (15.0f, true));
+            const int w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), frozen)) + 14;
+            const auto chip = nameArea.withTrimmedRight (typeWidth + 12).removeFromRight (w).withSizeKeepingCentre (w, 20);
+            const bool playing = rack.audio.isPlayingFrozen (channelId);
+            g.setColour (accentCool.withAlpha (playing ? 0.16f : 0.06f));
+            g.fillRoundedRectangle (chip.toFloat(), 5.0f);
+            g.setColour (playing ? accentCool : textFaint);
+            g.drawText (frozen, chip, juce::Justification::centred, true);
+            typeWidth += w + 6;
+        }
+
         g.setColour (c->muted ? textFaint : text);
         g.setFont (font (17.5f, true));
         g.drawText (c->name, nameArea.withTrimmedRight (typeWidth + 12), juce::Justification::centredLeft, true);
@@ -615,6 +630,10 @@ public:
             const int s = stepAt (p);
 
             if (s < 0)
+                return;
+
+            // A frozen channel's notes stay as they are (it asks to unfreeze first)
+            if (rack.mayEditNotes != nullptr && ! rack.mayEditNotes (channelId))
                 return;
 
             rack.song.checkpoint();
@@ -1665,12 +1684,33 @@ void ChannelRack::showChannelMenu (int channelId)
     menu.addSubMenu ("Colour", colourMenu);
     menu.addSeparator();
 
+    // Freeze: its instrument and effects played into audio, which plays in their place with them switched off
+    if (! isAudio)
+    {
+        if (! c->freeze.on)
+        {
+            menu.addItem ("Freeze (play it from audio, to save the computer's power)", [this, channelId] { if (onFreeze != nullptr) onFreeze (channelId); });
+        }
+        else
+        {
+            if (! audio.isPlayingFrozen (channelId))
+                menu.addItem ("Freeze again (the song changed: it's playing live for now)", [this, channelId] { if (onFreeze != nullptr) onFreeze (channelId); });
+
+            menu.addItem ("Unfreeze (play it live again)", [this, channelId] { if (onUnfreeze != nullptr) onUnfreeze (channelId); });
+        }
+
+        menu.addSeparator();
+    }
+
     if (! isAudio)
     {
         for (int every : { 2, 4, 8 })
         {
             menu.addItem ("Fill each " + juce::String (every) + " steps", [this, channelId, every]
             {
+                if (mayEditNotes != nullptr && ! mayEditNotes (channelId))
+                    return;
+
                 if (auto ch = song.findChannel (channelId))
                 {
                     song.checkpoint();
@@ -1687,6 +1727,9 @@ void ChannelRack::showChannelMenu (int channelId)
 
         menu.addItem ("Clear notes in this pattern", [this, channelId]
         {
+            if (mayEditNotes != nullptr && ! mayEditNotes (channelId))
+                return;
+
             song.checkpoint();
             song.currentPattern().notesFor (channelId).clear();
             song.notify (Song::Change::notes);
@@ -1703,6 +1746,7 @@ void ChannelRack::showChannelMenu (int channelId)
             auto copy = *ch;
             copy.id = song.createId();
             copy.name = ch->name + " 2";
+            copy.freeze = {};       // its own channel, playing live
             auto index = song.indexOfChannel (channelId);
             song.channels.insert (song.channels.begin() + index + 1, copy);
             song.selectedChannelId = copy.id;

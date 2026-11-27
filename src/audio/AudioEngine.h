@@ -225,6 +225,12 @@ public:
         // Export: 24 (for more work on it), 16 (with dither: CDs and most uploads) or 32 (float)
         int exportBits = 24;
 
+        // What Export makes (0 the song as a WAV, 1 as an MP3, 2 stems: each channel and bus as a WAV), an
+        // MP3's bit rate, and whether stems go through the master's effects and loudness
+        int exportKind = 0;
+        int mp3Kbps = 320;
+        bool stemsThroughMaster = false;
+
         // MIDI inputs switched off in Audio settings (the rest play the selected channel)
         juce::StringArray disabledMidiInputs;
 
@@ -325,6 +331,46 @@ public:
     //==============================================================================
     /** Renders the current pattern (pattern mode) or the whole song, plus a tail. */
     bool renderToFile (const juce::File&, double tailSeconds = 2.0, int bitDepth = 24);
+
+    /** One channel's or bus's stem, as renderStems wrote it. */
+    struct Stem
+    {
+        juce::String name;              // the channel's or bus's
+        juce::File file;
+        bool bus = false;
+    };
+
+    /** Stems: each channel and bus that's heard, rendered on its own into `folder` as a WAV named after
+        it ("Bass.wav", "Reverb (bus).wav"), every one over the same stretch as renderToFile's export
+        (from the start to the end and its tail), so they line up sample for sample. A channel's is what
+        it plays into the master or its bus, after its effects, fader and pan (what it sends to a bus is
+        in that bus's); a bus's is what comes out of it. `throughMaster`: each goes through the master's
+        effects, volume and mastering as the song does; else none of that. Channels and buses that make
+        no sound (muted, nothing to play) are left out, named in `silent`. `progress` hears each as it
+        starts (how many done, of how many, its name). */
+    std::vector<Stem> renderStems (const juce::File& folder, bool throughMaster, int bitDepth = 24,
+                                   std::function<void (int done, int total, const juce::String& name)> progress = nullptr,
+                                   juce::StringArray* silent = nullptr);
+
+    /** The song (or pattern) as an MP3 at `kbps`: rendered as renderToFile does, then encoded with LAME
+        (mp3::encode). `loudness`, given, is how loud the render measured. Returns an empty string, or
+        what went wrong. */
+    juce::String renderMp3 (const juce::File&, int kbps, const juce::String& title = {}, mastering::Readings* loudness = nullptr);
+
+    //==============================================================================
+    /** Freeze (see Freeze in Song.h): renders a channel's instrument and effects, before its fader, to
+        32-bit float WAVs in frozenFolder() - the song (a file for each Arrange row its notes are on) and
+        each pattern with its notes as a loop, for Pattern mode - stamped with what they were rendered
+        from. The song isn't changed: the caller puts the result in the channel, with an undo step.
+        Nothing, and why in `error`, when it can't (an audio track, a render that failed). */
+    std::optional<Freeze> renderFreeze (int channelId, juce::String& error);
+
+    /** Whether a channel is playing from its frozen audio now, its instrument and effects switched off
+        (frozen, and the audio still matches the song: freeze::isCurrent). */
+    bool isPlayingFrozen (int channelId) const      { return builtFrozen.count (channelId) > 0; }
+
+    /** Where freezes go: a Frozen folder beside the project's recordings. */
+    juce::File frozenFolder();
 
     /** Copies synth and plugin state into the Song so it can be saved. */
     void flushPluginStates();
@@ -613,6 +659,19 @@ private:
 
     // The master's effects, before its limiter
     std::vector<std::pair<int, te::Plugin::Ptr>> masterFx;
+
+    // The frozen channels syncClips last built from their audio (their plugins switched off)
+    std::set<int> builtFrozen;
+
+    /** Switches each channel's instrument and effects on or off as builtFrozen and its bypasses say. */
+    void applyFreezeToPlugins();
+
+    /** Renders tracks alone (with `sources` playing silently, for the sends and sidechains they feed) to
+        a WAV, over [0, seconds) and up to `tail` more while there's sound; `loop` folds the tail back
+        onto the start (a pattern's loop). Each track routed into a bus outside the render plays straight
+        out for it. Returns whether a file was made. */
+    bool renderTracks (const juce::Array<te::Track*>& tracks, const juce::Array<te::EditItemID>& sources, const juce::File&,
+                       double seconds, double tail, bool loop, bool throughMaster, int bitDepth, double sampleRate);
 
     // What syncAutomation last wrote into each lane's parameter ("owner/param"), so it writes
     // a curve again only when the lane, the tempo or the parameter changed

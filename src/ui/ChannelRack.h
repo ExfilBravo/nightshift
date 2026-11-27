@@ -48,6 +48,13 @@ public:
     std::function<void (int effectId)> onOpenEffectEditor;
     std::function<void()> onScanPlugins;
 
+    /** A channel's menu's Freeze, Freeze again and Unfreeze (see MainComponent::freezeChannel). */
+    std::function<void (int channelId)> onFreeze, onUnfreeze;
+
+    /** Asked before a channel's notes change here (its steps, Fill, Clear): false leaves them be (a
+        frozen channel's, see MainComponent::mayEditNotes). Unset: always fine. */
+    std::function<bool (int channelId)> mayEditNotes;
+
     /** Puts an effect plugin at the end of a channel's chain and opens its editor; with no
         such channel, on the master. Returns the effect's id. */
     int addEffect (int channelId, const juce::PluginDescription&);

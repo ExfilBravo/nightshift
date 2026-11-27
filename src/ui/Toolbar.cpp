@@ -25,7 +25,7 @@ Toolbar::Toolbar (Song& s, AudioEngine& a)
                              "Armed while playing, it punches in. Right-click for the countdown, blend and more");
     loopButton.setTooltip ("Loop: play the loop range round and round (drag along the top of the Arrange ruler to set it)");
     metronomeButton.setTooltip (shortcutText ("Metronome on / off (Ctrl+M). Right-click for its sound, accents, rhythm, tap tempo and practise"));
-    exportButton.setTooltip (shortcutText ("Export a WAV (Ctrl+R)"));
+    exportButton.setTooltip (shortcutText ("Export the song as a WAV or an MP3, or each channel as its own WAV (Ctrl+R)"));
     menuButton.setTooltip ("File, edit and settings");
     modes.setTooltip ("Pattern plays the current pattern on a loop; Song plays the arrangement (Shift+L)");
 

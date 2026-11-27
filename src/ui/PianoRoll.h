@@ -72,6 +72,13 @@ public:
     /** A line for the toast (what quantize did, say). */
     std::function<void (const juce::String&)> onMessage;
 
+    /** Asked before the notes change: false leaves them be (a frozen channel's: it asks to unfreeze it
+        first, see MainComponent::mayEditNotes). Unset: always fine. */
+    std::function<bool (int channelId)> mayEditNotes;
+
+    /** Where it says the channel is frozen (empty when it isn't); a click there asks to unfreeze it. */
+    juce::Rectangle<int> getFrozenBannerBounds() const;
+
     /** Clicked: the editing keys go to whichever editor was clicked last. */
     std::function<void()> onActivated;
 
@@ -139,6 +146,9 @@ private:
     void preview (int key, int velocity = 100);
 
     void paintGrid (juce::Graphics&);
+
+    /** What the frozen banner says: as much as fits the grid's width. */
+    juce::String frozenBannerText() const;
     void paintKeyboard (juce::Graphics&);
     void paintVelocity (juce::Graphics&);
 

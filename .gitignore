@@ -23,3 +23,6 @@ mac/.tools/
 mac/.tests/
 mac/report.txt
 mac/build.log
+
+# LAME's release, fetched and checked by CMakeLists.txt
+external/lame-*

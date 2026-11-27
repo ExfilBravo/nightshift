@@ -76,6 +76,72 @@ else()
     set_source_files_properties(${NAM_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
+# LAME 3.100 (GNU LGPL 2 or later, lame.sourceforge.io), the MP3 encoder Export uses: built here from its
+# source, no lame.exe. The release tarball is fetched once into external/ (from SourceForge, or Debian's
+# copy of the same file) and checked against its SHA-256 every configure; only libmp3lame is compiled,
+# with NightShift's config.h (cmake/lame), into a static library of its own
+set(LAME_VERSION 3.100)
+set(LAME_SHA256 ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e)
+set(LAME_ARCHIVE ${CMAKE_CURRENT_SOURCE_DIR}/external/lame-${LAME_VERSION}.tar.gz)
+set(LAME_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/lame-${LAME_VERSION})
+
+if (NOT EXISTS ${LAME_ARCHIVE})
+    foreach (url https://downloads.sourceforge.net/project/lame/lame/${LAME_VERSION}/lame-${LAME_VERSION}.tar.gz
+                 https://deb.debian.org/debian/pool/main/l/lame/lame_${LAME_VERSION}.orig.tar.gz)
+        message(STATUS "Getting LAME ${LAME_VERSION} from ${url}")
+        file(DOWNLOAD ${url} ${LAME_ARCHIVE}.part STATUS got TLS_VERIFY ON)
+        list(GET got 0 code)
+
+        if (code EQUAL 0)
+            file(SHA256 ${LAME_ARCHIVE}.part hash)
+
+            if (hash STREQUAL LAME_SHA256)
+                file(RENAME ${LAME_ARCHIVE}.part ${LAME_ARCHIVE})
+                break()
+            endif()
+
+            message(STATUS "That wasn't LAME ${LAME_VERSION} as released (SHA-256 ${hash})")
+        endif()
+
+        file(REMOVE ${LAME_ARCHIVE}.part)
+    endforeach()
+endif()
+
+if (NOT EXISTS ${LAME_ARCHIVE})
+    message(FATAL_ERROR "Couldn't get LAME ${LAME_VERSION}: download lame-${LAME_VERSION}.tar.gz (SHA-256 ${LAME_SHA256}) from lame.sourceforge.io into ${CMAKE_CURRENT_SOURCE_DIR}/external")
+endif()
+
+file(SHA256 ${LAME_ARCHIVE} LAME_HASH)
+
+if (NOT LAME_HASH STREQUAL LAME_SHA256)
+    message(FATAL_ERROR "${LAME_ARCHIVE} isn't LAME ${LAME_VERSION} as released (its SHA-256 is ${LAME_HASH}, not ${LAME_SHA256}): delete it and configure again")
+endif()
+
+if (NOT EXISTS ${LAME_DIR}/include/lame.h)
+    file(ARCHIVE_EXTRACT INPUT ${LAME_ARCHIVE} DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/external)
+endif()
+
+add_library(nightshift_lame STATIC
+    ${LAME_DIR}/libmp3lame/VbrTag.c ${LAME_DIR}/libmp3lame/bitstream.c ${LAME_DIR}/libmp3lame/encoder.c
+    ${LAME_DIR}/libmp3lame/fft.c ${LAME_DIR}/libmp3lame/gain_analysis.c ${LAME_DIR}/libmp3lame/id3tag.c
+    ${LAME_DIR}/libmp3lame/lame.c ${LAME_DIR}/libmp3lame/newmdct.c ${LAME_DIR}/libmp3lame/presets.c
+    ${LAME_DIR}/libmp3lame/psymodel.c ${LAME_DIR}/libmp3lame/quantize.c ${LAME_DIR}/libmp3lame/quantize_pvt.c
+    ${LAME_DIR}/libmp3lame/reservoir.c ${LAME_DIR}/libmp3lame/set_get.c ${LAME_DIR}/libmp3lame/tables.c
+    ${LAME_DIR}/libmp3lame/takehiro.c ${LAME_DIR}/libmp3lame/util.c ${LAME_DIR}/libmp3lame/vbrquantize.c
+    ${LAME_DIR}/libmp3lame/version.c)
+target_include_directories(nightshift_lame PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/lame ${LAME_DIR}/include ${LAME_DIR}/libmp3lame)
+target_compile_definitions(nightshift_lame PRIVATE HAVE_CONFIG_H)
+
+if (MSVC)
+    target_compile_definitions(nightshift_lame PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(nightshift_lame PRIVATE /W0)
+else()
+    target_compile_options(nightshift_lame PRIVATE -w)
+endif()
+
+# Only the encoder's own file sees lame.h (so every other file's build stays as it was)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/audio/Mp3Encoder.cpp PROPERTIES INCLUDE_DIRECTORIES ${LAME_DIR}/include)
+
 target_compile_definitions(Nightshift PRIVATE
     $<$<PLATFORM_ID:Windows>:JUCE_ASIO=1>               # JUCE bundles the ASIO SDK under the GPLv3
     $<$<PLATFORM_ID:Darwin>:JUCE_PLUGINHOST_AU=1>       # a Mac's Audio Units, beside VST3
@@ -95,6 +161,7 @@ juce_add_binary_data(NightshiftData SOURCES resources/logo_64.png resources/font
 
 target_link_libraries(Nightshift PRIVATE
     NightshiftData
+    nightshift_lame
     tracktion::tracktion_core
     tracktion::tracktion_engine
     tracktion::tracktion_graph

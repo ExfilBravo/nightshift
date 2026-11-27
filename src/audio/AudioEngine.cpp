@@ -12,6 +12,8 @@
 #include "Sfz.h"
 #include "Nova.h"
 #include "GuitarSound.h"
+#include "Freeze.h"
+#include "Mp3Encoder.h"
 #include <tracktion_engine/playback/graph/tracktion_EditNodeBuilder.h>
 #include <set>
 
@@ -410,7 +412,16 @@ void AudioEngine::songChanged (Song::Change c)
         case Song::Change::playlist:    pending |= needClips; break;
         case Song::Change::trackState:  pending |= needMutes; break;
         case Song::Change::transport:   pending |= needTempo | needClips; break;
-        case Song::Change::automation:  pending |= needAutomation; break;
+
+        case Song::Change::automation:
+            pending |= needAutomation;
+
+            // A frozen channel's instrument and effects automation is in its audio: a change there plays it live
+            for (auto& channel : song.channels)
+                if (channel.freeze.on)
+                    pending |= needClips;
+            break;
+
         case Song::Change::selection:   pending |= needMidi; break;     // MIDI keyboards play the selected channel
 
         case Song::Change::currentPattern:
@@ -1331,6 +1342,32 @@ void AudioEngine::syncEffects()
 
     syncChain (edit->getMasterPluginList(), masterFx, song.masterEffects, 0);
     syncSidechains();
+
+    // (the bypasses just set, with a frozen channel's switched off again)
+    applyFreezeToPlugins();
+}
+
+void AudioEngine::applyFreezeToPlugins()
+{
+    // A channel playing its frozen audio has its instrument and effects switched off: NightShift's engine takes
+    // switched-off plugins out of playback altogether, so they cost nothing (and add no delay)
+    for (auto& channel : song.channels)
+    {
+        auto it = slots.find (channel.id);
+
+        if (it == slots.end())
+            continue;
+
+        const bool frozen = builtFrozen.count (channel.id) > 0;
+
+        if (auto& instrument = it->second.instrument; instrument != nullptr && instrument->isEnabled() == frozen)
+            instrument->setEnabled (! frozen);
+
+        for (size_t i = 0; i < it->second.effects.size() && i < channel.effects.size(); ++i)
+            if (auto& plugin = it->second.effects[i].second; plugin != nullptr)
+                if (const bool on = ! frozen && ! channel.effects[i].bypassed; plugin->isEnabled() != on)
+                    plugin->setEnabled (on);
+    }
 }
 
 void AudioEngine::syncChain (te::PluginList& list, std::vector<std::pair<int, te::Plugin::Ptr>>& built,
@@ -1452,7 +1489,11 @@ void AudioEngine::keepEffectState (int effectId, te::Plugin& plugin)
     if (auto effect = song.findEffect (effectId))
     {
         plugin.flushPluginStateToValueTree();
-        effect->state = plugin.state.toXmlString();
+
+        // Switched on or off as its bypass says, never as a freeze left it (that's the freeze's to say)
+        auto state = plugin.state.createCopy();
+        state.setProperty (te::IDs::enabled, ! effect->bypassed, nullptr);
+        effect->state = state.toXmlString();
     }
 }
 
@@ -2190,13 +2231,36 @@ void AudioEngine::syncClips (bool notesOnly)
                               te::TimePosition::fromSeconds (ticksToSeconds (startTicks + lengthTicks)));
     };
 
+    // Frozen channels whose audio still matches the song play it, their plugins switched off; the rest play live
+    std::set<int> frozenNow;
+
+    for (auto& channel : song.channels)
+        if (channel.freeze.on && channel.type != InstrumentType::audio && freeze::isCurrent (song, channel))
+            frozenNow.insert (channel.id);
+
+    // A frozen file as a clip on its channel's track, from `start` (seconds) for `length`
+    auto frozenClip = [this] (Slot& slot, const juce::String& path, double start, double length) -> te::Clip::Ptr
+    {
+        const juce::File file (path);
+        te::ClipPosition position { { te::TimePosition::fromSeconds (start), te::TimeDuration::fromSeconds (length) }, {} };
+        auto clip = slot.track->insertWaveClip (file.getFileNameWithoutExtension(), file, position, false);
+
+        if (clip != nullptr)
+        {
+            clip->setAutoTempo (false);
+            clip->setAutoPitch (false);
+        }
+
+        return clip;
+    };
+
     if (song.mode == PlayMode::pattern)
     {
         auto& pattern = song.currentPattern();
         const int length = song.patternLength (pattern);
 
         // Editing notes while a pattern loops: refill the clips in place, no rebuild
-        if (notesOnly && builtMode == PlayMode::pattern && builtPatternId == pattern.id && builtLength == length)
+        if (notesOnly && builtMode == PlayMode::pattern && builtPatternId == pattern.id && builtLength == length && frozenNow == builtFrozen)
         {
             for (auto& channel : song.channels)
                 if (auto it = slots.find (channel.id); it != slots.end() && it->second.patternClip != nullptr)
@@ -2211,9 +2275,20 @@ void AudioEngine::syncClips (bool notesOnly)
         {
             auto& slot = slots[channel.id];
 
-            if (slot.track != nullptr && channel.type != InstrumentType::audio)
-                if ((slot.patternClip = slot.track->insertMIDIClip (pattern.name, clipRange (0, length), nullptr)))
-                    fillClip (*slot.patternClip, pattern.findNotes (channel.id));
+            if (slot.track == nullptr || channel.type == InstrumentType::audio)
+                continue;
+
+            // Frozen: the pattern's loop, rendered with what rings over from the end of it folded onto its start
+            if (frozenNow.count (channel.id) > 0)
+            {
+                if (auto file = channel.freeze.patterns.find (pattern.id); file != channel.freeze.patterns.end() && freeze::hasNotes (pattern, channel.id))
+                    frozenClip (slot, file->second, 0.0, ticksToSeconds (length));
+
+                continue;
+            }
+
+            if ((slot.patternClip = slot.track->insertMIDIClip (pattern.name, clipRange (0, length), nullptr)))
+                fillClip (*slot.patternClip, pattern.findNotes (channel.id));
         }
 
         builtPatternId = pattern.id;
@@ -2238,7 +2313,7 @@ void AudioEngine::syncClips (bool notesOnly)
                 auto notes = pattern->findNotes (channel.id);
                 auto& slot = slots[channel.id];
 
-                if (notes != nullptr && ! notes->empty() && slot.track != nullptr)
+                if (notes != nullptr && ! notes->empty() && slot.track != nullptr && frozenNow.count (channel.id) == 0)
                 {
                     if (auto clip = slot.track->insertMIDIClip (pattern->name, clipRange (placed.start, length), nullptr))
                     {
@@ -2246,6 +2321,30 @@ void AudioEngine::syncClips (bool notesOnly)
                         clip->setMuted (! song.isTrackAudible (placed.track));
                         rowClips.emplace_back (clip, placed.track);
                     }
+                }
+            }
+        }
+
+        // Frozen channels: the song as rendered, a file for each Arrange row their notes are on, from the start,
+        // muted and soloed with the row as its pattern clips would be
+        for (auto& channel : song.channels)
+        {
+            auto it = slots.find (channel.id);
+
+            if (frozenNow.count (channel.id) == 0 || it == slots.end() || it->second.track == nullptr)
+                continue;
+
+            for (auto& [row, path] : channel.freeze.rows)
+            {
+                const double length = te::AudioFile (*engine, juce::File (path)).getLength();
+
+                if (length <= 0.0)
+                    continue;
+
+                if (auto clip = frozenClip (it->second, path, 0.0, length))
+                {
+                    clip->setMuted (! song.isTrackAudible (row));
+                    rowClips.emplace_back (clip, row);
                 }
             }
         }
@@ -2320,6 +2419,13 @@ void AudioEngine::syncClips (bool notesOnly)
         startTicks = 0.0;
 
     builtMode = song.mode;
+
+    if (frozenNow != builtFrozen)
+    {
+        builtFrozen = frozenNow;
+        applyFreezeToPlugins();
+    }
+
     syncLooping();
 }
 
@@ -2717,8 +2823,16 @@ juce::String AudioEngine::startRecordingPass (bool punchIn)
     syncNow();
 
     const auto* selected = song.findChannel (song.selectedChannelId);
-    const int noteChannel = selected != nullptr && selected->type != InstrumentType::audio ? selected->id : 0;
+    int noteChannel = selected != nullptr && selected->type != InstrumentType::audio ? selected->id : 0;
     bool armedAudio = false;
+    juce::String notice;
+
+    // A frozen channel's notes can't change, so what's played isn't recorded into it
+    if (noteChannel != 0 && selected->freeze.on)
+    {
+        notice = selected->name + " is frozen, so what you play isn't recorded into it: unfreeze it (its menu in Steps) first.";
+        noteChannel = 0;
+    }
 
     for (auto& c : song.channels)
         armedAudio = armedAudio || (c.type == InstrumentType::audio && c.armed);
@@ -2728,11 +2842,10 @@ juce::String AudioEngine::startRecordingPass (bool punchIn)
         if (! punchIn)
             startPlaying();
 
-        return "Record is armed, but there's nothing to record into: select an instrument channel to record what you play, "
-               "or arm an audio track (the round button on it).";
+        return notice.isNotEmpty() ? notice
+                                   : "Record is armed, but there's nothing to record into: select an instrument channel to record what you play, "
+                                     "or arm an audio track (the round button on it).";
     }
-
-    juce::String notice;
 
     if (armedAudio)
     {
@@ -3018,6 +3131,14 @@ void AudioEngine::loadOptions()
     if (options.exportBits != 16 && options.exportBits != 32)
         options.exportBits = 24;
 
+    options.exportKind = juce::jlimit (0, 2, file.getIntValue ("nsExportKind", 0));
+    options.mp3Kbps = file.getIntValue ("nsMp3Kbps", 320);
+
+    if (std::find (mp3::bitRates().begin(), mp3::bitRates().end(), options.mp3Kbps) == mp3::bitRates().end())
+        options.mp3Kbps = 320;
+
+    options.stemsThroughMaster = file.getBoolValue ("nsStemsThroughMaster", false);
+
     options.disabledMidiInputs = juce::StringArray::fromTokens (file.getValue ("nsDisabledMidiInputs"), "|", {});
     options.disabledMidiInputs.removeEmptyStrings();
 
@@ -3061,6 +3182,9 @@ void AudioEngine::setOptions (const Options& o)
         file.setValue ("nsRecentProjects", options.recentProjects.joinIntoString ("|"));
         file.setValue ("nsDonationAsked", options.donationAsked);
         file.setValue ("nsExportBits", options.exportBits);
+        file.setValue ("nsExportKind", options.exportKind);
+        file.setValue ("nsMp3Kbps", options.mp3Kbps);
+        file.setValue ("nsStemsThroughMaster", options.stemsThroughMaster);
         file.setValue ("nsDisabledMidiInputs", options.disabledMidiInputs.joinIntoString ("|"));
 
         file.setValue ("nsMetronome", options.metronome);
@@ -3774,6 +3898,311 @@ bool AudioEngine::renderToFile (const juce::File& file, double tailSeconds, int 
     return ok;
 }
 
+bool AudioEngine::renderTracks (const juce::Array<te::Track*>& tracks, const juce::Array<te::EditItemID>& sources, const juce::File& file,
+                                double seconds, double tail, bool loop, bool throughMaster, int bitDepth, double sampleRate)
+{
+    // Every track the render plays, and those of them routed into a track it doesn't play (a channel into a
+    // bus): those play straight out for it, else the render would leave them out (it starts from tracks that
+    // play out, and a bus brings in the channels routed into it)
+    auto all = tracks;
+
+    for (auto id : sources)
+        if (auto t = te::findTrackForID (*edit, id))
+            all.addIfNotAlreadyThere (t);
+
+    std::vector<std::pair<te::AudioTrack*, te::AudioTrack*>> rerouted;
+
+    for (auto t : all)
+        if (auto at = dynamic_cast<te::AudioTrack*> (t))
+            if (auto destination = at->getOutput().getDestinationTrack(); destination != nullptr && ! all.contains (destination))
+            {
+                rerouted.emplace_back (at, destination);
+                at->getOutput().setOutputToDefaultDevice (false);
+            }
+
+    // The sources play silently: there for what they send or key, not heard themselves
+    te::ScopedTrackMuter muter (*edit, sources);
+    ScopedLatencyBypassLift everythingOn (*edit);
+
+    te::Renderer::Parameters params (*edit);
+    params.destFile = file;
+    params.audioFormat = engine->getAudioFileFormatManager().getWavFormat();
+    params.bitDepth = bitDepth == 16 || bitDepth == 32 ? bitDepth : 24;
+    params.ditheringEnabled = params.bitDepth == 16;
+    params.sampleRateForAudio = sampleRate;
+    params.blockSizeForAudio = 512;
+    params.time = te::TimeRange (te::TimePosition(), te::TimePosition::fromSeconds (seconds));
+    params.endAllowance = te::TimeDuration::fromSeconds (tail);
+    params.wrapRemainder = loop;
+    params.tracksToDo = te::toBitSet (all);
+    params.tracksToProcessWhileMuted = sources;
+    params.usePlugins = true;
+    params.useMasterPlugins = throughMaster;
+    params.canRenderInMono = false;
+
+    file.getParentDirectory().createDirectory();
+    file.deleteFile();
+    const bool ok = te::Renderer::renderToFile ("Render", params).existsAsFile();
+
+    for (auto& [track, destination] : rerouted)
+        track->getOutput().setOutputToTrack (destination);
+
+    if (liveAudio)
+        edit->getTransport().ensureContextAllocated();
+
+    return ok;
+}
+
+std::vector<AudioEngine::Stem> AudioEngine::renderStems (const juce::File& folder, bool throughMaster, int bitDepth,
+                                                         std::function<void (int, int, const juce::String&)> progress,
+                                                         juce::StringArray* silent)
+{
+    struct CompareOff
+    {
+        AudioEngine& engine;
+        int mode;
+        float gainDb;
+        ~CompareOff()   { engine.setMasterCompare (mode, gainDb); }
+    } compareOff { *this, masterCompare, masterCompareDb };
+
+    stop();
+    setMasterCompare (0, masterCompareDb);
+    syncNow();
+
+    // What the export covers: the song (or pattern) and the same two seconds of tail, so a stem lines up
+    // with the mix as well as with the others
+    const double seconds = ticksToSeconds (loopEndTicks) + 2.0;
+
+    struct Wanted { juce::String name; te::Track* track; bool bus; };
+    std::vector<Wanted> wanted;
+
+    for (auto& channel : song.channels)
+        if (auto it = slots.find (channel.id); it != slots.end() && it->second.track != nullptr)
+            wanted.push_back ({ channel.name, it->second.track.get(), false });
+
+    for (auto& bus : song.buses)
+        if (auto it = busSlots.find (bus.id); it != busSlots.end() && it->second.track != nullptr)
+            wanted.push_back ({ bus.name, it->second.track.get(), true });
+
+    folder.createDirectory();
+    std::vector<Stem> written;
+    juce::StringArray names;
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+
+    for (size_t i = 0; i < wanted.size(); ++i)
+    {
+        const auto& w = wanted[i];
+
+        if (progress != nullptr)
+            progress ((int) i, (int) wanted.size(), w.name);
+
+        // Named after it, a bus said to be one, never two the same
+        auto name = juce::File::createLegalFileName (w.name.trim());
+
+        if (name.isEmpty())
+            name = w.bus ? "Bus" : "Channel";
+
+        if (w.bus)
+            name << " (bus)";
+
+        const auto first = name;
+
+        for (int n = 2; names.contains (name, true); ++n)
+            name = first + " " + juce::String (n);
+
+        names.add (name);
+        const auto file = folder.getChildFile (name + ".wav");
+
+        // What it sends from or is keyed by plays along unheard; what's routed into a bus comes with it
+        const auto sources = te::findStemSourceTracks (*edit, { w.track->itemID });
+        bool sounds = renderTracks ({ w.track }, sources, file, seconds, 0.0, false, throughMaster, bitDepth, 48000.0);
+
+        // Left out if it made no sound (muted, or nothing for it to play)
+        if (sounds)
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+            juce::Range<float> levels[2];
+            sounds = reader != nullptr;
+
+            if (reader != nullptr)
+            {
+                reader->readMaxLevels (0, reader->lengthInSamples, levels, (int) std::min (2u, reader->numChannels));
+                sounds = levels[0].getLength() > 1.0e-6f || levels[1].getLength() > 1.0e-6f;
+            }
+        }
+
+        if (! sounds)
+        {
+            file.deleteFile();
+
+            if (silent != nullptr)
+                silent->add (w.name);
+
+            continue;
+        }
+
+        written.push_back ({ w.name, file, w.bus });
+    }
+
+    if (progress != nullptr)
+        progress ((int) wanted.size(), (int) wanted.size(), {});
+
+    return written;
+}
+
+juce::String AudioEngine::renderMp3 (const juce::File& file, int kbps, const juce::String& title, mastering::Readings* loudness)
+{
+    // Rendered as a WAV export is (in float, nothing clipped before the encoder), then encoded
+    stop();
+    const auto wav = juce::File::createTempFile (".wav");
+    struct Gone { juce::File f; ~Gone() { f.deleteFile(); } } gone { wav };
+
+    if (! renderToFile (wav, 2.0, 32))
+        return "NightShift couldn't render the song";
+
+    if (loudness != nullptr)
+        *loudness = mastering::measureFile (wav);
+
+    return mp3::encode (wav, file, kbps, title);
+}
+
+juce::File AudioEngine::frozenFolder()
+{
+    // Beside the project's recordings (or where they go before it's saved, or when Windows refuses that)
+    return engine->getEngineBehaviour().getDefaultFolderForAudioRecordings (*edit).getChildFile ("Frozen");
+}
+
+std::optional<Freeze> AudioEngine::renderFreeze (int channelId, juce::String& error)
+{
+    auto* channel = song.findChannel (channelId);
+    auto it = slots.find (channelId);
+
+    if (channel == nullptr || it == slots.end() || it->second.track == nullptr)
+    {
+        error = "there's no such channel";
+        return {};
+    }
+
+    if (channel->type == InstrumentType::audio)
+    {
+        error = channel->name + " is an audio track: it plays audio already";
+        return {};
+    }
+
+    stop();
+    auto& track = *it->second.track;
+    const auto folder = frozenFolder();
+
+    if (! folder.createDirectory())
+    {
+        error = "NightShift couldn't make the folder " + folder.getFullPathName();
+        return {};
+    }
+
+    // Rendered from its instrument and effects (on, as a refreeze finds them off), as Song and Pattern mode
+    // play them, then put back as they were
+    const auto mode = song.mode;
+    const int pattern = song.currentPatternId;
+    const bool muted = track.isMuted (false);
+    const auto wasOn = channel->freeze.on;
+
+    channel->freeze.on = false;
+    syncNow();
+    syncClips (false);
+
+    // Only what comes before its fader: the fader, pan and sends stay live on the audio, so they're out of
+    // the render (and so is a mute)
+    juce::Array<te::Plugin*> afterIt;
+
+    for (auto p : track.pluginList)
+        if (p->isEnabled() && (p == track.getVolumePlugin() || dynamic_cast<te::AuxSendPlugin*> (p) != nullptr))
+            afterIt.add (p);
+
+    for (auto p : afterIt)
+        p->setEnabled (false);
+
+    track.setMute (false);
+
+    auto restore = [&]
+    {
+        song.mode = mode;
+        song.currentPatternId = pattern;
+        channel->freeze.on = wasOn;
+
+        for (auto p : afterIt)
+            p->setEnabled (true);
+
+        track.setMute (muted);
+        syncTempo();
+        syncClips (false);
+        syncAutomation();
+    };
+
+    const double rate = engine->getDeviceManager().getSampleRate() > 0.0 ? engine->getDeviceManager().getSampleRate() : 48000.0;
+    const auto name = juce::File::createLegalFileName (channel->name.trim()).trim();
+    const auto sources = te::findStemSourceTracks (*edit, { track.itemID });    // a sidechain's key, playing unheard
+    Freeze made;
+    made.on = true;
+
+    auto fail = [&] (const juce::String& what)
+    {
+        for (auto& f : freeze::filesOf (made))
+            juce::File (f).deleteFile();
+
+        restore();
+        error = what;
+        return std::optional<Freeze>();
+    };
+
+    // The song: a file for each Arrange row its notes are on (each row's clips alone, every row heard), to
+    // the song's end and on while anything rings, up to ten seconds
+    song.mode = PlayMode::song;
+    syncTempo();
+    syncClips (false);
+    syncAutomation();
+    const double songSeconds = ticksToSeconds (std::max (song.ticksPerBar(), song.songLengthInTicks()));
+
+    for (int row : freeze::rowsOf (song, channelId))
+    {
+        for (auto& [clip, clipRow] : rowClips)
+            if (clip->getTrack() == &track)
+                clip->setMuted (clipRow != row);
+
+        const auto file = folder.getNonexistentChildFile ((name.isEmpty() ? juce::String ("Channel") : name) + " frozen", ".wav", false);
+
+        if (! renderTracks ({ &track }, sources, file, songSeconds, 10.0, false, false, 32, rate))
+            return fail ("NightShift couldn't render " + channel->name + " in the song");
+
+        made.rows[row] = file.getFullPathName();
+    }
+
+    made.songStamp = freeze::songStamp (song, *channel);
+
+    // Each pattern with its notes, as Pattern mode loops it: what rings over from its end folded onto its start
+    song.mode = PlayMode::pattern;
+    syncTempo();
+
+    for (auto& p : song.patterns)
+    {
+        if (! freeze::hasNotes (p, channelId))
+            continue;
+
+        song.currentPatternId = p.id;
+        syncClips (false);
+        const auto file = folder.getNonexistentChildFile ((name.isEmpty() ? juce::String ("Channel") : name) + " frozen " + p.name.trim(), ".wav", false);
+
+        if (! renderTracks ({ &track }, sources, file, ticksToSeconds (song.patternLength (p)), 10.0, true, false, 32, rate))
+            return fail ("NightShift couldn't render " + channel->name + " in " + p.name);
+
+        made.patterns[p.id] = file.getFullPathName();
+        made.patternStamps[p.id] = freeze::patternStamp (song, *channel, p);
+    }
+
+    restore();
+    return made;
+}
+
 void AudioEngine::flushPluginStates()
 {
     // A plugin bypassed for low-latency monitoring must not be saved switched off
@@ -3788,7 +4217,11 @@ void AudioEngine::flushPluginStates()
         if (auto plugin = getInstrument (channel.id))
         {
             plugin->flushPluginStateToValueTree();
-            channel.pluginState = plugin->state.toXmlString();
+
+            // Saved switched on: a freeze switching it off is the freeze's to say
+            auto state = plugin->state.createCopy();
+            state.setProperty (te::IDs::enabled, true, nullptr);
+            channel.pluginState = state.toXmlString();
         }
     }
 

@@ -1830,6 +1830,28 @@ juce::var Song::toVar() const
             sendList.add (juce::Array<juce::var> { s.busId, s.level, s.preFader });
 
         o->setProperty ("sends", sendList);
+
+        // Frozen: its audio files, and what each was rendered from
+        if (c.freeze.on)
+        {
+            auto* f = new juce::DynamicObject();
+            juce::Array<juce::var> rows, loops;
+
+            for (auto& [row, file] : c.freeze.rows)
+                rows.add (juce::Array<juce::var> { row, file });
+
+            for (auto& [pattern, file] : c.freeze.patterns)
+            {
+                auto stamp = c.freeze.patternStamps.find (pattern);
+                loops.add (juce::Array<juce::var> { pattern, file, stamp != c.freeze.patternStamps.end() ? stamp->second : juce::String() });
+            }
+
+            f->setProperty ("rows", rows);
+            f->setProperty ("songStamp", c.freeze.songStamp);
+            f->setProperty ("patterns", loops);
+            o->setProperty ("freeze", juce::var (f));
+        }
+
         channelList.add (juce::var (o));
     }
 
@@ -2059,6 +2081,25 @@ void Song::fromVar (const juce::var& v)
                 for (auto& s : *sendList)
                     if (s.size() >= 3)
                         c.sends.push_back ({ (int) s[0], (float) s[1], (bool) s[2] });
+
+            if (auto f = o.getProperty ("freeze", {}); f.isObject())
+            {
+                c.freeze.on = true;
+                c.freeze.songStamp = f.getProperty ("songStamp", {}).toString();
+
+                if (auto* rows = f.getProperty ("rows", {}).getArray())
+                    for (auto& r : *rows)
+                        if (r.size() >= 2)
+                            c.freeze.rows[(int) r[0]] = r[1].toString();
+
+                if (auto* loops = f.getProperty ("patterns", {}).getArray())
+                    for (auto& p : *loops)
+                        if (p.size() >= 3)
+                        {
+                            c.freeze.patterns[(int) p[0]] = p[1].toString();
+                            c.freeze.patternStamps[(int) p[0]] = p[2].toString();
+                        }
+            }
 
             maxId = std::max (maxId, c.id);
             channels.push_back (c);
