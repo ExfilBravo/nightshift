@@ -58,11 +58,12 @@ juce::String Key::name() const
     if (! known())
         return "not known";
 
-    // A minor key on C sharp or G sharp is named so (not D flat, A flat minor)
+    // A minor key on C sharp or G sharp is named so (not D flat, A flat minor), and a major one on D flat (not C sharp)
     auto root_ = noteName (root);
 
     if (minor && root == 1)  root_ = "C sharp";
     if (minor && root == 8)  root_ = "G sharp";
+    if (! minor && root == 1) root_ = "D flat";
 
     return root_ + (minor ? " minor" : " major");
 }

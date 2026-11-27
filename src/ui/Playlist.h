@@ -151,6 +151,9 @@ public:
     juce::Rectangle<float> speedBadgeBounds (const AudioClip&) const;
     static juce::String speedBadgeText (const AudioClip&);
 
+    /** Its words where the clip has room for them, else empty (the metronome alone, lit when something's set). */
+    juce::String speedBadgeWords (const AudioClip&) const;
+
     /** The selected clips: pattern clips and take folders, by index into their lists. */
     const std::set<int>& getSelectedClips() const   { return chosenClips; }
     const std::set<int>& getSelectedAudio() const   { return chosenAudio; }

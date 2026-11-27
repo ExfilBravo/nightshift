@@ -524,15 +524,23 @@ juce::String Playlist::speedBadgeText (const AudioClip& clip)
     return words.substring (0, 1).toUpperCase() + words.substring (1);
 }
 
+juce::String Playlist::speedBadgeWords (const AudioClip& clip) const
+{
+    // Its words where the clip has room for them beside a little of its name; else the metronome alone says it
+    const auto words = speedBadgeText (clip);
+    const float width = juce::GlyphArrangement::getStringWidth (font (15.0f, true), words) + 34.0f;
+    return words.isNotEmpty() && clipBounds (clip).getWidth() >= width + 60.0f ? words : juce::String();
+}
+
 juce::Rectangle<float> Playlist::speedBadgeBounds (const AudioClip& clip) const
 {
     // On the title strip's right, clear of the end's trim zone and the fade-out dot under it; only
     // where the clip has room for it beside a little of its name
     const auto r = clipBounds (clip);
-    const auto words = speedBadgeText (clip);
+    const auto words = speedBadgeWords (clip);
     const float width = words.isEmpty() ? 22.0f : juce::GlyphArrangement::getStringWidth (font (15.0f, true), words) + 34.0f;
 
-    if (r.getWidth() < width + 60.0f)
+    if (r.getWidth() < width + 50.0f)
         return {};
 
     return { r.getRight() - 16.0f - width, r.getY() + 1.0f, width, 18.0f };
@@ -2291,14 +2299,16 @@ void Playlist::paintAudioClip (juce::Graphics& g, const AudioClip& clip, bool ch
 
     if (! badge.isEmpty())
     {
-        const auto words = speedBadgeText (clip);
+        // (lit when something's set, even where only the metronome has room)
+        const auto words = speedBadgeWords (clip);
+        const bool set = speedBadgeText (clip).isNotEmpty();
         label.setRight (std::max (label.getX(), badge.getX() - 6.0f));
-        g.setColour (background.withAlpha (words.isEmpty() ? 0.3f : 0.72f));
+        g.setColour (background.withAlpha (set ? 0.72f : 0.3f));
         g.fillRoundedRectangle (badge, 5.0f);
 
         auto metronome = icons::metronomeLine();
         metronome.applyTransform (juce::AffineTransform::scale (1.5f).translated (badge.getX() + 4.0f, badge.getY() + 1.5f));
-        g.setColour (words.isEmpty() ? colour.interpolatedWith (juce::Colours::white, 0.45f).withAlpha (0.8f) : juce::Colours::white);
+        g.setColour (set ? juce::Colours::white : colour.interpolatedWith (juce::Colours::white, 0.45f).withAlpha (0.8f));
         g.strokePath (metronome, juce::PathStrokeType (1.3f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
         if (words.isNotEmpty())

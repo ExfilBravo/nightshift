@@ -1475,7 +1475,7 @@ namespace
                 if (in && lastLabel - y >= 17.0f && y - 9.0f >= area.getY() && y + 9.0f <= area.getBottom())
                 {
                     g.setColour (textDim);
-                    g.drawText (noteName (n), juce::Rectangle<float> (area.getX(), y - 9.0f, 40.0f, 18.0f), juce::Justification::centredLeft, false);
+                    g.drawText (spell (n), juce::Rectangle<float> (area.getX(), y - 9.0f, 40.0f, 18.0f), juce::Justification::centredLeft, false);
                     lastLabel = y;
                 }
             }
@@ -1522,7 +1522,7 @@ namespace
             if (heard >= 0.0f && pulledTo >= 0)
             {
                 const int cents = juce::roundToInt ((heard - (float) pulledTo) * 100.0f);
-                now = "Hearing " + noteName (pulledTo) + ": " + (std::abs (cents) < 3 ? juce::String ("on pitch")
+                now = "Hearing " + spell (pulledTo) + ": " + (std::abs (cents) < 3 ? juce::String ("on pitch")
                                                                 : juce::String (std::abs (cents)) + (cents < 0 ? " cents flat" : " cents sharp"))
                         + (value ("amount") > 0.0f ? juce::String() : ", left alone");
             }
@@ -1533,6 +1533,33 @@ namespace
         }
 
     private:
+        /** A note's name as the key spells it (flats in F, B flat, E flat, A flat and D flat major and their minors,
+            sharps otherwise), with its octave as NightShift counts them (middle C is C5). */
+        juce::String spell (int note)
+        {
+            static const char* const sharps[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+            static const char* const flats[12] { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+            const int from = juce::roundToInt (value ("notes"));
+            int root = -1;
+            bool minor = false;
+
+            if (from == 0)
+            {
+                root = tune.getSongRoot();
+                minor = tune.isSongMinor();
+            }
+            else if (from == 2)
+            {
+                root = juce::roundToInt (value ("root"));
+                const int s = juce::roundToInt (value ("scale"));
+                minor = s == songkey::minor || s == songkey::harmonicMinor || s == songkey::minorPentatonic;
+            }
+
+            const int major = root < 0 ? -1 : (minor ? (root + 3) % 12 : root);      // its relative major's root
+            const bool useFlats = major == 5 || major == 10 || major == 3 || major == 8 || major == 1;
+            return juce::String ((useFlats ? flats : sharps)[((note % 12) + 12) % 12]) + juce::String (note / 12);
+        }
+
         NightTune& tune;
         ParamChoice* notes = nullptr;
         ParamMenu* key = nullptr;

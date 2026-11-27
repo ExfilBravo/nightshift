@@ -192,6 +192,7 @@ if [ "$TESTS" = "1" ]; then
 
     for suite in masteringtest startscreentest trackstest closetest pianotest arrangetest stepstest sidebartest samplestest fxtest savetest \
                  fxstoptest looptest mutetest inspectortest stockfxtest bustest mixertest metertest drumtest drumbartest \
+                 tunetest stretchtest \
                  offlinedrummertest offlinebasstest basstest offlineguitartest guitartest guitarsoundtest offlinekeystest keystest \
                  offlinesynthtest synthplayertest masterengineertest masteraitest songwritertest songtest machinetest kitimporttest \
                  synthtest novatest keyboardtest metronometest editingtest arrangeedittest automationtest automationcurvetest busautomationtest automationrecordtest miditest midiouttest midifiletest tempotest texttest namtest genretest feeltest vibetest vibepaneltest plugininstrumenttest pluginfindtest updatetest; do
