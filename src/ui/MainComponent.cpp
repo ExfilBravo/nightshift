@@ -10,6 +10,7 @@
 #include "Theme.h"
 #include "audio/Kits.h"
 #include "audio/Instruments.h"
+#include "audio/MidiFiles.h"
 
 namespace nightshift
 {
@@ -120,8 +121,9 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     automationButton.setFilled (false);
     automationButton.setFramed (true);
     automationButton.setLabel ("Automation");
-    automationButton.setTooltip ("Automation: lanes under the tracks (the master's along the bottom) where you draw how volume, "
-                                 "pan or any knob changes over the song. Right-click a fader or knob to automate it");
+    automationButton.setTooltip ("Automation: lanes under the tracks (the buses' and the master's along the bottom) where you draw how "
+                                 "volume, pan or any knob changes over the song. Right-click a fader or knob to automate it, or record "
+                                 "its moves with the record automation button beside Record");
     automationButton.onClick = [this]
     {
         song.showAutomation = ! song.showAutomation;
@@ -136,8 +138,13 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
         if (auto key = audio.automationKeyFor (p))
             showControlMenu (key->first, key->second, name);
         else
-            showToast ("A bus's controls can't be automated or linked to a MIDI knob yet: a channel's and the master's can");
+            showToast ("This control isn't on a channel, a bus or the master, so it can't be automated");
     };
+
+    // Recording automation: a knob grabbed and let go; a lane starting to be written goes on show
+    automation::touchFor = [this] (tracktion::AutomatableParameter& p, bool down, bool held) { audio.touchParameter (p, down, held); };
+    audio.onAutomationWriting = [this] (int owner, const juce::String& param) { showWrittenLane (owner, param); };
+    toolbar.onRecordAutomation = [this] { toggleAutomationRecording(); };
 
     // A MIDI keyboard plugged in while running
     audio.onMidiInputAdded = [this] (const juce::String& name)
@@ -342,6 +349,7 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     sidebar.onAddDrumKit = [this] (const juce::String& id) { openDrummer (rack.addDrumKitChannel (id)); drummerBar.focus(); };
     sidebar.onAddSynth = [this] (const juce::String& preset) { openSynth (rack.addSynthChannel (preset)); };
     sidebar.onAddPlugin = [this] (const juce::PluginDescription& d) { rack.addPluginChannel (d); showEditorTab (Panel::rack); };
+    sidebar.onAddSample = [this] (const juce::String& path) { rack.addSamplerChannel (path); showEditorTab (Panel::rack); };
     sidebar.onAddEffect = [this] (const juce::PluginDescription& d)
     {
         // On the selected channel (the master if there isn't one); the Inspector shows it
@@ -354,6 +362,7 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     rack.onOpenChannel = [this] (int id) { openChannel (id); };
     rack.onOpenDrummer = [this] (int id) { openDrummer (id); };
     rack.onScanPlugins = [this] { findNewPlugins (true); };       // "Find new instruments and effects"
+    rack.onShowAudioSettings = [this] { showAudioSettings(); };   // a synth plugged in's timing and tempo
 
     playlist.onOpenPattern = [this] (int id) { openPattern (id); };
     playlist.onOpenChannel = [this] (int id) { openChannel (id); };
@@ -633,6 +642,8 @@ MainComponent::~MainComponent()
 {
     automation::showMenu = nullptr;
     automation::showMenuFor = nullptr;
+    automation::touchFor = nullptr;
+    audio.onAutomationWriting = nullptr;
     audio.onMidiInputAdded = nullptr;
     stopTimer();
     keyboardPoll.stopTimer();
@@ -2200,10 +2211,12 @@ void MainComponent::showControlMenu (int owner, const juce::String& param, const
 
 void MainComponent::showAutomationFor (int owner, const juce::String& param)
 {
-    if (owner != 0 && song.findChannel (owner) == nullptr)
+    if (! song.canOwnAutomation (owner))
         return;
 
-    if (owner != 0)
+    const auto* bus = song.findBus (owner);
+
+    if (song.findChannel (owner) != nullptr)
         playlist.addTrackFor (owner);
 
     const auto name = audio.automationName (owner, param);
@@ -2218,8 +2231,40 @@ void MainComponent::showAutomationFor (int owner, const juce::String& param)
         resized();
     }
 
-    showToast (name + (owner == 0 ? " is along the bottom of Arrange" : " is under its track in Arrange")
+    playlist.revealLane (owner, param);
+
+    showToast ((bus != nullptr ? bus->name + ": " : juce::String()) + name
+               + (owner == 0 || bus != nullptr ? " is along the bottom of Arrange" : " is under its track in Arrange")
                + ": click its lane to add points. Song mode plays them");
+}
+
+void MainComponent::showWrittenLane (int owner, const juce::String& param)
+{
+    // A lane being written is on show as it's written: lanes shown, a channel's under a track of
+    // its own (as Automate does), a bus's or the master's scrolled into view along the bottom
+    if (song.findChannel (owner) != nullptr)
+        playlist.addTrackFor (owner);
+
+    if (! song.showAutomation)
+    {
+        song.showAutomation = true;
+        song.notify (Song::Change::automation);
+    }
+
+    playlist.revealLane (owner, param);
+}
+
+void MainComponent::toggleAutomationRecording()
+{
+    const bool on = ! audio.isAutomationRecording();
+    audio.setAutomationRecording (on);
+    toolbar.refresh();
+
+    showToast (! on ? juce::String ("Recording automation is off: moving a control changes it, and its lane plays as it is")
+             : song.mode == PlayMode::song ? juce::String ("Recording automation: play the song and move a fader, a knob or a linked MIDI knob. "
+                                                           "Its lane is written from where you grab it to where you let go")
+                                           : juce::String ("Recording automation works in Song mode: switch to Song and play, then move a fader, "
+                                                           "a knob or a linked MIDI knob to write its lane"));
 }
 
 void MainComponent::songChanged (Song::Change c)
@@ -2662,6 +2707,8 @@ juce::PopupMenu MainComponent::createRecordMenu()
                   [set, v = ! o.startOnInput] { set ([v] (auto& x) { x.startOnInput = v; }); });
     menu.addItem ("Blend: keep the notes already in the pattern", true, o.blendNotes,
                   [set, v = ! o.blendNotes] { set ([v] (auto& x) { x.blendNotes = v; }); });
+    menu.addItem ("Record automation: a control moved while the song plays", true, audio.isAutomationRecording(),
+                  [this] { toggleAutomationRecording(); });
 
     juce::PopupMenu snap;
 
@@ -2726,6 +2773,7 @@ void MainComponent::showMainMenu()
     menu.addItem ("Load the demo song", [this] { confirmDiscard ([this] { currentFile = juce::File(); song.loadDemo(); }); });
     menu.addSeparator();
     withKey ("Export WAV...", "Ctrl+R", [this] { exportAudio(); });
+    menu.addItem ("Export MIDI file...", [this] { exportMidi(); });
     menu.addSeparator();
     withKey ("Undo", "Ctrl+Z", [this] { song.undo(); });
     withKey ("Redo", "Ctrl+Y", [this] { song.redo(); });
@@ -3324,12 +3372,20 @@ void MainComponent::openProject()
 {
     confirmDiscard ([this]
     {
-        chooser = std::make_unique<juce::FileChooser> ("Open project", projectsFolder(), "*.nsproj");
+        // A project, or a MIDI file to make one of
+        chooser = std::make_unique<juce::FileChooser> ("Open project", projectsFolder(), "*.nsproj;*.mid;*.midi");
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                               [this, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
         {
-            if (fc.getResult().existsAsFile())
-                loadProjectFile (fc.getResult());
+            const auto file = fc.getResult();
+
+            if (! file.existsAsFile())
+                return;
+
+            if (file.hasFileExtension ("mid;midi"))
+                openMidiFile (file);
+            else
+                loadProjectFile (file);
         });
     });
 }
@@ -3341,7 +3397,13 @@ void MainComponent::openProjectFile (const juce::File& file)
     if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0)
         return;
 
-    confirmDiscard ([this, file] { loadProjectFile (file); });
+    confirmDiscard ([this, file]
+    {
+        if (file.hasFileExtension ("mid;midi"))
+            openMidiFile (file);
+        else
+            loadProjectFile (file);
+    });
 }
 
 void MainComponent::loadProjectFile (const juce::File& file)
@@ -3503,6 +3565,229 @@ juce::String MainComponent::describeExport (const juce::File& file, int bits, bo
     return message;
 }
 
+//==============================================================================
+namespace
+{
+    /** What came in from a MIDI file, for the toast: how many tracks, the tempo it brought or the
+        bar it went in at, and anything that had to change. */
+    juce::String describeMidiIn (const juce::File& file, const midifile::Contents& contents, int tracks, bool tookTimeline, int bar)
+    {
+        auto said = file.getFileName() + ": " + juce::String (tracks) + (tracks == 1 ? " track" : " tracks") + " in as channels";
+
+        if (tookTimeline)
+            said << ", " << juce::String (contents.bpm, std::abs (contents.bpm - std::round (contents.bpm)) < 0.005 ? 0 : 2)
+                 << " to the minute in " << contents.meterBeats << "/" << contents.meterUnit;
+        else if (bar > 0)
+            said << " from bar " << (bar + 1);
+
+        if (! contents.warnings.isEmpty())
+            said << " (" << contents.warnings.joinIntoString ("; ") << ")";
+
+        return said;
+    }
+}
+
+void MainComponent::exportMidi()
+{
+    // Which notes first (the whole song as it plays, or a pattern's), then where
+    audio.stop();
+    juce::StringArray choices;
+    std::vector<int> ids;
+
+    if (! midifile::notesAsPlayed (song, 0, true).empty())
+    {
+        choices.add ("The whole song, as Arrange plays it");
+        ids.push_back (0);
+    }
+
+    for (auto& p : song.patterns)
+        if (! p.isEmpty())
+        {
+            choices.add ("The pattern " + p.name);
+            ids.push_back (p.id);
+        }
+
+    if (ids.empty())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Nothing to export yet",
+                                                "A MIDI file holds a song's notes, and this one has none so far.");
+        return;
+    }
+
+    auto* window = new juce::AlertWindow ("Export MIDI file", "Its notes, with the tempo and time signature, for another program or a synth. "
+                                                              "What should it hold?", juce::MessageBoxIconType::NoIcon, this);
+    window->setName ("Export MIDI file");
+    window->addComboBox ("what", choices);
+
+    // The arrangement in Song mode, the pattern being edited in Pattern mode
+    int current = 0;
+
+    for (size_t i = 0; i < ids.size(); ++i)
+        if ((song.mode == PlayMode::song && ids[i] == 0) || (song.mode == PlayMode::pattern && ids[i] == song.currentPatternId))
+        {
+            current = (int) i;
+            break;
+        }
+
+    window->getComboBoxComponent ("what")->setSelectedItemIndex (current, juce::dontSendNotification);
+    window->addButton ("Choose where to save...", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([this, window, ids] (int result)
+    {
+        if (result != 1)
+            return;
+
+        const int index = juce::jlimit (0, (int) ids.size() - 1, window->getComboBoxComponent ("what")->getSelectedItemIndex());
+        const int patternId = ids[(size_t) index];
+        const auto* pattern = song.findPattern (patternId);
+        const auto base = currentFile.existsAsFile() ? currentFile.getFileNameWithoutExtension() : juce::String ("NightShift export");
+        const auto name = juce::File::createLegalFileName (pattern != nullptr ? base + " - " + pattern->name : base);
+
+        chooser = std::make_unique<juce::FileChooser> ("Export MIDI file", projectsFolder().getChildFile (name + ".mid"), "*.mid");
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this, patternId, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
+        {
+            if (auto file = fc.getResult(); file != juce::File())
+            {
+                const auto [ok, said] = saveMidiFile (file.withFileExtension ("mid"), patternId);
+                juce::AlertWindow::showMessageBoxAsync (ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                                                        ok ? "Export finished" : "Export failed", said);
+            }
+        });
+    }), true);
+}
+
+std::pair<bool, juce::String> MainComponent::saveMidiFile (const juce::File& file, int patternId)
+{
+    const auto notes = midifile::notesAsPlayed (song, patternId, true);
+    std::set<int> channels;
+
+    for (auto& n : notes)
+        channels.insert (n.channelId);
+
+    const auto* pattern = song.findPattern (patternId);
+
+    if (midifile::save (song, file, patternId))
+        return { true, "Saved " + file.getFullPathName() + "\n" + juce::String ((int) notes.size())
+                         + (notes.size() == 1 ? " note on " : " notes on ") + juce::String ((int) channels.size())
+                         + (channels.size() == 1 ? " track" : " tracks")
+                         + (pattern != nullptr ? ", the pattern " + pattern->name : juce::String (", the whole song"))
+                         + ", with its tempo and time signature." };
+
+    return { false, "NightShift couldn't write " + file.getFullPathName()
+                   #if JUCE_MAC
+                    + "\n\nIf macOS refused NightShift access to that folder, allow it in "
+                      "System Settings > Privacy & Security > Files and Folders, or save somewhere else." };
+                   #else
+                    + "\n\nIf Windows Security's Controlled folder access is on, it blocks apps it doesn't "
+                      "know from Documents and the Desktop. Allow NightShift there, or save somewhere else." };
+                   #endif
+}
+
+void MainComponent::openMidiFile (const juce::File& file)
+{
+    juce::String error;
+    const auto contents = midifile::read (file, error);
+
+    if (! contents.has_value())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't open " + file.getFileName(), error);
+        return;
+    }
+
+    // A new project of it, not yet saved
+    audio.stop();
+    currentFile = juce::File();
+    song.loadBlank();
+    const auto added = midifile::addToSong (song, *contents, true);
+    song.notify (Song::Change::everything);
+    showToast (describeMidiIn (file, *contents, (int) added.size(), true, 0));
+}
+
+void MainComponent::addMidiFile (const juce::File& file, int atTick)
+{
+    juce::String error;
+    const auto contents = midifile::read (file, error);
+
+    if (! contents.has_value())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't bring in " + file.getFileName(), error);
+        return;
+    }
+
+    // A song with no notes yet takes the file's tempo and time signature too
+    const bool empty = song.playlist.empty() && song.audioClips.empty()
+                    && std::all_of (song.patterns.begin(), song.patterns.end(), [] (const Pattern& p) { return p.isEmpty(); });
+
+    audio.stop();
+    song.checkpoint();
+    const int at = empty ? 0 : std::max (0, atTick);
+    const auto added = midifile::addToSong (song, *contents, empty, at);
+    song.notify (Song::Change::everything);
+    showToast (describeMidiIn (file, *contents, (int) added.size(), empty, song.barAt (at)));
+}
+
+bool MainComponent::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    for (auto& f : files)
+        if (juce::File (f).hasFileExtension ("mid;midi"))
+            return true;
+
+    return false;
+}
+
+void MainComponent::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    // On Arrange: from the bar it's dropped on; anywhere else, from the top
+    int atTick = 0;
+
+    if (playlist.isShowing())
+        atTick = std::max (0, playlist.barStartAt (playlist.getLocalPoint (this, juce::Point<int> (x, y))));
+
+    for (auto& f : files)
+        if (juce::File (f).hasFileExtension ("mid;midi"))
+            addMidiFile (juce::File (f), atTick);
+}
+
+namespace
+{
+    /** A window's content that can be taller than the screen (Audio settings, with many MIDI
+        devices): no taller than the screen lets it be, scrolling, following the content's size. */
+    struct FitOnScreen : public juce::Component,
+                         private juce::ComponentListener
+    {
+        FitOnScreen (juce::Component* c, int maxHeight) : content (c), limit (maxHeight)
+        {
+            viewport.setViewedComponent (content.get(), false);
+            viewport.setScrollBarsShown (true, false);
+            addAndMakeVisible (viewport);
+            content->addComponentListener (this);
+            fit();
+        }
+
+        ~FitOnScreen() override         { content->removeComponentListener (this); }
+        void resized() override         { viewport.setBounds (getLocalBounds()); }
+
+        void componentMovedOrResized (juce::Component&, bool, bool wasResized) override
+        {
+            if (wasResized)
+                fit();
+        }
+
+        void fit()
+        {
+            const bool scrolls = content->getHeight() > limit;
+            setSize (content->getWidth() + (scrolls ? viewport.getScrollBarThickness() : 0), std::min (content->getHeight(), limit));
+        }
+
+        std::unique_ptr<juce::Component> content;
+        juce::Viewport viewport;
+        const int limit;
+    };
+}
+
 void MainComponent::showAudioSettings()
 {
     // One at a time: F10 again brings the open one forward
@@ -3512,12 +3797,18 @@ void MainComponent::showAudioSettings()
         return;
     }
 
+    // As tall as the screen allows (its title bar and the taskbar besides), scrolling beyond
+    int maxHeight = 900;
+
+    if (auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds()))
+        maxHeight = display->userArea.getHeight() - 60;
+
     juce::DialogWindow::LaunchOptions options;
     options.dialogTitle = "Audio settings";
     options.dialogBackgroundColour = panel;
     options.useNativeTitleBar = true;
     options.resizable = false;
-    options.content.setOwned (new AudioSettings (audio));
+    options.content.setOwned (new FitOnScreen (new AudioSettings (audio), std::max (400, maxHeight)));
     audioSettingsWindow = options.launchAsync();
 }
 

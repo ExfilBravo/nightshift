@@ -94,6 +94,23 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   Click a folder's arrow (or double-click it) to show a lane per take; drag across a lane to use that part
   of the take (Quick Swipe Comping), click a lane to use all of it, right-click a lane to delete it or keep
   only the comp. Joins get a 10 ms equal-power crossfade. Click the loop strip to switch the loop off.
+- **Time-stretching** (as in Logic and FL) – an audio clip can play faster or slower without its pitch changing, or
+  higher or lower without its length changing. The button on its title strip (a metronome, or what's set: *In time*,
+  *80%*, *Up 3*) opens **Speed and pitch**: **Keep it in time with the song's tempo** (its beats stay on the song's
+  beats whatever the tempo does, through tempo changes and glides too), **Its own tempo...** (the tempo it was played
+  at), **Play it at its own speed**, and **Pitch** (up or down by semitones, an octave either way). **Ctrl+drag**
+  either end of an audio clip to stretch it to fit: its audio plays faster or slower to fill it (from a quarter of its
+  speed to four times); plain dragging still trims. A recording remembers the tempo it was played at and plays as
+  recorded until it's kept in time. A loop dropped into the song, from the computer's files onto Arrange (on an audio
+  track, or anywhere else for an audio track of its own) or from the sidebar's Samples, is kept in time when its
+  tempo is known: its file says (a WAV's acid chunk, an AIFF's Apple Loops beats), its name does ("Drums 120bpm",
+  "loop_95_Am"), or it's whole bars of 4/4 at a whole-number tempo between 70 and 180. A stretched clip's takes are
+  rendered by Signalsmith Stretch (`src/audio/Stretcher`) the moment it changes, lined up to the sample with the beats
+  they belong on, and then play as they are, costing nothing while they play (pitched, they're stretched and then read
+  back faster or slower, so the pitch is exact); a render longer than 30 s is made in the background and the clip is
+  silent until it's done (an export waits for it). Renders are kept in the system's temporary folder ("NightShift
+  stretched audio"), so going back to a tempo finds them, and ones unplayed for two weeks are let go. A clip at its own
+  speed, pitch and tempo isn't touched at all.
 - **Low latency** – built around the Arturia MiniFuse 2 on its ASIO driver (MiniFuse Control Center), opened at
   32 samples: 2.2 ms in + 3.5 ms out = 5.7 ms round trip, measured. While an armed track monitors, plugins that
   look ahead (the master limiter) leave the graph so they add nothing. Takes are placed using the driver's
@@ -120,7 +137,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   passes on the keys the plugin doesn't use; clicking anywhere outside a text field gives the keys back to
   the studio. The keyboard button lights up while notes are held.
 - **Sounds** – in groups (Drum kits, Instruments, NightShift kit, Synth presets, Plugin instruments,
-  Effects, Plugin effects), all shut when NightShift opens; click a group's name to open it. Plugin
+  Effects, Plugin effects, Samples), all shut when NightShift opens; click a group's name to open it. Plugin
   instruments and Plugin effects are by developer (A to Z, one that doesn't say last; "Valhalla DSP, LLC" is
   Valhalla DSP, and a developer's tooltip gives its whole name), every developer shut too until clicked (one
   that makes both opens in each group apart); Add channel's and Add track's Plugin instrument, and + Add
@@ -129,6 +146,20 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   double-click a sound, or drag it into Steps (the editor switches to Steps when a drag starts) or onto
   Arrange. **Patterns** above them: click one to edit it, drag it onto a track in Arrange to put it in the
   song there, double-click to rename, right-click for Clone and Delete.
+- **Samples** (the sample browser, last of the sounds) – the audio files on this computer (WAV, AIFF, FLAC, Ogg,
+  MP3): your **Downloads** and **Music** (where Windows has them, or a Mac's ~/Downloads and ~/Music), then folders
+  you add (**Add a folder...**, kept with NightShift as nsSampleFolders; right-click one for **Remove from Samples**,
+  the folder staying where it is). Each opens in place, folders in folders, all shut at first, folders first, then
+  their sounds, A to Z (2 before 10), each with how many sounds it holds; only folders with sounds in them show, and
+  a Mac's "._" leftovers, hidden folders, apps and plugins are left out. The folders are looked through on a thread of
+  their own, and only once Samples is opened or searched (a folder opened again after a few seconds is looked through
+  again, for a download since). The sound search finds samples by name in every folder (60 at most under each, with
+  how many more), each saying the folder it's in. **Click a sample to hear it** through the studio's output, after the
+  master as the metronome is (whether or not the song plays; the master's meter and exports never hear it); click it
+  again to stop, or another to hear that one. **Drag it onto Arrange** for an audio clip of it where you let go
+  (snapped): on the audio track under it, on an empty track, or on a new audio track named after it (under the last
+  track, or under any other), its length shown before you let go; **drag it into Steps** (or double-click it) for a
+  sampler channel playing it. Right-click a sample for Play, Add to Steps and Show in Explorer (Finder on a Mac).
 - **Inspector** (as in Logic) – down the right: the selected channel's strip beside the master's. A channel
   strip shows its name and type, its instrument (click: a plugin's window, or the sample / preset menu) or an
   audio track's input, arm and MON, every effect in its chain, its sends and output, pan, a fader with its
@@ -167,6 +198,26 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   resamplers (and tells the engine their delay); a standard WaveNet takes about a tenth of a core. Its panel says which
   amp it is (name, gear, kind of tone, who captured it); the files' paths are kept in the song, and a missing one is
   named. Put it on an audio track with a guitar or bass plugged in (monitoring on) to play through it.
+  **Match input level** (input calibration, as NAM's plugin has it; on for a new amp): a model that says how loud its
+  amp was played when it was captured (its input level, in dBu) is played as loud from your audio interface, the input
+  gaining the interface's level less the model's (from an interface at 12 dBu, a model captured at 18.3 goes in 6.3 dB
+  softer); the panel says how much. **Your interface**, beside it, is that level (the interface manual's maximum input
+  level; 12 if you don't know it), one setting for every amp, kept with NightShift (nsInterfaceInputDbu). An amp in a
+  song saved before keeps the sound it had (matching off). A model that comes in sizes (NAM's "slimmable" models, as
+  its A2) shows **Size**: a smaller one takes less of the computer (A2's small size runs about 3 times faster than its
+  whole one) and sounds a little less like the amp; a new model starts whole, and the size is kept with the song.
+- **Pitch Correction** (a stock effect) – for singing or a guitar: it hears the note being played (the YIN method, from
+  60 Hz to 1.4 kHz, every 2.5 ms) and pulls it to the nearest note of the key: **The song's key** (heard from the song's
+  own notes with Krumhansl and Kessler's key profiles; every note until it has some), **Every note**, or **A key of its
+  own** (a key and a scale: major, minor, harmonic minor, major or minor pentatonic). **Speed** is how fast it gets
+  there, from natural (400 ms: a singer's slides and vibrato stay) to **Robotic** at the top (at once: the hard tuned
+  sound); **Amount** is how far (at 0 the sound comes out exactly as it went in). It moves the pitch without changing
+  the length by reading the sound back a little faster or slower and stepping back or on by a whole period at a time,
+  across a crossfade, so it runs a fixed 9.4 ms behind (at 48 kHz), which it tells the engine: the track is lined up
+  with the rest. On an armed audio track you're monitoring it stays in, so you sing or play through it live (its 9.4 ms
+  with it), while other plugins that would delay what you hear step aside as before. Its panel draws the last few
+  seconds, what it heard (faint) and what comes out (in its colour) over the key's notes, the note it hears now and how
+  far off it was.
 - **Effects** – stock or any VST3 (the Nightshift Lofi four included) goes in a channel's chain, after its
   instrument (or straight off an audio track's input), a bus's, or the master's before the limiter.
   Double-click one in the sidebar's Effects or Plugin effects to put it on the selected channel, drag it onto
@@ -198,15 +249,29 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   clip plays the notes that start in its part, as in FL. A recording's two dots on its top corners drag out its
   **fades** in and out. The **Edit** buttons in both headers list all of it with the keys; everything undoes.
 - **Automation** (as in Logic; Song mode plays it) – the **Automation** button in Arrange's header shows a lane
-  under each channel's track (its volume to start with) and the master's along the bottom. Click a lane to add a
-  point, drag points to move them (on the snap; Alt finer), right-click one (or click it and press Delete) to
-  delete it; the line runs straight from point to point, level before the first and after the last. A lane's
-  name opens its menu: **Add a lane for** any of the channel's controls (pan, its sends, the instrument's and
-  every effect's knobs, a plugin's parameters too), clear its points, or remove it. Right-click a fader, the pan
-  bar, or a knob on NightShift's own effects or Nova and choose **Automate** to open its lane. A lane with no
-  points leaves its control alone, and Pattern mode leaves every control where it is. A track playing several
-  channels' patterns (a drum pattern of many sounds) has no lanes of its own: automate one of its sounds from its
-  fader or a knob and it gets a track of its own. Buses can't be automated yet.
+  under each channel's track (its volume to start with), and the buses' and the master's along the bottom. Click a
+  lane to add a point, drag points to move them (on the snap; Alt finer), right-click one (or click it and press
+  Delete) to delete it; level before the first point and after the last. **Curves** (FL's): each line between two
+  points has a dot in its middle; drag it down or up to bend the line, easing in (starting slowly, getting there
+  quickly) or out, almost to a corner; double-click or right-click the dot to straighten it. The lane draws each line
+  as it plays (a frequency knob's straight line in Hz curves up the lane as the knob would turn). A lane's name opens
+  its menu: **Add a lane for** any of the channel's controls (pan, its sends, the instrument's and every effect's
+  knobs, a plugin's parameters too), clear its points, or remove it. Right-click a fader, the pan bar, or a knob on
+  NightShift's own effects or Nova and choose **Automate** to open its lane. A lane with no points leaves its
+  control alone, and Pattern mode leaves every control where it is. A track playing several channels' patterns (a
+  drum pattern of many sounds) has no lanes of its own: automate one of its sounds from its fader or a knob and it
+  gets a track of its own. **Buses** have lanes too, for their volume, pan and every effect's knobs: right-click a
+  bus's fader or pan bar (or a knob on one of its effects) and choose Automate, or use the master lane's menu, *Add a
+  lane for a bus*. Their lanes sit along the bottom above the master's; when there are more than fit, the wheel goes
+  through them. **Recording automation**: switch on the record automation button beside Record (or in Record's
+  right-click menu), play the song in Song mode and move a control: a fader, a pan bar or a send in the Mixer or the
+  Inspector, the master volume, a knob on NightShift's effects or Nova, a control in a plugin's own window, or a
+  MIDI controller's knob linked by MIDI learn. Its lane is written from where you grab it to where you let go,
+  showing as it's written (its name in red): what the lane had in between is replaced, the moves become a few points
+  of smooth line, and a sixteenth after you let go it goes back to what the lane had (a lane that had nothing stays
+  where you left it). A MIDI knob counts as let go once it's left alone for a moment. Round the loop, it writes on
+  from the loop's start. While the song plays, faders, pan bars and sends follow their lanes, so grabbing one
+  carries on from where the lane has it. Each grab is one undo.
 - **MIDI keyboards and controllers** – plug a USB MIDI keyboard in (or one on an audio interface's MIDI in) and it
   plays the selected channel straight away, through its instrument and effects: velocity, the sustain pedal, and
   pitch bend and the mod wheel on Nova and plugin instruments. With an audio track selected it keeps playing the
@@ -214,10 +279,39 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   plugged in while NightShift runs says so ("MIDI keyboard ready"). With Record armed, Play records what you play
   into the pattern as the computer keyboard does, each note where you played it (allowing for the moment notes take to
   arrive); a note held by the pedal is written as long as it sounded. **Audio settings** (F10) lists each MIDI
-  input with a switch to turn it off. **MIDI learn**: right-click a fader or a pan bar (Mixer or Inspector) or a
-  knob on NightShift's effects or Nova, choose *Link to a knob on your MIDI controller...*, and move the knob: it
+  input with a switch to turn it off. **MIDI learn**: right-click a fader or a pan bar (Mixer or Inspector; a
+  channel's, a bus's or the master's) or a knob on NightShift's effects or Nova, choose *Link to a knob on your MIDI
+  controller...*, and move the knob: it
   drives that control from then on (one knob per control, one control per knob; Escape stops waiting). Links are
   saved with the song, and the same menu forgets one.
+- **Synths plugged in (MIDI out)** – a channel can play a synth, drum machine or sound module plugged in over MIDI
+  instead of one of NightShift's sounds: **Add channel** (or Arrange's **Add track**) > *Synth plugged in (MIDI
+  out)* > the output, or right-click any instrument's channel > *Play it on a synth plugged in*. Its patterns and
+  clips, the piano roll's notes, the AI players' parts and whatever you play on a keyboard (one plugged in, or the
+  computer's) go out of that output on its MIDI channel, in time with the song: each note leaves as its moment is
+  heard, after the interface's and the mix's own delays. A new one takes the first MIDI channel no other channel
+  uses on that output; a drum kit switched over goes on 10, General MIDI's drums, and the AI drummer writes General
+  MIDI's keys for it. The channel's menu (its name in Steps, or its instrument in the Inspector) picks the output,
+  the MIDI channel and the sound to ask the synth for (General MIDI's 128, sent when chosen and as playing
+  starts), plays a test note, or goes back to a NightShift sound. **Audio settings** (F10) lists every MIDI output
+  under *MIDI out: synths plugged in*, each with its **timing** (up to 100 ms early, for a synth that's slow to
+  sound or one you hear back through NightShift: NightShift looks that far ahead, round the loop too; or up to
+  50 ms late) and **Send tempo**: MIDI clock with start, continue, stop and the song position, so an arpeggiator
+  or a drum machine plays in time, through tempo changes, starting again each time the loop comes round. A muted
+  channel sends nothing, and stopping lets go of every note it was playing. A synth plugged in isn't in an export
+  (record it on an audio track to keep its sound).
+- **MIDI files** – **Open** (Ctrl+O) takes a `.mid` as well as a project, and so does NightShift opened with one: a
+  new project of its tracks, each a channel on a sound that suits its General MIDI program (a piano on the grand
+  piano when it's here, a bass on a bass, a guitar on Nightshift Guitar, drums on a drum kit, General MIDI's drums
+  on the kit's own keys), named after its track (or its program), its notes in a pattern placed in Arrange from the
+  bar it starts, with the file's tempo and time signature and their changes (one NightShift hasn't plays as the
+  nearest that keeps the beat, 3/8 as 6/8, and it says so). Drop a `.mid` on the window and its tracks come into the
+  song the same way, from the bar it lands on in Arrange (a song with no notes yet takes its tempo too); Ctrl+Z takes
+  them out. A track of several channels comes in as a channel each (a type 0 file is all in one track). **Export
+  MIDI file...** in the ⋯ menu writes the whole song's notes as Arrange plays them (split clips and swing as they
+  sound; muted channels and tracks left out, as an export of the sound leaves them out) or one pattern's, with the
+  tempo (a glide a 16th at a time) and time signatures: a track per channel, named after it, on a MIDI channel of
+  its own (drums on 10, a synth plugged in on its own), its program first when it has one.
 - **Tempo and time signature changes** (Logic's tempo and signature tracks; Song mode plays them) – right-click
   Arrange's ruler: *Change the tempo here...* (jumping to it there, or gliding to it from the tempo before) or
   *Change the time signature from bar N* (from that bar's start; the bar before ends there, short if it has to). The
@@ -836,16 +930,26 @@ Nightshift.exe --pianotest
 Nightshift.exe --arrangetest
 Nightshift.exe --editingtest
 Nightshift.exe --arrangeedittest
+Nightshift.exe --stretchtest
+Nightshift.exe --tunetest
 Nightshift.exe --automationtest
+Nightshift.exe --automationcurvetest
+Nightshift.exe --busautomationtest
+Nightshift.exe --automationrecordtest
+Nightshift.exe --snapshot ui.png --automationdemo [--buses --busautomation] [--recordautomation]
 Nightshift.exe --miditest
+Nightshift.exe --midiouttest
+Nightshift.exe --midifiletest
 Nightshift.exe --mididevices
 Nightshift.exe --tempotest
 Nightshift.exe --tempocurvetest
 Nightshift.exe --bandmetertest
 Nightshift.exe --texttest
 Nightshift.exe --namtest
-Nightshift.exe --snapshot ui.png --effectpanel nightshiftAmp [--nammodel example|<file.nam>] [--namcabinet <file.wav>]
+Nightshift.exe --snapshot ui.png --effectpanel nightshiftAmp [--nammodel example|a2|<file.nam>] [--namsize <0 for the smallest>] [--namcabinet <file.wav>]
 Nightshift.exe --snapshot ui.png [--about [screen height]] [--settings] [--midilight <keyboard>] [--tempodemo [--curved] [--tempodialog]] [--textaudit [--alltext]]
+Nightshift.exe --snapshot ui.png [--songwords "a rock song with verses in 4/4 and a bridge in 7/8"] [--arrangeat <bar>]
+Nightshift.exe --snapshot ui.png [--midiouts "Synth module,Drum machine" [--midioutchannel]] [--settings] [--exportmidi]
 Nightshift.exe --trackstest
 Nightshift.exe --closetest
 Nightshift.exe --startscreentest
@@ -857,6 +961,8 @@ Nightshift.exe --menupreview menu.png
 Nightshift.exe --snapshot ui.png [--emptysong] [--moretracks] [--dragover x,y [--dragsound nightshift-sound:... | "pattern:Beat 2"]]
 Nightshift.exe --stepstest
 Nightshift.exe --sidebartest
+Nightshift.exe --samplestest
+Nightshift.exe --snapshot ui.png --sampledemo [--opensounds "Samples;Downloads;Drum Pack;Kicks;Kick 10"] [--search tone] [--dragover x,y --dragsound "sample:Loop 120 bpm"]
 Nightshift.exe --fxtest
 Nightshift.exe --savetest
 Nightshift.exe --fxstoptest
@@ -908,19 +1014,72 @@ which the moved second half plays only its own kick, box selection and moving tw
 copy and paste keeping a clip's part of its pattern, Ctrl+B, Ctrl+T at the song position, trimming both ends,
 saving split clips, Delete; a take folder split, trimmed and grown back, its fade dots, and a render that fades
 in and out. `--snapshot ... --editdemo` shows a split clip, faded recordings and everything selected.
+`--stretchtest` checks time-stretching: a loop's tempo from a WAV's acid chunk, a name and a length (and numbers in
+names that aren't tempos); renders where a 120 BPM loop in a 90 BPM song lasts 4/3 as long (5.333 s) at the same pitch
+(its A within 3 cents) with its clicks on the song's beats, through a jump to 135 BPM at its second bar, in 6/8, and at
+its own tempo exactly the file; switched off at its own speed, pitched up three semitones at its length, stretched to
+fit 8 s at its pitch; Signalsmith Stretch and SoundTouch on a held chord (how much of what comes out is the chord's
+own notes); then in Arrange with real mouse events, Ctrl+dragging a clip's end to stretch it and plain dragging to trim,
+its button's words and its menu's items (each one undo), audio files dropped from the computer (a new audio track, or
+the track under them, one after another), a recording knowing its tempo, and saving. `--snapshot ... --stretchdemo`
+shows loops in time with the song, one pitched, a recording as played and a riff stretched to fit.
+`--tunetest` measures pitch correction: its latency reported (under 15 ms), and at Amount 0 the sound exactly as it
+went in that much later; a sine 30 cents flat (and one 40 sharp) coming out within 2 cents of A, half way at 50%, to A
+flat in A flat major, to F sharp from an F in a song whose notes are in E minor (and the key following when they're
+rewritten in C major); Speed robotic on pitch 80 ms into a note where natural is still on its way, natural keeping a
+singer's vibrato and robotic ironing it flat; a low sawtooth at 110 Hz; silence and noise left alone; an armed vocal
+being monitored keeping its pitch correction in while another track's steps aside; and a render where a click through
+it lands with one on a track without it. `--snapshot ... --effectpanel nightshiftTune --tunedemo`
+shows its panel after a sung phrase.
 `--automationtest` renders a steady tone while a channel's volume lane fades it out, its pan lane sweeps it left
 to right, a filter's cutoff lane closes on it and the master's volume lane fades the mix; checks Pattern mode
 takes every curve off (and the fader's value back), that an emptied lane gives the fader back, which lane a knob's
 parameter is, then adds, drags and deletes points in Arrange with real mouse events and the Delete key, undoes,
-saves, and removes a channel with its lanes. `--snapshot ... --automationdemo` shows lanes with points and a master
-fade. `--miditest` checks MIDI keyboards without one plugged in: the channel they play (the selected one, the last
+saves, and removes a channel with its lanes. `--snapshot ... --automationdemo` shows lanes with points, bent lines and
+a master fade; with `--buses --busautomation`, a bus's lanes along the bottom; with `--recordautomation`, a fader's
+lane being recorded as the song plays. `--automationcurvetest` checks bent lines: their shape eased in and out (the
+middle where the bend says, the ends staying put, never turning back), a bent lane's values, saving (a bend as a third
+number, an older song's points straight), the volume's curve as Song mode plays it (short straight lines within 0.0002
+of the lane), renders of a fade straight and bent each way within 1 dB of the lane, then Arrange with real mouse
+events: a line's middle dot dragged down 4 px eases it in with its middle where it was let go, up eases it out, undo,
+a moved point keeping its bend, double-click and right-click straightening it, and no dot on a line too short.
+`--busautomationtest` checks buses' automation: a bus's volume, pan and effects offered and found by their lanes,
+renders of a tone through a bus faded by its volume lane, swept by its pan lane and closed on by its filter's cutoff
+lane, Pattern mode and an emptied lane giving its fader back, a MIDI knob linked and learned for it, saving, its lanes
+along the bottom above the master's (clicked into, scrolled through with the wheel, scrolled to when opened),
+Automate on a bus strip's fader, and a bus taken away with its lanes, links and the channels' send lanes to it.
+`--automationrecordtest` records automation with the song played block by block in real time: nothing while stopped,
+a fader grabbed and moved down along a straight line in twenty steps, held and let go (written as it goes, four
+points in the end, what was between replaced, the rest kept and gone back to a sixteenth later, one undo, a render
+within 1 dB of it), a MIDI knob turned through 64 steps (one smooth line, let go once left alone), a knob on
+NightShift's filter, a control moved in a plugin's own window (Tracktion's gestures), a hold round the loop (written
+to its end and again from its start), nothing in Pattern mode, the Inspector's fader following its lane while the
+song plays, and the top bar's switch. `--miditest` checks MIDI keyboards without one plugged in: the channel they play (the selected one, the last
 instrument while an audio track is selected), recording into the pattern (a note on beat 2 for an eighth at velocity
 100, one that took a quarter of a second to arrive written half a beat earlier, a note the sustain pedal holds on),
 MIDI learn (knobs on a volume, a pan, the master and a filter's cutoff on MIDI channel 2; saved with the song; gone
 with their channel), then MIDI into the engine's own input routed as a keyboard's is: Lead's synth sounds and dies
 away, and the routing follows a new selection. Where the system has a loopback JUCE can see, or can make a virtual
 port (a Mac), it sends real MIDI through that and records from it too; otherwise it says it skipped that part.
-`--mididevices` lists the MIDI inputs and outputs JUCE and the engine see. `--snapshot ... --midilight <name>` shows
+`--midiouttest` checks synths plugged in with two made-up outputs whose messages are caught with their times: a
+channel's one-bar pattern out on MIDI channel 2 (C, E and G at their velocities), each note heard where the song has it
+to the microsecond (beat 2 at +500 ms, round the loop at +2000) and sent the moment it's heard, the graph's latency
+after its block; 30 ms earlier (the next pass's downbeat sent before the loop comes round) and 20 ms later; the drum
+machine's clock (a song position and start, a clock every 20.833 ms at 120, a start again as the loop comes round, stop);
+a key from a keyboard plugged in (the engine's input) and the computer's straight out, a test note, a program first as
+playing starts, a muted channel silent, a held note let go when its pattern changes under it and when it's stopped;
+Song mode through a tempo halving (the clock's beat twice as long) and played from bar 2 (song position 16 and
+continue); saving; a channel made a NightShift synth again playing its own clips; the AI drummer's General MIDI keys;
+and in the studio Add channel's synth plugged in (channels 1 and 2 on one output, a kit switched over going on 10,
+undone). `--midifiletest` writes a song to a .mid and reads it back note for note (tempo jumps and a glide, in time to
+0.003 ms over ten bars; 7/8 and back; a split clip's second half; programs and names; a synth plugged in on its own
+channel), brings it back in as channels playing the same notes, exports one pattern, reads another program's file (480
+to the beat, every channel in one track, 3/8 as 6/8, a release by a silent note-on, a note never let go) onto Finger
+Bass and a drum kit's own keys, turns down a file that isn't one, then in the studio opens a .mid as a new project, drops
+one on bar 5 (and undoes it) and exports through Export MIDI file. `--snapshot ... --settings --midiouts "Synth,Drum
+machine"` shows Audio settings with made-up outputs (the first 12 ms early, the second sent the tempo), `--midioutchannel`
+adds a channel playing the first, and `--exportmidi` shows Export MIDI file's question.
+`--mididevices` lists the MIDI inputs and outputs JUCE and the engine see, and opens each output through NightShift's own sender (as the studio does) to send it "all notes off" on channel 16, which nothing hears. `--snapshot ... --midilight <name>` shows
 the top bar's MIDI light lit for a keyboard of that name; `--about 800` shows About as a screen 800 high fits it
 (scrolling). `--tempotest` checks tempo and time signature changes: the song's timing through a jump and a glide
 against Tracktion's (to a microsecond), bars across 7/8 and 3/4 changes and one cut short, snapping, saving, a
@@ -932,7 +1091,8 @@ easing in and out halfway along (60 to 120: about 76 and 104 bpm) both ways, how
 through its middle, saving (a straight glide saved as before, an older project's straight), undo, Tracktion's times
 the song's to a microsecond through curves and through a straight glide whose changes aren't on a beat (Tracktion's own
 straight line there is 10 to 20 bpm out; a hair's bend keeps it right), the tempo Tracktion plays halfway, 12 rendered
-kicks where the curve puts them, the metronome's clicks along it, the lane's curve handle dragged up and down with real
+kicks where the curve puts them, the metronome's clicks along it, a 120 BPM loop following the tempo through an eased-in
+glide with its clicks on the song's beats, the lane's curve handle dragged up and down with real
 mouse events, double-clicked straight, its menu, the dialog's four ways, and the top bar's tempo along a curve.
 `--bandmetertest` checks the AI band across time signature changes: the words ("verses in 4/4 and a bridge in 7/8", "a
 7/8 breakdown", "in 7/8 with a chorus in 4/4", "soft verses in 6/8"), kept with a follow-up; the song agent's words for
@@ -949,8 +1109,8 @@ the text check, which reads back every piece of text as it's drawn and lists any
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
 behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by
 something at least half opaque (the studio dimmed behind the start screen, a row label under an automation lane) isn't
-there to be read, so it isn't checked. `--texttest` runs it over 51 views (every tab, AI agent, Nova page, effect
-window and dialog, the start screen the first time and after it, a laptop's 1366 x 768) and fails on any
+there to be read, so it isn't checked. `--texttest` runs it over 68 views (every tab, AI agent, Nova page, effect
+window and dialog, the start screen the first time and after it, a laptop's 1366 x 768, Samples, stretched clips) and fails on any
 of those; the user's own words (a channel's name, a sound's, a project's folder) may be cut short to fit, ours never.
 Sizes are Segoe UI's (a stand-in font's are measured by its letters). Where Segoe UI is installed, texttest also checks
 Selawik (the Mac's font) takes the same room; run it with `NIGHTSHIFT_FONT=selawik` set and every view is drawn and
@@ -961,6 +1121,13 @@ writes whose sound is known exactly (half the level, to 1e-5), what a model's fi
 output gain, evening out loudness, a 44.1 kHz song with a 48 kHz model (between the resamplers, the same level), the
 gate, a cabinet impulse response it writes (two taps, 100 samples apart), its state opened again, a missing model and
 a file that isn't one, its panel's words, and that NAM's standard WaveNet runs at least 4 times faster than real time.
+Input calibration is measured on a model it writes that says it was captured at 18 dBu (6.00 dB softer from an
+interface at 12, 6.00 louder at 24, as it comes with matching off) and on NAM's A2 (the same as Input at -2.76 dB, to
+the sample); the interface's level comes from the studio's option, an amp saved before calibration keeps its sound and
+a new one starts matched. A slimmable model plays at each size: a container it writes of a quarter, half and the whole
+level (each heard exactly), NAM's container, its slimmable WaveNet (each size its own sound, the whole one as it
+loads) and A2 (its small size faster than its whole); the size is kept in the song, a new model starts whole, and the
+panel shows the size control only for a model in sizes (clicked smaller and back).
 `--genretest` checks what the band knows of genres and artists: every genre and artist played as a style it has,
 each of their names finding them (and "about death", "more ride", "ghost notes" naming nobody), an accent typed or
 not; "make a sleep token style song" read (alternative metal, quiet verses, heavy half-time choruses, drop C, piano,
@@ -1048,6 +1215,18 @@ then clicks and right-clicks Find new instruments (not while it's looking; its l
 "VST") and checks what it says afterwards.
 It leaves out fetched sampled instruments, so the orchestra's Harp can't come before Hat.
 `--snapshot ... --search <text>` shows the sidebar mid-search.
+`--samplestest` checks the sample browser on sounds it writes (a Downloads with a drum pack, tones at 48 and 44.1
+kHz, a FLAC in Music, a WAV and an AIFF in a folder to add, and a text file, a Mac's "._" leftover, an empty and a
+hidden folder that aren't sounds): Samples last and shut, nothing read until it's opened; what it lists (folders first,
+A to Z, 2 before 10; none of the non-sounds), folders opening and shutting in place; a folder added (after Music, kept
+in the options, there when NightShift opens again) and taken away; the search (any case, under the folder they're in,
+Enter adding the first); a click playing a sample through the studio's output, measured (-9.03 dB as made, 440 Hz,
+both sides; a 44.1 kHz file at its own pitch), the next click stopping it, another taking over, the end stopping it;
+dropped on Steps, a sampler channel (double-clicked too); dropped on Arrange, a new audio track at bar 3, a clip on the
+audio track it's dropped on, an empty track taking it, one undo, a missing file refused, and the song rendered with the
+tone from bar 3, a FLAC and an Ogg dropped too and heard (`--samplestest --mp3 <file>` drops an MP3 as well).
+Command-line runs never read the real Downloads and Music: Samples lists two empty folders in their place. `--snapshot ... --sampledemo` shows Samples with the suite's sounds in it (and a folder added); a sample named in
+`--opensounds` is clicked, so it shows playing.
 `--fxtest` loads the Nightshift Lofi VST3s from where they're installed and checks where effects sit in each
 chain, that Crush changes a kick, bypass, order, removal, and that a setting survives saving and reloading.
 `--snapshot ... --lofi` shows them in the sidebar, with two on Kick and Vinyl on the master.
@@ -1177,15 +1356,23 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
 
 ## Layout
 
-- `src/model` – the song: channels, patterns, notes, playlist; JSON save/load; snapshot undo.
+- `src/model` – the song: channels, patterns, notes, playlist; JSON save/load; snapshot undo; the song's key heard
+  from its notes (`SongKey`).
 - `src/app` – Check for updates (`Updates`: GitHub's latest release, the installer's download, checked and started).
 - `src/audio` – `AudioEngine` mirrors the song into a Tracktion Edit (one track per channel, MIDI clips per
   pattern placement, a track per bus); the drum kit synthesiser, Nova (`Nova`: its parameters, DSP and
   patches; `NovaPresets`: the factory sounds), Nightshift Guitar (`GuitarSound`: the modelled strings, the amps, the
   eight sounds), the SFZ player for sampled instruments (`Sfz`, `Instruments`),
   mastering (`Mastering`: the targets, the true-peak `Maximizer`, measuring a file, working out the push) and
-  the master limiter plugin around it (`MasterLimiter`, with the loudness meter); `fx` holds
-  the stock effects (Tracktion plugins) and their DSP building blocks. Drum kits: `Kits` (the SFZ reader and
+  the master limiter plugin around it (`MasterLimiter`, with the loudness meter); synths plugged in (`MidiOut`: each
+  output's notes planned from the song, the node at the end of the graph that sends them in time and the clock, the
+  silent instrument that hands on what a keyboard plays) and MIDI files (`MidiFiles`: the notes as the song plays them,
+  a .mid written and read, a file's parts brought in as channels); the sample browser's folders and what's in them
+  (`Samples`: Downloads, Music and folders added, looked through on a thread of their own) and a sample heard from it
+  (`SamplePreview`: played after the master, as the metronome is); time-stretching (`Stretcher`: a take rendered along
+  its folder's time map by Signalsmith Stretch, lined up, and the cache of renders; `LoopTempo`: a loop's tempo from its
+  file, its name or its length); `fx` holds
+  the stock effects (Tracktion plugins, Pitch Correction's in `Tune.cpp`) and their DSP building blocks. Drum kits: `Kits` (the SFZ reader and
   player, fetching), `DrumGizmo` (mixing a studio kit to stereo), `Machines` (the 808 and 909),
   `KitImport` (a kit from a folder), `DrumSynth` (what the synthesised drums are made of), `ZipReader`
   (ZIP64).
@@ -1260,6 +1447,12 @@ AudioDSPTools by Steven Atkinson (MIT; the resampler comes from iPlug2 and Cocko
 [Eigen](https://eigen.tuxfamily.org) (MPL 2.0) and [nlohmann/json](https://github.com/nlohmann/json) (MIT), all
 GPL-compatible. They're in `external/NeuralAmpModelerCore` at tag v0.6.0 (`git clone --branch v0.6.0
 --recurse-submodules https://github.com/sdatkinson/NeuralAmpModelerCore.git`), with their licence files.
+
+Time-stretching and pitch-shifting audio clips is done by [Signalsmith Stretch](https://signalsmith-audio.co.uk/code/stretch/)
+(Geraint Luff and Signalsmith Audio, MIT), which comes with Tracktion Engine (in its `3rd_party` folder) beside
+[SoundTouch](https://www.surina.net/soundtouch/) (Olli Parviainen, LGPL 2.1), both switched on in `CMakeLists.txt`; their
+licences are in NOTICES.txt. Pitch Correction is NightShift's own code, after the YIN method (Alain de Cheveigné and
+Hideki Kawahara, 2002) for hearing a note's pitch.
 
 On a Mac (anywhere Segoe UI isn't installed) NightShift's text is [Selawik](https://github.com/microsoft/Selawik),
 Microsoft's open-source stand-in for Segoe UI, release 1.01, under the SIL Open Font License 1.1

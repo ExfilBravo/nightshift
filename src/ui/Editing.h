@@ -37,6 +37,17 @@ namespace automation
         an automation lane names them (Song::AutomationLane), or by the engine's parameter. */
     inline std::function<void (int owner, const juce::String& param, const juce::String& name)> showMenu;
     inline std::function<void (tracktion::AutomatableParameter&, const juce::String& name)> showMenuFor;
+
+    /** Set by the main window: a knob's parameter grabbed (down) or let go, so recording
+        automation writes its moves; not `held`, a change with nothing held (a switch flicked, a
+        choice made), written until it's left alone a moment. */
+    inline std::function<void (tracktion::AutomatableParameter&, bool down, bool held)> touchFor;
+
+    inline void touch (tracktion::AutomatableParameter& p, bool down, bool held = true)
+    {
+        if (touchFor != nullptr)
+            touchFor (p, down, held);
+    }
 }
 
 /** Its key, as a menu shows it ("Ctrl+C", "Cmd+C" on a Mac). */

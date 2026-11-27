@@ -126,6 +126,12 @@ public:
     std::function<void()> onDragStart, onValueChange;
     std::function<juce::String (double)> formatValue;
 
+    /** Let go after it was grabbed (onDragStart came from a press, not the wheel). */
+    std::function<void()> onDragEnd;
+
+    /** Held down by the mouse now (the wheel and a double-click change it without). */
+    bool isHeld() const                             { return held; }
+
     /** Right-click, instead of a drag (Automate, say). */
     std::function<void()> onRightClick;
 
@@ -134,12 +140,13 @@ public:
     void mouseExit (const juce::MouseEvent&) override        { repaint(); }
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
     double min, max, defaultValue, value, dragStartValue = 0.0;
-    bool bipolar, rightClicked = false;
+    bool bipolar, rightClicked = false, held = false;
     juce::Colour fill { theme::textDim };
 
     void change (double);
@@ -284,6 +291,12 @@ public:
     std::function<void()> onDragStart, onValueChange;
     std::function<juce::String (double)> formatValue;
 
+    /** Let go after it was grabbed (onDragStart came from a press, not the wheel). */
+    std::function<void()> onDragEnd;
+
+    /** Held down by the mouse now (the wheel and a double-click change it without). */
+    bool isHeld() const                             { return held; }
+
     /** Right-click, instead of a drag (Automate, say). */
     std::function<void()> onRightClick;
 
@@ -292,6 +305,7 @@ public:
     void mouseExit (const juce::MouseEvent&) override        { repaint(); }
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
@@ -299,7 +313,7 @@ public:
 
 private:
     double defaultValue, value, dragStartValue = 0.0;
-    bool rightClicked = false;
+    bool rightClicked = false, held = false;
 
     void change (double);
     float travel() const                            { return (float) std::max (1, getHeight() - capHeight); }

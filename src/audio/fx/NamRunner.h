@@ -31,6 +31,20 @@ public:
     bool hasLoudness() const;
     double loudnessDb() const;
 
+    /** The level, in dBu, that a sine peaking at 0 dBFS had where the amp was captured (the model's
+        input_level_dbu), when the model says: input calibration's other half, the interface's own. */
+    bool hasInputLevel() const;
+    double inputLevelDbu() const;
+
+    /** The sizes a "slimmable" model comes in (smaller ones cost less and sound a little less like the
+        amp), 1 for a model that comes in one. */
+    int numSizes() const;
+
+    /** Picks a size: 0 the smallest, numSizes() - 1 the whole model (as it loads). Not on the audio
+        thread: NAM may build the smaller network here, and swaps it in at the next block. */
+    void setSize (int index);
+    int getSize() const;
+
     /** The resamplers' delay at the song's rate (0 when it runs at its own). */
     int latencySamples() const;
 

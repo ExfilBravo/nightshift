@@ -818,7 +818,21 @@ int Song::songLengthInTicks() const
     return end;
 }
 
-float AutomationLane::valueAt (int tick) const
+float automationcurve::shape (float along, float curve)
+{
+    along = juce::jlimit (0.0f, 1.0f, along);
+    curve = juce::jlimit (-most, most, curve);
+
+    if (std::abs (curve) < 1.0e-4f)
+        return along;
+
+    // The power that puts the middle (1 - c) / 2 of the way: easing in climbs u^p, easing out is
+    // its mirror (1 - (1 - u)^p), each 1 for a straight line
+    const float power = 1.0f + std::log2 (1.0f / (1.0f - std::abs (curve)));
+    return curve > 0.0f ? std::pow (along, power) : 1.0f - std::pow (1.0f - along, power);
+}
+
+float AutomationLane::valueAt (double tick) const
 {
     if (points.empty())
         return 0.0f;
@@ -831,7 +845,8 @@ float AutomationLane::valueAt (int tick) const
         {
             const auto& a = points[i - 1];
             const auto& b = points[i];
-            return a.value + (b.value - a.value) * (float) (tick - a.tick) / (float) std::max (1, b.tick - a.tick);
+            const double along = (tick - a.tick) / (double) std::max (1, b.tick - a.tick);
+            return a.value + (b.value - a.value) * automationcurve::shape ((float) along, a.curve);
         }
 
     return points.back().value;
@@ -900,8 +915,9 @@ void Song::setClipRange (PlaylistClip& c, int newStart, int newEnd) const
 
 void Song::setAudioRange (AudioClip& c, int startTick, double length) const
 {
-    // Everything in the folder moves the other way, so the audio stays put in the song
-    const double shift = secondsBetween (c.start, startTick);
+    // Everything in the folder moves the other way, so the audio stays put in the song (in its
+    // own seconds: stretched, a tick is more or less of its audio)
+    const double shift = audioSecondsAt (c, startTick);
     const double oldLength = c.length;
 
     // The comp's parts that reach an edge follow it out when it grows
@@ -967,13 +983,115 @@ bool Song::splitClip (int index, int tick)
     return true;
 }
 
+double Song::audioTickAt (const AudioClip& c, double seconds) const
+{
+    const double speed = juce::jlimit (AudioClip::slowest, AudioClip::fastest, c.speed);
+
+    // Its beats on the song's: a tick is a ticksPerBeat'th of one of its beats, `speed` times faster
+    if (followsTempo (c))
+        return c.start + seconds * c.sourceBpm / 60.0 * ticksPerBeat / speed;
+
+    return tickAt (secondsAt (c.start) + seconds / speed);
+}
+
+double Song::audioSecondsAt (const AudioClip& c, double tick) const
+{
+    const double speed = juce::jlimit (AudioClip::slowest, AudioClip::fastest, c.speed);
+
+    if (followsTempo (c))
+        return (tick - c.start) * speed * 60.0 / (c.sourceBpm * ticksPerBeat);
+
+    return secondsBetween (c.start, tick) * speed;
+}
+
+double Song::stretchRatioAt (const AudioClip& c, double tick) const
+{
+    const double speed = juce::jlimit (AudioClip::slowest, AudioClip::fastest, c.speed);
+    return followsTempo (c) ? speed * bpmAt (tick) / c.sourceBpm : speed;
+}
+
+bool Song::isStretched (const AudioClip& c) const
+{
+    constexpr double same = 1.0e-6;
+
+    if (std::abs (c.pitch) > 1.0e-4f)
+        return true;
+
+    if (! followsTempo (c))
+        return std::abs (c.speed - 1.0) > same;
+
+    // Following the tempo it plays as recorded only where the tempo is its own all along it: at its
+    // start, just before its end, at every change between, and with no glide under way inside it
+    const double end = audioTickAt (c, c.length);
+
+    for (double at : { (double) c.start, std::max ((double) c.start, end - 0.5) })
+        if (std::abs (stretchRatioAt (c, at) - 1.0) > same)
+            return true;
+
+    for (size_t i = 0; i < tempoChanges.size(); ++i)
+    {
+        const auto& change = tempoChanges[i];
+        const int from = i == 0 ? 0 : tempoChanges[i - 1].tick;
+        const double before = i == 0 ? bpm : tempoChanges[i - 1].bpm;
+
+        if (change.tick > c.start && change.tick < end && std::abs (stretchRatioAt (c, change.tick) - 1.0) > same)
+            return true;
+
+        if (change.glide && std::abs (change.bpm - before) > same && change.tick > c.start && from < end)
+            return true;
+    }
+
+    return false;
+}
+
+void Song::setFollowTempo (AudioClip& c, bool on) const
+{
+    if (on && c.sourceBpm <= 0.0)
+        c.sourceBpm = bpmAt (c.start);
+
+    c.followTempo = on;
+}
+
+bool Song::stretchAudioTo (AudioClip& c, int startTick, double endTick) const
+{
+    if (endTick <= startTick || c.length <= 0.0)
+        return false;
+
+    // How fast its whole length has to go to fill the stretch: in its beats when it follows the
+    // tempo, in real time when it doesn't
+    const double speed = followsTempo (c) ? c.length * c.sourceBpm / 60.0 * ticksPerBeat / (endTick - startTick)
+                                          : c.length / secondsBetween (startTick, endTick);
+
+    if (speed < AudioClip::slowest - 1.0e-9 || speed > AudioClip::fastest + 1.0e-9)
+        return false;
+
+    c.start = startTick;
+    c.speed = speed;
+    return true;
+}
+
+AudioClip& Song::addAudioFile (const juce::File& file, int channelId, int track, int tick, double seconds, double bpm)
+{
+    AudioClip c;
+    c.channelId = channelId;
+    c.track = track;
+    c.start = std::max (0, tick);
+    c.length = seconds;
+    c.takes = { { file.getFullPathName(), 0.0, 0.0, seconds } };
+    c.comp = { { 0.0, seconds, 0 } };
+    c.sourceBpm = bpm > 0.0 ? bpm : 0.0;
+    c.followTempo = bpm > 0.0;
+    audioClips.push_back (c);
+    return audioClips.back();
+}
+
 bool Song::splitAudioClip (int index, int tick)
 {
     if (! juce::isPositiveAndBelow (index, (int) audioClips.size()))
         return false;
 
     auto second = audioClips[(size_t) index];
-    const double at = secondsBetween (second.start, tick);
+    const double at = audioSecondsAt (second, tick);
 
     if (at <= 0.01 || at >= second.length - 0.01)
         return false;
@@ -1130,11 +1248,12 @@ AudioClip& Song::addTakes (int channelId, double startSeconds, double length, st
     length -= shift;
     const int endTick = (int) std::ceil (tickAt (secondsAt (startTick) + length) - 1.0e-6);
 
-    // Recording again over a channel's folder adds to it, as in Logic
+    // Recording again over a channel's folder adds to it, as in Logic (one playing at its own
+    // speed: in a stretched one, a second of the new take wouldn't be a second of its audio)
     AudioClip* folder = nullptr;
 
     for (auto& c : audioClips)
-        if (c.channelId == channelId && c.start < endTick && startTick < audioClipEnd (c))
+        if (c.channelId == channelId && c.start < endTick && startTick < audioClipEnd (c) && ! isStretched (c))
             folder = &c;
 
     if (folder == nullptr)
@@ -1143,6 +1262,7 @@ AudioClip& Song::addTakes (int channelId, double startSeconds, double length, st
         c.channelId = channelId;
         c.start = startTick;
         c.length = length;
+        c.sourceBpm = bpmAt (startTick);        // played at the song's tempo, should it follow a new one later
         c.track = trackForChannel (channelId, startTick, endTick);
         audioClips.push_back (c);
         folder = &audioClips.back();
@@ -1280,6 +1400,11 @@ void Song::removeBus (int id)
 
         std::erase_if (c.sends, [id] (auto& s) { return s.busId == id; });
     }
+
+    // Its own lanes and links, and the channels' for their sends to it
+    const auto sendKey = "send:" + juce::String (id);
+    std::erase_if (automation, [id, &sendKey] (auto& lane) { return lane.owner == id || lane.param == sendKey; });
+    std::erase_if (controllerLinks, [id, &sendKey] (auto& link) { return link.owner == id || link.param == sendKey; });
 }
 
 void Song::removePattern (int id)
@@ -1555,6 +1680,7 @@ static juce::String typeToString (InstrumentType t)
         case InstrumentType::audio:   return "audio";
         case InstrumentType::kit:     return "kit";
         case InstrumentType::instrument: return "instrument";
+        case InstrumentType::midiOut: return "midiOut";
         case InstrumentType::sampler: break;
     }
 
@@ -1568,6 +1694,7 @@ static InstrumentType typeFromString (const juce::String& s)
     if (s == "audio")   return InstrumentType::audio;
     if (s == "kit")     return InstrumentType::kit;
     if (s == "instrument") return InstrumentType::instrument;
+    if (s == "midiOut") return InstrumentType::midiOut;
     return InstrumentType::sampler;
 }
 
@@ -1972,6 +2099,10 @@ juce::var Song::toVar() const
         o->setProperty ("kit", c.kit);
         o->setProperty ("instrument", c.instrument);
 
+        // A synth plugged in: [the MIDI output, its channel, the program asked for]
+        if (c.type == InstrumentType::midiOut || c.midiOutDevice.isNotEmpty() || c.midiProgram >= 0)
+            o->setProperty ("midiOut", juce::Array<juce::var> { c.midiOutDevice, c.midiOutChannel, c.midiProgram });
+
         if (! c.drummer.turns.empty())
             o->setProperty ("drummer", drummerToVar (c.drummer));
 
@@ -2080,6 +2211,12 @@ juce::var Song::toVar() const
         if (c.fadeIn > 0.0)   o->setProperty ("fadeIn", c.fadeIn);
         if (c.fadeOut > 0.0)  o->setProperty ("fadeOut", c.fadeOut);
 
+        // Stretching: its tempo, following the song's, its speed and pitch
+        if (c.sourceBpm > 0.0)                  o->setProperty ("bpm", c.sourceBpm);
+        if (c.followTempo)                      o->setProperty ("followTempo", true);
+        if (std::abs (c.speed - 1.0) > 1.0e-9)  o->setProperty ("speed", c.speed);
+        if (c.pitch != 0.0f)                    o->setProperty ("pitch", c.pitch);
+
         juce::Array<juce::var> takeList, compList;
 
         for (auto& t : c.takes)
@@ -2103,7 +2240,8 @@ juce::var Song::toVar() const
     root->setProperty ("audioClips", audioList);
     root->setProperty ("loop", juce::Array<juce::var> { loopOn, loopStart, loopEnd });
 
-    // Automation lanes, each point as [tick, value]
+    // Automation lanes, each point as [tick, value], or [tick, value, curve] when the line on from
+    // it bends
     juce::Array<juce::var> laneList;
 
     for (auto& lane : automation)
@@ -2115,7 +2253,7 @@ juce::var Song::toVar() const
         juce::Array<juce::var> pointList;
 
         for (auto& p : lane.points)
-            pointList.add (juce::Array<juce::var> { p.tick, p.value });
+            pointList.add (p.curve != 0.0f ? juce::Array<juce::var> { p.tick, p.value, p.curve } : juce::Array<juce::var> { p.tick, p.value });
 
         o->setProperty ("points", pointList);
         laneList.add (juce::var (o));
@@ -2214,6 +2352,14 @@ void Song::fromVar (const juce::var& v)
             c.pluginState = o.getProperty ("pluginState", {}).toString();
             c.kit = o.getProperty ("kit", {}).toString();
             c.instrument = o.getProperty ("instrument", {}).toString();
+
+            if (auto* out = o.getProperty ("midiOut", {}).getArray(); out != nullptr && out->size() >= 3)
+            {
+                c.midiOutDevice = (*out)[0].toString();
+                c.midiOutChannel = juce::jlimit (1, 16, (int) (*out)[1]);
+                c.midiProgram = juce::jlimit (-1, 127, (int) (*out)[2]);
+            }
+
             c.drummer = drummerFromVar (o.getProperty ("drummer", {}));
             c.bass = bassFromVar (o.getProperty ("bass", {}));
             c.guitar = guitarFromVar (o.getProperty ("guitar", {}));
@@ -2316,6 +2462,10 @@ void Song::fromVar (const juce::var& v)
             c.expanded = o.getProperty ("expanded", false);
             c.fadeIn = juce::jmax (0.0, (double) o.getProperty ("fadeIn", 0.0));
             c.fadeOut = juce::jmax (0.0, (double) o.getProperty ("fadeOut", 0.0));
+            c.sourceBpm = juce::jlimit (0.0, 999.0, (double) o.getProperty ("bpm", 0.0));
+            c.followTempo = o.getProperty ("followTempo", false);
+            c.speed = juce::jlimit (AudioClip::slowest, AudioClip::fastest, (double) o.getProperty ("speed", 1.0));
+            c.pitch = juce::jlimit (-24.0f, 24.0f, (float) o.getProperty ("pitch", 0.0f));
 
             if (auto* takeList = o.getProperty ("takes", {}).getArray())
             {
@@ -2347,7 +2497,7 @@ void Song::fromVar (const juce::var& v)
         loopEnd = juce::jmax (loopStart, (int) (*loop)[2]);
     }
 
-    // Automation lanes of channels that are here (and the master's), points in time order
+    // Automation lanes of channels and buses that are here (and the master's), points in time order
     if (auto* list = v.getProperty ("automation", {}).getArray())
         for (auto& o : *list)
         {
@@ -2359,11 +2509,12 @@ void Song::fromVar (const juce::var& v)
             if (auto* points = o.getProperty ("points", {}).getArray())
                 for (auto& p : *points)
                     if (p.size() >= 2)
-                        lane.points.push_back ({ juce::jmax (0, (int) p[0]), (float) (double) p[1] });
+                        lane.points.push_back ({ juce::jmax (0, (int) p[0]), (float) (double) p[1],
+                                                 p.size() >= 3 ? juce::jlimit (-automationcurve::most, automationcurve::most, (float) (double) p[2]) : 0.0f });
 
             std::stable_sort (lane.points.begin(), lane.points.end(), [] (auto& a, auto& b) { return a.tick < b.tick; });
 
-            if (lane.param.isNotEmpty() && (lane.owner == 0 || findChannel (lane.owner) != nullptr) && findLane (lane.owner, lane.param) == nullptr)
+            if (lane.param.isNotEmpty() && canOwnAutomation (lane.owner) && findLane (lane.owner, lane.param) == nullptr)
                 automation.push_back (lane);
         }
 
@@ -2375,7 +2526,7 @@ void Song::fromVar (const juce::var& v)
             {
                 ControllerLink link { l[0].toString(), juce::jlimit (1, 16, (int) l[1]), juce::jlimit (0, 127, (int) l[2]), (int) l[3], l[4].toString() };
 
-                if (link.param.isNotEmpty() && (link.owner == 0 || findChannel (link.owner) != nullptr))
+                if (link.param.isNotEmpty() && canOwnAutomation (link.owner))
                     controllerLinks.push_back (link);
             }
 

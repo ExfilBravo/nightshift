@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "Sidebar.h"
+#include "ComputerKeyboard.h"
 #include "TextAudit.h"
 #include "Widgets.h"
 #include "audio/DrumKit.h"
@@ -18,7 +19,8 @@ using namespace theme;
 
 namespace
 {
-    const char* const groupNames[] = { "NightShift kit", "Synth presets", "Plugin instruments", "Effects", "Plugin effects", "Drum kits", "Instruments" };
+    const char* const groupNames[] = { "NightShift kit", "Synth presets", "Plugin instruments", "Effects", "Plugin effects", "Drum kits", "Instruments",
+                                       "Samples" };
 
     // What developersOpen holds for a developer in a group: Plugin instruments' and Plugin effects'
     // are apart (a developer of both opens in one and stays shut in the other)
@@ -26,6 +28,12 @@ namespace
     {
         return juce::String (group) + "|" + developer;
     }
+
+    // Samples' rows: pink, beside the kits' orange, the instruments' blue and the effects' teal
+    const juce::Colour sampleColour { 0xffef8fc8 };
+
+    // Searching, the most matches shown under each of Samples' folders (the rest are counted)
+    constexpr int maxSampleMatches = 60;
 }
 
 bool Sidebar::isGroupName (const juce::String& name)
@@ -44,6 +52,11 @@ Sidebar::Sidebar (Song& s, AudioEngine& a)
     search.onTextChange = [this]
     {
         soundScroll = 0;
+
+        // Searching looks through Samples' folders too (once a minute at most)
+        if (search.getText().trim().isNotEmpty())
+            lookThroughSampleFolders (60.0);
+
         rebuildSounds();
     };
     search.onEscapeKey = [this]
@@ -72,6 +85,9 @@ Sidebar::Sidebar (Song& s, AudioEngine& a)
     scanButton.onRightClick = [this] { if (onScanPlugins != nullptr) onScanPlugins(); };
     addAndMakeVisible (scanButton);
 
+    // What's in Samples' folders comes in on a thread of its own
+    sampleLibrary.onChanged = [this] { rebuildSounds(); };
+
     song.addListener (this);
     audio.getKnownPlugins().addChangeListener (this);
     rebuildPatterns();
@@ -80,6 +96,8 @@ Sidebar::Sidebar (Song& s, AudioEngine& a)
 
 Sidebar::~Sidebar()
 {
+    stopTimer();
+    sampleLibrary.onChanged = nullptr;
     search.removeKeyListener (&searchKeys);
     audio.getKnownPlugins().removeChangeListener (this);
     song.removeListener (this);
@@ -238,6 +256,27 @@ void Sidebar::rebuildSounds()
     // Plugin effects, when there are any (searching: any that match)
     addByDeveloper (4, false);
 
+    // Samples, last: the audio files in the user's folders (searching: those whose names match, under their folder).
+    // Its count is every sound found, once its folders have been looked through
+    {
+        int count = 0;
+        bool known = false;
+        auto rows = sampleRows (filter, count);
+
+        for (auto& folder : getSampleFolders())
+            known = known || sampleLibrary.get (folder) != nullptr;
+
+        const bool stillLooking = std::any_of (rows.begin(), rows.end(), [] (const Row& r) { return r.kind == Kind::note; });
+
+        if (! filtering || count > 0 || stillLooking)
+        {
+            soundRows.push_back ({ Kind::group, groupNames[samplesGroup], known ? juce::String (count) : juce::String(), {}, samplesGroup, {} });
+
+            if (filtering || groupOpen[samplesGroup])
+                soundRows.insert (soundRows.end(), rows.begin(), rows.end());
+        }
+    }
+
     // While searching, Enter adds the first name that starts with what was typed, or
     // failing that the first match (so "h" finds Hat before the Blonde Bop HR kit)
     highlightedSound = -1;
@@ -308,9 +347,9 @@ void Sidebar::startDraggingSound (const Row& row)
         return;
 
     const auto kind = row.kind == Kind::kit ? "kit:" : row.kind == Kind::synth ? "synth:" : row.kind == Kind::effect ? "effect:"
-                    : row.kind == Kind::drumkit ? "drumkit:" : row.kind == Kind::instrument ? "instrument:" : "plugin:";
+                    : row.kind == Kind::drumkit ? "drumkit:" : row.kind == Kind::instrument ? "instrument:" : row.kind == Kind::sample ? "sample:" : "plugin:";
     const auto payload = row.kind == Kind::plugin || row.kind == Kind::effect ? row.plugin.createIdentifierString()
-                       : row.kind == Kind::drumkit || row.kind == Kind::instrument ? row.key : row.name;
+                       : row.kind == Kind::drumkit || row.kind == Kind::instrument || row.kind == Kind::sample ? row.key : row.name;
 
     // The dragged thing: a chip with the sound's colour and name
     const auto f = font (17.0f, true);
@@ -585,6 +624,25 @@ void Sidebar::paint (juce::Graphics& g)
     juce::Graphics::ScopedSaveState state (g);
     g.reduceClipRegion (soundsArea);
 
+    // How far in a row starts: a developer's or a sample folder's chevron a step in for each level, the sounds in
+    // them further (past the chevron). Samples' levels are 16 px apart, drawn at most 6 deep
+    auto inset = [] (const Row& r)
+    {
+        const int level = std::min (r.depth, 6);
+
+        switch (r.kind)
+        {
+            case Kind::group:           return 0;
+            case Kind::developer:       return r.depth * 20;
+            case Kind::sampleFolder:    return 20 + (level - 1) * 16;
+            case Kind::sample:
+            case Kind::note:            return 42 + (level - 2) * 16;
+            default:                    return 22 + r.depth * 20;
+        }
+    };
+
+    const bool filtering = search.getText().trim().isNotEmpty();
+
     for (int i = 0; i < (int) soundRows.size(); ++i)
     {
         const auto& row = soundRows[(size_t) i];
@@ -594,13 +652,23 @@ void Sidebar::paint (juce::Graphics& g)
         if (area.getBottom() < soundsArea.getY() || area.getY() > soundsArea.getBottom())
             continue;
 
-        // A group, or a developer in Plugin effects (a step further in, its name not bold): a
-        // chevron, the name, and how many it holds
-        if (row.kind == Kind::group || row.kind == Kind::developer)
+        // A line of words under a sample folder (looking through it, nothing in it): nothing to click
+        if (row.kind == Kind::note)
         {
-            const bool developer = row.kind == Kind::developer;
-            const bool open = search.getText().trim().isNotEmpty() || (developer ? developersOpen.contains (openKey (row.id, row.key)) : groupOpen[row.id]);
-            const auto line = area.withTrimmedLeft (row.depth * 20);
+            g.setColour (textFaint);
+            g.setFont (font (15.0f));
+            g.drawText (row.name, area.withTrimmedLeft (inset (row)).withTrimmedRight (8), juce::Justification::centredLeft, true);
+            continue;
+        }
+
+        // A group, a developer in Plugin effects or a folder in Samples (a step further in, its name not bold): a
+        // chevron, the name, and how many it holds
+        if (row.kind == Kind::group || row.kind == Kind::developer || row.kind == Kind::sampleFolder)
+        {
+            const bool developer = row.kind != Kind::group;
+            const bool open = filtering || (row.kind == Kind::sampleFolder ? sampleFoldersOpen.contains (row.key)
+                                            : row.kind == Kind::developer ? developersOpen.contains (openKey (row.id, row.key)) : groupOpen[row.id]);
+            const auto line = area.withTrimmedLeft (inset (row));
             auto chevron = open ? icons::chevronDown() : icons::chevronRight();
             chevron.applyTransform (juce::AffineTransform::scale (1.4f).translated ((float) line.getX(), (float) line.getCentreY() - 7.0f));
             g.setColour (textFaint);
@@ -611,7 +679,7 @@ void Sidebar::paint (juce::Graphics& g)
             const int countWidth = (int) juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), row.detail) + 12;
             g.drawText (row.detail, area.withTrimmedRight (6), juce::Justification::centredRight, true);
 
-            std::optional<textaudit::TheirWords> theirs;    // a developer's name, as its plugins give it
+            std::optional<textaudit::TheirWords> theirs;    // a developer's name, as its plugins give it; a folder's, as the user named it
 
             if (developer)
                 theirs.emplace();
@@ -622,15 +690,17 @@ void Sidebar::paint (juce::Graphics& g)
             continue;
         }
 
-        const bool lit = i == hoveredSound || i == highlightedSound;
+        // A sample playing now: lit, with a square to stop it where its dot was
+        const bool playing = row.kind == Kind::sample && previewShown != juce::File() && row.key == previewShown.getFullPathName();
+        const bool lit = i == hoveredSound || i == highlightedSound || playing;
 
         if (lit)
         {
-            g.setColour (i == highlightedSound ? accentCool.withAlpha (0.14f) : panelLight);
+            g.setColour (i == highlightedSound ? accentCool.withAlpha (0.14f) : playing ? sampleColour.withAlpha (0.12f) : panelLight);
             g.fillRoundedRectangle (area.toFloat().reduced (0.0f, 1.0f), 7.0f);
         }
 
-        auto content = area.withTrimmedLeft (22 + row.depth * 20).withTrimmedRight (8);
+        auto content = area.withTrimmedLeft (inset (row)).withTrimmedRight (8);
         g.setColour (row.colour);
 
         if (row.kind == Kind::scan)
@@ -639,6 +709,10 @@ void Sidebar::paint (juce::Graphics& g)
             plus.applyTransform (juce::AffineTransform::scale (1.3f).translated ((float) content.getX() - 3.0f, (float) content.getCentreY() - 6.5f));
             g.strokePath (plus, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         }
+        else if (playing)
+        {
+            g.fillRoundedRectangle ((float) content.getX() - 1.0f, (float) content.getCentreY() - 4.0f, 8.0f, 8.0f, 1.5f);
+        }
         else
         {
             g.fillEllipse ((float) content.getX(), (float) content.getCentreY() - 3.0f, 6.0f, 6.0f);
@@ -646,18 +720,31 @@ void Sidebar::paint (juce::Graphics& g)
 
         content.removeFromLeft (16);
         const auto hint = i == highlightedSound ? juce::String ("Enter to add")
+                        : playing ? juce::String ("click to stop")
+                        : i == hoveredSound && row.kind == Kind::sample ? juce::String ("click to hear")
                         : i == hoveredSound && row.kind != Kind::scan ? juce::String ("double-click or drag")
                                                                       : row.detail;
 
         g.setColour (textFaint);
         g.setFont (font (15.0f));
-        const int hintWidth = hint.isEmpty() ? 0 : (int) juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), hint) + 6;
-        g.drawText (hint, content, juce::Justification::centredRight, true);
+        int hintWidth = hint.isEmpty() ? 0 : (int) juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), hint) + 6;
 
-        // A plugin's name is its maker's, however long
+        if (row.kind == Kind::sample && hint == row.detail && hintWidth > content.getWidth() / 2)
+        {
+            // The folder a sample found by a search is in takes half the row at most, so its name shows
+            textaudit::TheirWords folderName;
+            hintWidth = content.getWidth() / 2;
+            g.drawText (hint, content.withTrimmedLeft (content.getWidth() - hintWidth + 6), juce::Justification::centredRight, true);
+        }
+        else
+        {
+            g.drawText (hint, content, juce::Justification::centredRight, true);
+        }
+
+        // A plugin's name is its maker's, however long; a sample's the user's
         std::optional<textaudit::TheirWords> theirs;
 
-        if (row.kind == Kind::plugin || (row.kind == Kind::effect && row.depth > 0))
+        if (row.kind == Kind::plugin || (row.kind == Kind::effect && row.depth > 0) || row.kind == Kind::sample)
             theirs.emplace();
 
         g.setColour (lit ? text : textDim);
@@ -756,13 +843,51 @@ void Sidebar::mouseDown (const juce::MouseEvent& e)
 
     if (const int i = soundAt (e.getPosition()); i >= 0)
     {
-        const auto& row = soundRows[(size_t) i];
+        const auto row = soundRows[(size_t) i];     // (a copy: rebuilding the rows below replaces them)
         pressedSound = i;
 
         if (row.kind == Kind::group)
         {
             groupOpen[row.id] = ! groupOpen[row.id];
+
+            // Samples' folders are looked through once it's open (again if it's been a minute)
+            if (row.id == samplesGroup && groupOpen[row.id])
+                lookThroughSampleFolders (60.0);
+
             rebuildSounds();
+        }
+        else if (row.kind == Kind::sampleFolder)
+        {
+            if (e.mods.isPopupMenu())
+            {
+                showSampleMenu (row);
+                return;
+            }
+
+            const bool opening = ! sampleFoldersOpen.contains (row.key);
+
+            if (opening)
+                sampleFoldersOpen.add (row.key);
+            else
+                sampleFoldersOpen.removeString (row.key);
+
+            // A top folder opened is looked through again if it's been a few seconds (a download since)
+            if (opening && row.depth == 1)
+                sampleLibrary.lookThrough ({ juce::File (row.key) }, 10.0);
+
+            rebuildSounds();
+        }
+        else if (row.kind == Kind::sample)
+        {
+            // A click plays it, the next stops it; the second click of a double-click adds it instead
+            if (e.mods.isPopupMenu())
+                showSampleMenu (row);
+            else if (e.getNumberOfClicks() == 1)
+                toggleSamplePreview (juce::File (row.key));
+        }
+        else if (row.kind == Kind::scan && row.id == addSampleFolderRow)
+        {
+            chooseSampleFolder();
         }
         else if (row.kind == Kind::developer)
         {
@@ -837,6 +962,8 @@ void Sidebar::addSound (const Row& row)
         onAddInstrument (row.key);
     else if (row.kind == Kind::drumkit && onAddDrumKit != nullptr)
         onAddDrumKit (row.key);
+    else if (row.kind == Kind::sample && onAddSample != nullptr)
+        onAddSample (row.key);
 }
 
 juce::String Sidebar::getTooltip()
@@ -854,6 +981,18 @@ juce::String Sidebar::getTooltip()
         if (row.kind == Kind::developer)
             return row.tip;
 
+        if (row.kind == Kind::sample)
+            return juce::File (row.key).getFileName() + ": click to hear it, click again to stop. Drag it onto Arrange for an audio track, "
+                   "or into Steps for a sampler channel (or double-click it)";
+
+        if (row.kind == Kind::sampleFolder)
+            return row.tip + (row.detail.isNotEmpty() ? ": " + row.detail + (row.detail == "1" ? " sound" : " sounds") : juce::String())
+                   + ". Click to show or hide what's in it" + (row.depth == 1 && audio.getOptions().sampleFolders.contains (row.key)
+                                                                  ? ", right-click to take it out of Samples" : "");
+
+        if (row.kind == Kind::scan && row.id == addSampleFolderRow)
+            return "Add a folder of your own sounds to Samples; NightShift keeps it there";
+
         if (row.kind == Kind::effect)
             return "Double-click to put " + row.name + " on the selected channel, or drag it onto a channel in Steps";
 
@@ -865,6 +1004,219 @@ juce::String Sidebar::getTooltip()
     }
 
     return {};
+}
+
+//==============================================================================
+juce::Array<juce::File> Sidebar::getSampleFolders() const
+{
+    // Downloads and Music, then the ones added (those that are there: a drive unplugged comes back with it)
+    auto folders = samples::standardFolders();
+
+    for (auto& path : audio.getOptions().sampleFolders)
+        if (juce::File::isAbsolutePath (path) && juce::File (path).isDirectory() && ! folders.contains (juce::File (path)))
+            folders.add (juce::File (path));
+
+    return folders;
+}
+
+void Sidebar::lookThroughSampleFolders (double maxAgeSeconds)
+{
+    sampleLibrary.lookThrough (getSampleFolders(), maxAgeSeconds);
+}
+
+bool Sidebar::lookThroughSamples (int ms)
+{
+    lookThroughSampleFolders (0.0);
+    const bool done = sampleLibrary.waitUntilDone (ms);
+    rebuildSounds();
+    return done;
+}
+
+std::vector<Sidebar::Row> Sidebar::sampleRows (const juce::String& filter, int& count)
+{
+    std::vector<Row> rows;
+    count = 0;
+
+    for (auto& folder : getSampleFolders())
+    {
+        const auto path = folder.getFullPathName();
+        const auto tree = sampleLibrary.get (folder);
+        const bool looking = sampleLibrary.isLooking (folder);
+
+        // Searching: the files whose names match, under the folder they're in, each saying where in it
+        if (filter.isNotEmpty())
+        {
+            int total = 0;
+            const auto found = sampleLibrary.search (folder, filter, maxSampleMatches, total);
+
+            if (total == 0)
+            {
+                if (tree == nullptr && looking)
+                    rows.push_back ({ Kind::note, "Looking through " + samples::displayName (folder) + "...", {}, sampleColour, samplesGroup, {}, {}, 2 });
+
+                continue;
+            }
+
+            count += total;
+            rows.push_back ({ Kind::sampleFolder, samples::displayName (folder), juce::String (total), sampleColour, samplesGroup, {}, path, 1, path });
+
+            // (each says the folder it's in, its whole path in its tooltip)
+            for (auto& match : found)
+            {
+                const auto file = folder.getChildFile (match.relative);
+                const auto in = file.getParentDirectory() == folder ? file.getFileExtension().substring (1).toLowerCase()
+                                                                    : file.getParentDirectory().getFileName();
+                rows.push_back ({ Kind::sample, file.getFileNameWithoutExtension(), in, sampleColour, samplesGroup, {}, file.getFullPathName(), 2 });
+            }
+
+            if (total > (int) found.size())
+                rows.push_back ({ Kind::note, juce::String (total - (int) found.size()) + " more: type more of the name", {}, sampleColour, samplesGroup,
+                                  {}, {}, 2 });
+
+            continue;
+        }
+
+        // Browsing: the folder, and what's in it when it's open
+        count += tree != nullptr ? tree->count : 0;
+        rows.push_back ({ Kind::sampleFolder, samples::displayName (folder), tree != nullptr ? juce::String (tree->count) : juce::String(),
+                          sampleColour, samplesGroup, {}, path, 1, path });
+
+        if (! sampleFoldersOpen.contains (path))
+            continue;
+
+        if (tree != nullptr)
+            addFolderRows (rows, folder, tree.get(), 2);
+        else
+            rows.push_back ({ Kind::note, looking ? juce::String ("Looking through it...") : juce::String ("NightShift can't read this folder"), {},
+                              sampleColour, samplesGroup, {}, {}, 2 });
+    }
+
+    if (filter.isEmpty())
+        rows.push_back ({ Kind::scan, "Add a folder...", {}, sampleColour, addSampleFolderRow, {} });
+
+    return rows;
+}
+
+void Sidebar::addFolderRows (std::vector<Row>& rows, const juce::File& dir, const samples::Folder* folder, int depth)
+{
+    if (folder->count == 0)
+    {
+        rows.push_back ({ Kind::note, "No sounds in it", {}, sampleColour, samplesGroup, {}, {}, depth });
+        return;
+    }
+
+    // Its folders (each opening in place), then its sounds, each saying what kind of file it is
+    for (auto& sub : folder->folders)
+    {
+        const auto subDir = dir.getChildFile (sub->name);
+        const auto path = subDir.getFullPathName();
+        rows.push_back ({ Kind::sampleFolder, sub->name, juce::String (sub->count), sampleColour, samplesGroup, {}, path, depth, path });
+
+        if (sampleFoldersOpen.contains (path))
+            addFolderRows (rows, subDir, sub.get(), depth + 1);
+    }
+
+    for (auto& name : folder->files)
+    {
+        const auto file = dir.getChildFile (name);
+        rows.push_back ({ Kind::sample, file.getFileNameWithoutExtension(), file.getFileExtension().substring (1).toLowerCase(), sampleColour,
+                          samplesGroup, {}, file.getFullPathName(), depth });
+    }
+}
+
+void Sidebar::toggleSamplePreview (const juce::File& file)
+{
+    // A click plays it through the studio's output; the next stops it (another sample plays instead)
+    if (audio.getPreviewing() == file)
+        audio.stopPreview();
+    else
+        audio.previewSample (file);
+
+    previewShown = audio.getPreviewing();
+
+    if (previewShown != juce::File())
+        startTimerHz (10);      // to see it end
+
+    repaint();
+}
+
+void Sidebar::timerCallback()
+{
+    const auto now = audio.getPreviewing();
+
+    if (now != previewShown)
+    {
+        previewShown = now;
+        repaint();
+    }
+
+    if (now == juce::File())
+        stopTimer();
+}
+
+void Sidebar::addSampleFolder (const juce::File& dir)
+{
+    if (! dir.isDirectory())
+        return;
+
+    if (! getSampleFolders().contains (dir))
+    {
+        auto options = audio.getOptions();
+        options.sampleFolders.add (dir.getFullPathName());
+        audio.setOptions (options);
+    }
+
+    // Shown open, as it's looked through
+    groupOpen[samplesGroup] = true;
+    sampleFoldersOpen.addIfNotAlreadyThere (dir.getFullPathName());
+    sampleLibrary.lookThrough ({ dir });
+    rebuildSounds();
+    showSoundRow (samples::displayName (dir), groupNames[samplesGroup]);
+}
+
+void Sidebar::removeSampleFolder (const juce::File& dir)
+{
+    auto options = audio.getOptions();
+    options.sampleFolders.removeString (dir.getFullPathName());
+    audio.setOptions (options);
+    sampleFoldersOpen.removeString (dir.getFullPathName());
+    rebuildSounds();
+}
+
+void Sidebar::chooseSampleFolder()
+{
+    folderChooser = std::make_unique<juce::FileChooser> ("Pick a folder of sounds", juce::File::getSpecialLocation (juce::File::userMusicDirectory));
+    folderChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                                [this, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& c)
+                                {
+                                    if (const auto dir = c.getResult(); dir.isDirectory())
+                                        addSampleFolder (dir);
+                                });
+}
+
+void Sidebar::showSampleMenu (const Row& row)
+{
+    const juce::File file (row.key);
+    juce::PopupMenu menu;
+
+    if (row.kind == Kind::sample)
+    {
+        menu.addItem (audio.getPreviewing() == file ? "Stop" : "Play", [this, file] { toggleSamplePreview (file); });
+        menu.addItem ("Add to Steps as a sampler channel", [this, path = row.key] { if (onAddSample != nullptr) onAddSample (path); });
+        menu.addSeparator();
+    }
+
+   #if JUCE_MAC
+    menu.addItem ("Show in Finder", [file] { file.revealToUser(); });
+   #else
+    menu.addItem ("Show in Explorer", [file] { file.revealToUser(); });
+   #endif
+
+    // A folder added to Samples can go again (it stays where it is)
+    if (row.kind == Kind::sampleFolder && row.depth == 1 && audio.getOptions().sampleFolders.contains (row.key))
+        menu.addItem ("Remove from Samples", [this, file] { removeSampleFolder (file); });
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition());
 }
 
 //==============================================================================
