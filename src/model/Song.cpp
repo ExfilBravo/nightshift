@@ -648,7 +648,21 @@ int Song::songLengthInTicks() const
     return end;
 }
 
-float AutomationLane::valueAt (int tick) const
+float automationcurve::shape (float along, float curve)
+{
+    along = juce::jlimit (0.0f, 1.0f, along);
+    curve = juce::jlimit (-most, most, curve);
+
+    if (std::abs (curve) < 1.0e-4f)
+        return along;
+
+    // The power that puts the middle (1 - c) / 2 of the way: easing in climbs u^p, easing out is
+    // its mirror (1 - (1 - u)^p), each 1 for a straight line
+    const float power = 1.0f + std::log2 (1.0f / (1.0f - std::abs (curve)));
+    return curve > 0.0f ? std::pow (along, power) : 1.0f - std::pow (1.0f - along, power);
+}
+
+float AutomationLane::valueAt (double tick) const
 {
     if (points.empty())
         return 0.0f;
@@ -661,7 +675,8 @@ float AutomationLane::valueAt (int tick) const
         {
             const auto& a = points[i - 1];
             const auto& b = points[i];
-            return a.value + (b.value - a.value) * (float) (tick - a.tick) / (float) std::max (1, b.tick - a.tick);
+            const double along = (tick - a.tick) / (double) std::max (1, b.tick - a.tick);
+            return a.value + (b.value - a.value) * automationcurve::shape ((float) along, a.curve);
         }
 
     return points.back().value;
@@ -1110,6 +1125,11 @@ void Song::removeBus (int id)
 
         std::erase_if (c.sends, [id] (auto& s) { return s.busId == id; });
     }
+
+    // Its own lanes and links, and the channels' for their sends to it
+    const auto sendKey = "send:" + juce::String (id);
+    std::erase_if (automation, [id, &sendKey] (auto& lane) { return lane.owner == id || lane.param == sendKey; });
+    std::erase_if (controllerLinks, [id, &sendKey] (auto& link) { return link.owner == id || link.param == sendKey; });
 }
 
 void Song::removePattern (int id)
@@ -1385,6 +1405,7 @@ static juce::String typeToString (InstrumentType t)
         case InstrumentType::audio:   return "audio";
         case InstrumentType::kit:     return "kit";
         case InstrumentType::instrument: return "instrument";
+        case InstrumentType::midiOut: return "midiOut";
         case InstrumentType::sampler: break;
     }
 
@@ -1398,6 +1419,7 @@ static InstrumentType typeFromString (const juce::String& s)
     if (s == "audio")   return InstrumentType::audio;
     if (s == "kit")     return InstrumentType::kit;
     if (s == "instrument") return InstrumentType::instrument;
+    if (s == "midiOut") return InstrumentType::midiOut;
     return InstrumentType::sampler;
 }
 
@@ -1801,6 +1823,10 @@ juce::var Song::toVar() const
         o->setProperty ("kit", c.kit);
         o->setProperty ("instrument", c.instrument);
 
+        // A synth plugged in: [the MIDI output, its channel, the program asked for]
+        if (c.type == InstrumentType::midiOut || c.midiOutDevice.isNotEmpty() || c.midiProgram >= 0)
+            o->setProperty ("midiOut", juce::Array<juce::var> { c.midiOutDevice, c.midiOutChannel, c.midiProgram });
+
         if (! c.drummer.turns.empty())
             o->setProperty ("drummer", drummerToVar (c.drummer));
 
@@ -1932,7 +1958,8 @@ juce::var Song::toVar() const
     root->setProperty ("audioClips", audioList);
     root->setProperty ("loop", juce::Array<juce::var> { loopOn, loopStart, loopEnd });
 
-    // Automation lanes, each point as [tick, value]
+    // Automation lanes, each point as [tick, value], or [tick, value, curve] when the line on from
+    // it bends
     juce::Array<juce::var> laneList;
 
     for (auto& lane : automation)
@@ -1944,7 +1971,7 @@ juce::var Song::toVar() const
         juce::Array<juce::var> pointList;
 
         for (auto& p : lane.points)
-            pointList.add (juce::Array<juce::var> { p.tick, p.value });
+            pointList.add (p.curve != 0.0f ? juce::Array<juce::var> { p.tick, p.value, p.curve } : juce::Array<juce::var> { p.tick, p.value });
 
         o->setProperty ("points", pointList);
         laneList.add (juce::var (o));
@@ -2042,6 +2069,14 @@ void Song::fromVar (const juce::var& v)
             c.pluginState = o.getProperty ("pluginState", {}).toString();
             c.kit = o.getProperty ("kit", {}).toString();
             c.instrument = o.getProperty ("instrument", {}).toString();
+
+            if (auto* out = o.getProperty ("midiOut", {}).getArray(); out != nullptr && out->size() >= 3)
+            {
+                c.midiOutDevice = (*out)[0].toString();
+                c.midiOutChannel = juce::jlimit (1, 16, (int) (*out)[1]);
+                c.midiProgram = juce::jlimit (-1, 127, (int) (*out)[2]);
+            }
+
             c.drummer = drummerFromVar (o.getProperty ("drummer", {}));
             c.bass = bassFromVar (o.getProperty ("bass", {}));
             c.guitar = guitarFromVar (o.getProperty ("guitar", {}));
@@ -2175,7 +2210,7 @@ void Song::fromVar (const juce::var& v)
         loopEnd = juce::jmax (loopStart, (int) (*loop)[2]);
     }
 
-    // Automation lanes of channels that are here (and the master's), points in time order
+    // Automation lanes of channels and buses that are here (and the master's), points in time order
     if (auto* list = v.getProperty ("automation", {}).getArray())
         for (auto& o : *list)
         {
@@ -2187,11 +2222,12 @@ void Song::fromVar (const juce::var& v)
             if (auto* points = o.getProperty ("points", {}).getArray())
                 for (auto& p : *points)
                     if (p.size() >= 2)
-                        lane.points.push_back ({ juce::jmax (0, (int) p[0]), (float) (double) p[1] });
+                        lane.points.push_back ({ juce::jmax (0, (int) p[0]), (float) (double) p[1],
+                                                 p.size() >= 3 ? juce::jlimit (-automationcurve::most, automationcurve::most, (float) (double) p[2]) : 0.0f });
 
             std::stable_sort (lane.points.begin(), lane.points.end(), [] (auto& a, auto& b) { return a.tick < b.tick; });
 
-            if (lane.param.isNotEmpty() && (lane.owner == 0 || findChannel (lane.owner) != nullptr) && findLane (lane.owner, lane.param) == nullptr)
+            if (lane.param.isNotEmpty() && canOwnAutomation (lane.owner) && findLane (lane.owner, lane.param) == nullptr)
                 automation.push_back (lane);
         }
 
@@ -2203,7 +2239,7 @@ void Song::fromVar (const juce::var& v)
             {
                 ControllerLink link { l[0].toString(), juce::jlimit (1, 16, (int) l[1]), juce::jlimit (0, 127, (int) l[2]), (int) l[3], l[4].toString() };
 
-                if (link.param.isNotEmpty() && (link.owner == 0 || findChannel (link.owner) != nullptr))
+                if (link.param.isNotEmpty() && canOwnAutomation (link.owner))
                     controllerLinks.push_back (link);
             }
 

@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "AudioEngine.h"
+#include "AutomationRecorder.h"
 #include "model/Paths.h"
 #include "DrumKit.h"
 #include "DrumSynth.h"
@@ -13,6 +14,7 @@
 #include "Nova.h"
 #include "GuitarSound.h"
 #include "SamplePreview.h"
+#include "MidiFiles.h"
 #include <tracktion_engine/playback/graph/tracktion_EditNodeBuilder.h>
 #include <set>
 
@@ -268,7 +270,11 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
     engine->getPluginManager().createBuiltInType<SfzPlugin>();
     engine->getPluginManager().createBuiltInType<NovaPlugin>();
     engine->getPluginManager().createBuiltInType<GuitarPlugin>();
+    engine->getPluginManager().createBuiltInType<MidiOutPlugin>();
     stockfx::registerAll (*engine);
+
+    // Synths plugged in: a command-line run's counts time in samples and catches what it sends
+    midiOut = std::make_unique<MidiOutHub> (! openAudioDevice);
     loadOptions();
 
     if (liveAudio)
@@ -355,6 +361,7 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
     loadPluginList (getKnownPlugins(), pluginListFile());
     getKnownPlugins().addChangeListener (this);
     song.addListener (this);
+    automationRecorder = std::make_unique<AutomationRecorder> (song, *this);
     syncNow();
 }
 
@@ -362,6 +369,7 @@ AudioEngine::~AudioEngine()
 {
     *alive = false;
     stopTimer();
+    automationRecorder.reset();     // off every parameter it listens to, while they're there
     pluginFinder.reset();
 
     if (liveAudio)
@@ -444,9 +452,16 @@ void AudioEngine::changeListenerCallback (juce::ChangeBroadcaster* source)
         return;
     }
 
-    // The device or its inputs changed: inputs are rebuilt, so targets and meters are too
+    // The device or its inputs changed: inputs are rebuilt, so targets and meters are too (and
+    // the MIDI outputs: Tracktion's closed, the hub's opened again for one plugged back in)
     pending |= needInputs;
     triggerAsyncUpdate();
+
+    if (liveAudio)
+    {
+        closeTracktionMidiOutputs();
+        midiOut->refreshPorts();
+    }
 }
 
 void AudioEngine::syncNow()
@@ -482,6 +497,10 @@ void AudioEngine::handleAsyncUpdate()
     // Last, onto whatever plugins are there now (a chain rebuilt, the mode or tempo changed)
     if (flags & (needAutomation | needTempo | needChannels | needMixer | needClips))
         syncAutomation();
+
+    // Synths plugged in: their notes as the song now plays them (unchanged, nothing's disturbed)
+    if (flags & (needTempo | needChannels | needMixer | needNotes | needClips | needMutes | needInputs))
+        syncMidiOut();
 }
 
 void AudioEngine::syncMutes()
@@ -770,16 +789,22 @@ void AudioEngine::playbackContextChanged()
     if (context == nullptr || metronomePlugin == nullptr)
         return;
 
+    // After it, the synths plugged in take their timing from what's heard (see MidiOutHub)
     context->setInsertOptionalLastStageNodeForDeviceCallback (
-        [plugin = metronomePlugin, preview = previewPlugin, &dm = engine->getDeviceManager()] (te::OutputDevice& device, const te::CreateNodeParams& params,
-                                                                                              std::unique_ptr<te::graph::Node> node)
+        [plugin = metronomePlugin, preview = previewPlugin, &dm = engine->getDeviceManager(), hub = midiOut.get()]
+        (te::OutputDevice& device, const te::CreateNodeParams& params, std::unique_ptr<te::graph::Node> node)
         {
             if (device.isMidi() || dm.getDefaultWaveOutDeviceID() != device.getDeviceID())
                 return node;
 
-            // The metronome, then a sample heard from the sidebar (on the same output, after the master)
+            // The metronome, then a sample heard from the sidebar (on the same output, after the master), and the
+            // synths plugged in last, timed from all that's heard
             node = te::createGeneratorPluginNode (plugin, params, std::move (node));
-            return preview != nullptr ? te::createGeneratorPluginNode (preview, params, std::move (node)) : std::move (node);
+
+            if (preview != nullptr)
+                node = te::createGeneratorPluginNode (preview, params, std::move (node));
+
+            return hub != nullptr ? hub->createNode (std::move (node), params.processState) : std::move (node);
         });
 
     context->reallocate();
@@ -799,6 +824,7 @@ juce::String AudioEngine::sourceKey (const Channel& c)
         case InstrumentType::audio:   return {};
         case InstrumentType::kit:     return c.kit;
         case InstrumentType::instrument: return c.instrument;
+        case InstrumentType::midiOut: return "midiOut";     // where it goes is the hub's, not the plugin's
         case InstrumentType::sampler: break;
     }
 
@@ -1329,6 +1355,15 @@ void AudioEngine::buildInstrument (Slot& slot, const Channel& channel)
             break;
         }
 
+        case InstrumentType::midiOut:
+        {
+            // Silent: what a keyboard plays on it goes straight out of the MIDI output
+            if ((plugin = cache.createNewPlugin (MidiOutPlugin::xmlTypeName, {})))
+                if (auto out = dynamic_cast<MidiOutPlugin*> (plugin.get()))
+                    out->setRoute (midiOut.get(), channel.id);
+            break;
+        }
+
         case InstrumentType::audio:
             break;      // fed by its input, not an instrument
     }
@@ -1604,6 +1639,19 @@ te::AutomatableParameter* AudioEngine::findAutomationParameter (int owner, const
         return param.startsWith ("fx:") ? inChain (masterFx) : nullptr;
     }
 
+    // A bus: its track's volume and pan, and its effects
+    if (auto bus = busSlots.find (owner); bus != busSlots.end())
+    {
+        if (bus->second.track == nullptr)
+            return nullptr;
+
+        if (param == "volume" || param == "pan")
+            if (auto vp = bus->second.track->getVolumePlugin())
+                return param == "volume" ? vp->volParam.get() : vp->panParam.get();
+
+        return param.startsWith ("fx:") ? inChain (bus->second.effects) : nullptr;
+    }
+
     auto it = slots.find (owner);
 
     if (it == slots.end() || it->second.track == nullptr)
@@ -1663,6 +1711,17 @@ std::vector<AudioEngine::AutomationTarget> AudioEngine::automationTargets (int o
         return targets;
     }
 
+    // A bus: volume, pan and its effects (it sends nowhere but on, to the master)
+    if (auto bus = busSlots.find (owner); bus != busSlots.end())
+    {
+        targets.push_back ({ "pan", {}, "Pan" });
+
+        for (auto& [id, plugin] : bus->second.effects)
+            addPlugin (plugin.get(), "fx:" + juce::String (id) + ":", effectName (id, plugin.get()));
+
+        return targets;
+    }
+
     auto it = slots.find (owner);
 
     if (it == slots.end() || it->second.track == nullptr)
@@ -1695,6 +1754,20 @@ std::optional<std::pair<int, juce::String>> AudioEngine::automationKeyFor (const
     for (auto& [id, plugin] : masterFx)
         if (holds (plugin.get()))
             return std::make_pair (0, "fx:" + juce::String (id) + ":" + param.paramID);
+
+    for (auto& [owner, slot] : busSlots)
+    {
+        if (slot.track != nullptr)
+            if (auto vp = slot.track->getVolumePlugin())
+            {
+                if (vp->volParam.get() == p)  return std::make_pair (owner, juce::String ("volume"));
+                if (vp->panParam.get() == p)  return std::make_pair (owner, juce::String ("pan"));
+            }
+
+        for (auto& [id, plugin] : slot.effects)
+            if (holds (plugin.get()))
+                return std::make_pair (owner, "fx:" + juce::String (id) + ":" + param.paramID);
+    }
 
     for (auto& [owner, slot] : slots)
     {
@@ -1732,6 +1805,39 @@ juce::String AudioEngine::automationName (int owner, const juce::String& param) 
     return param;
 }
 
+std::vector<std::pair<double, float>> AudioEngine::curvePoints (const AutomationLane& lane)
+{
+    std::vector<std::pair<double, float>> out;
+    out.reserve (lane.points.size());
+
+    for (size_t i = 0; i < lane.points.size(); ++i)
+    {
+        const auto& a = lane.points[i];
+        out.emplace_back ((double) a.tick, a.value);
+
+        if (i + 1 == lane.points.size() || a.curve == 0.0f)
+            continue;
+
+        // A bent line: short straight ones along it, one every two ticks up to 48 (within a
+        // thousandth of the way at the sharpest bend)
+        const auto& b = lane.points[i + 1];
+        const int span = b.tick - a.tick;
+
+        if (span <= 0 || b.value == a.value)
+            continue;
+
+        const int steps = juce::jlimit (4, 48, span / 2);
+
+        for (int k = 1; k < steps; ++k)
+        {
+            const float along = (float) k / (float) steps;
+            out.emplace_back (a.tick + span * (double) along, a.value + (b.value - a.value) * automationcurve::shape (along, a.curve));
+        }
+    }
+
+    return out;
+}
+
 void AudioEngine::syncAutomation()
 {
     // Song mode plays the lanes. Pattern mode loops one pattern, where the song's automation
@@ -1749,21 +1855,30 @@ void AudioEngine::syncAutomation()
 
             driven.insert (param);
 
-            // Written again only when something changed (or the plugin is new, its curve empty)
+            // A lane being recorded is the hand's until it's let go: the parameter follows the hand
+            // meanwhile, and its curve is written once, when it's let go
+            if (automationRecorder != nullptr && automationRecorder->isWritingLane (lane.owner, lane.param))
+                continue;
+
+            // Written again only when something changed (or the plugin is new, its curve empty).
+            // A bent line goes in as short straight ones: Tracktion's own bends play only a quarter
+            // of the way to the corner before turning into a hold and a jump, and its message thread
+            // works them out twice as bent as its player, so a stopped song would sit elsewhere
             auto& written = writtenAutomation[juce::String (lane.owner) + "/" + lane.param];
             auto& curve = param->getCurve();
+            const auto wanted = curvePoints (lane);
 
             if (written.param == param && written.points == lane.points && written.bpm == song.bpm
                  && written.tempoChanges == song.tempoChanges && written.unit == song.meterUnit
-                 && curve.getNumPoints() == (int) lane.points.size())
+                 && curve.getNumPoints() == (int) wanted.size())
                 continue;
 
             const auto range = param->getValueRange();
             curve.clear (nullptr);
 
-            for (auto& point : lane.points)
-                curve.addPoint (te::TimePosition::fromSeconds (ticksToSeconds (point.tick)),
-                                juce::jlimit (range.getStart(), range.getEnd(), point.value), 0.0f, nullptr);
+            for (auto& [tick, value] : wanted)
+                curve.addPoint (te::TimePosition::fromSeconds (ticksToSeconds (tick)),
+                                juce::jlimit (range.getStart(), range.getEnd(), value), 0.0f, nullptr);
 
             written = { param, lane.points, song.bpm, song.tempoChanges, song.meterUnit };
         }
@@ -1801,6 +1916,15 @@ void AudioEngine::syncAutomation()
             sweep (plugin.get());
     }
 
+    for (auto& [id, slot] : busSlots)
+    {
+        if (slot.track != nullptr)
+            sweep (slot.track->getVolumePlugin());
+
+        for (auto& [effectId, plugin] : slot.effects)
+            sweep (plugin.get());
+    }
+
     for (auto& [id, plugin] : masterFx)
         sweep (plugin.get());
 
@@ -1809,6 +1933,173 @@ void AudioEngine::syncAutomation()
 
     if (restored)
         syncMixer();
+}
+
+//==============================================================================
+namespace
+{
+    /** A Tracktion fader position (a volume's or a send's parameter) as the song's 0..1, where
+        0.78 is 0 dB: channelVolumeToDb backwards. */
+    float levelFromFaderPosition (float position)
+    {
+        const float db = te::volumeFaderPositionToDB (position);
+        return db <= -99.0f ? 0.0f : juce::jlimit (0.0f, 1.0f, 0.78f * std::pow (10.0f, db / 40.0f));
+    }
+}
+
+void AudioEngine::setAutomationRecording (bool on)
+{
+    if (automationRecorder != nullptr)
+        automationRecorder->setArmed (on);
+}
+
+bool AudioEngine::isAutomationRecording() const
+{
+    return automationRecorder != nullptr && automationRecorder->isArmed();
+}
+
+bool AudioEngine::isWritingAutomation() const
+{
+    return automationRecorder != nullptr && automationRecorder->isWriting();
+}
+
+bool AudioEngine::isWritingLane (int owner, const juce::String& param) const
+{
+    return automationRecorder != nullptr && automationRecorder->isWritingLane (owner, param);
+}
+
+void AudioEngine::touchControl (int owner, const juce::String& param, bool down, bool held)
+{
+    if (automationRecorder == nullptr || ! automationRecorder->isArmed())
+        return;
+
+    // The song's own controls: their faders made the undo step as they were grabbed. Their moves
+    // reach the parameter a moment later (syncMixer), so the last one goes in before letting go
+    if (auto p = findAutomationParameter (owner, param))
+    {
+        if (! held)
+            automationRecorder->nudge (*p, false);
+        else if (down)
+            automationRecorder->touch (*p, true, false);
+        else
+        {
+            syncNow();
+            automationRecorder->touch (*p, false, false);
+        }
+    }
+}
+
+void AudioEngine::touchParameter (te::AutomatableParameter& p, bool down, bool held)
+{
+    if (automationRecorder == nullptr || ! automationRecorder->isArmed())
+        return;
+
+    if (! held)
+        automationRecorder->nudge (p);
+    else
+        automationRecorder->touch (p, down);
+}
+
+double AudioEngine::getHeardTicks() const
+{
+    // Where the audio thread is now, less the output's delay before it's heard
+    auto& transport = edit->getTransport();
+    double seconds = transport.getPosition().inSeconds();
+
+    if (auto context = transport.getCurrentPlaybackContext())
+        seconds = context->getPosition().inSeconds();
+
+    if (const auto info = getLatencyInfo(); info.sampleRate > 0.0)
+        seconds -= info.outputSamples / info.sampleRate;
+
+    return secondsToTicks (seconds);
+}
+
+std::vector<te::AutomatableParameter*> AudioEngine::allAutomationParameters() const
+{
+    std::vector<te::AutomatableParameter*> all;
+
+    auto add = [&all] (te::Plugin* plugin)
+    {
+        if (plugin != nullptr)
+            for (auto* p : plugin->getAutomatableParameters())
+                all.push_back (p);
+    };
+
+    for (auto& [id, slot] : slots)
+    {
+        if (slot.track != nullptr)
+            add (slot.track->getVolumePlugin());
+
+        add (slot.instrument.get());
+
+        for (auto& [effectId, plugin] : slot.effects)
+            add (plugin.get());
+
+        for (auto& [key, plugin] : slot.sends)
+            add (plugin.get());
+    }
+
+    for (auto& [id, slot] : busSlots)
+    {
+        if (slot.track != nullptr)
+            add (slot.track->getVolumePlugin());
+
+        for (auto& [effectId, plugin] : slot.effects)
+            add (plugin.get());
+    }
+
+    for (auto& [id, plugin] : masterFx)
+        add (plugin.get());
+
+    add (masterLimiter.get());
+    return all;
+}
+
+void AudioEngine::takeParameterValue (int owner, const juce::String& param, float value)
+{
+    auto p = findAutomationParameter (owner, param);
+
+    if (p != nullptr)
+        p->setParameter (value, juce::dontSendNotification);
+
+    // The song's own controls keep their values in the song (syncMixer puts them back on)
+    bool mixer = true;
+
+    if (owner == 0 && param == "volume")
+        song.masterVolume = juce::jlimit (0.0f, 1.0f, value);
+    else if (auto c = song.findChannel (owner); c != nullptr && param == "volume")
+        c->volume = levelFromFaderPosition (value);
+    else if (c != nullptr && param == "pan")
+        c->pan = juce::jlimit (-1.0f, 1.0f, value);
+    else if (auto s = c != nullptr && param.startsWith ("send:") ? Song::findSend (*c, param.fromFirstOccurrenceOf ("send:", false, false).getIntValue()) : nullptr)
+        s->level = levelFromFaderPosition (value);
+    else if (auto b = song.findBus (owner); b != nullptr && param == "volume")
+        b->volume = levelFromFaderPosition (value);
+    else if (b != nullptr && param == "pan")
+        b->pan = juce::jlimit (-1.0f, 1.0f, value);
+    else
+        mixer = false;
+
+    if (mixer)
+        song.notify (Song::Change::mixer);
+}
+
+std::optional<float> AudioEngine::getAutomatedControl (int owner, const juce::String& param) const
+{
+    if (song.mode != PlayMode::song || ! isPlaying())
+        return std::nullopt;
+
+    const auto* lane = song.findLane (owner, param);
+    auto p = lane != nullptr && ! lane->points.empty() ? findAutomationParameter (owner, param) : nullptr;
+
+    if (p == nullptr)
+        return std::nullopt;
+
+    // The master's volume and every pan are in the song's units already; volumes and sends are
+    // Tracktion fader positions
+    const float value = p->getCurrentValue();
+    return owner == 0 || param == "pan" ? value : levelFromFaderPosition (value);
 }
 
 //==============================================================================
@@ -2095,6 +2386,11 @@ bool AudioEngine::applyControllerLinks (const juce::String& device, const juce::
 
         any = true;
 
+        // Recording automation: the knob writes its control's lane until it's left alone a moment
+        if (automationRecorder != nullptr && automationRecorder->isWriting())
+            if (auto p = findAutomationParameter (link.owner, link.param))
+                automationRecorder->nudge (*p);
+
         // The song's own controls through the song (their faders follow, it's saved); anything
         // else straight to its parameter
         if (link.param == "volume" || link.param == "pan" || link.param.startsWith ("send:"))
@@ -2113,6 +2409,13 @@ bool AudioEngine::applyControllerLinks (const juce::String& device, const juce::
                 else if (auto s = Song::findSend (*c, link.param.fromFirstOccurrenceOf ("send:", false, false).getIntValue()))
                     s->level = norm;
             }
+            else if (auto b = song.findBus (link.owner))
+            {
+                if (link.param == "volume")
+                    b->volume = norm;
+                else if (link.param == "pan")
+                    b->pan = norm * 2.0f - 1.0f;
+            }
 
             mixer = true;
         }
@@ -2126,6 +2429,151 @@ bool AudioEngine::applyControllerLinks (const juce::String& device, const juce::
         song.notify (Song::Change::mixer);
 
     return any;
+}
+
+//==============================================================================
+juce::StringArray AudioEngine::getMidiOutputNames() const
+{
+    return midiOut->getOutputNames();
+}
+
+MidiOutHub::OutputSettings AudioEngine::getMidiOutSettings (const juce::String& output) const
+{
+    auto found = options.midiOuts.find (output);
+    return found != options.midiOuts.end() ? found->second : MidiOutHub::OutputSettings();
+}
+
+void AudioEngine::setMidiOutSettings (const juce::String& output, MidiOutHub::OutputSettings s)
+{
+    s.timingMs = juce::jlimit (-MidiOutHub::maxTimingMs, MidiOutHub::maxTimingMs, s.timingMs);
+    auto o = options;
+
+    // Kept only while it differs from on time, without the clock
+    if (s == MidiOutHub::OutputSettings())
+        o.midiOuts.erase (output);
+    else
+        o.midiOuts[output] = s;
+
+    setOptions (o);
+}
+
+void AudioEngine::sendTestNote (int channelId)
+{
+    auto c = song.findChannel (channelId);
+
+    if (c == nullptr || c->type != InstrumentType::midiOut || c->midiOutDevice.isEmpty())
+        return;
+
+    syncNow();
+    const int ch = juce::jlimit (1, 16, c->midiOutChannel);
+    const int key = juce::jlimit (0, 127, c->rootKey);
+
+    if (c->midiProgram >= 0)
+        midiOut->sendNow (c->midiOutDevice, juce::MidiMessage::programChange (ch, c->midiProgram));
+
+    midiOut->sendNow (c->midiOutDevice, juce::MidiMessage::noteOn (ch, key, (juce::uint8) 100));
+
+    juce::Timer::callAfterDelay (400, [weakAlive = std::weak_ptr<bool> (alive), hub = midiOut.get(), device = c->midiOutDevice, ch, key]
+    {
+        if (auto stillAlive = weakAlive.lock(); stillAlive && *stillAlive)
+            hub->sendNow (device, juce::MidiMessage::noteOff (ch, key));
+    });
+}
+
+void AudioEngine::sendMidiProgram (int channelId)
+{
+    if (auto c = song.findChannel (channelId); c != nullptr && c->type == InstrumentType::midiOut
+                                                && c->midiOutDevice.isNotEmpty() && c->midiProgram >= 0)
+        midiOut->sendNow (c->midiOutDevice, juce::MidiMessage::programChange (juce::jlimit (1, 16, c->midiOutChannel), c->midiProgram));
+}
+
+void AudioEngine::closeTracktionMidiOutputs()
+{
+    // NightShift never plays a track out of Tracktion's MIDI outputs; the hub opens what it needs
+    auto& dm = engine->getDeviceManager();
+
+    for (int i = 0; i < dm.getNumMidiOutDevices(); ++i)
+        if (auto* d = dm.getMidiOutDevice (i); d != nullptr && d->isEnabled())
+            d->setEnabled (false);
+}
+
+void AudioEngine::syncMidiOut()
+{
+    MidiOutHub::Plan plan;
+    plan.baseUnit = song.meterUnit;
+    std::map<juce::String, int> outputIndex;
+
+    auto outputFor = [&] (const juce::String& name)
+    {
+        if (auto found = outputIndex.find (name); found != outputIndex.end())
+            return found->second;
+
+        MidiOutHub::Output out;
+        out.name = name;
+        out.settings = getMidiOutSettings (name);
+        plan.outputs.push_back (std::move (out));
+        return outputIndex[name] = (int) plan.outputs.size() - 1;
+    };
+
+    // Each channel playing a synth plugged in: where it goes, and the sound it asks for
+    std::map<int, std::pair<int, int>> heard;     // channel -> output, MIDI channel
+
+    for (auto& c : song.channels)
+    {
+        if (c.type != InstrumentType::midiOut || c.midiOutDevice.isEmpty())
+            continue;
+
+        const int out = outputFor (c.midiOutDevice);
+        const int ch = juce::jlimit (1, 16, c.midiOutChannel);
+        plan.routes.push_back ({ c.id, out, ch, c.muted });
+
+        if (! c.muted)
+            heard[c.id] = { out, ch };
+
+        if (c.midiProgram >= 0)
+            plan.outputs[(size_t) out].programs.push_back (juce::MidiMessage::programChange (ch, juce::jlimit (0, 127, c.midiProgram)));
+    }
+
+    // Outputs following the tempo, whether or not a channel plays them
+    for (auto& [name, s] : options.midiOuts)
+        if (s.clock)
+            outputFor (name);
+
+    // Their notes as the song plays them (the current pattern round and round in Pattern mode),
+    // in the engine's seconds: where Tracktion's tempo map puts them
+    if (! heard.empty())
+    {
+        const int patternId = song.mode == PlayMode::pattern ? song.currentPattern().id : 0;
+
+        for (auto& n : midifile::notesAsPlayed (song, patternId, true))
+        {
+            const auto route = heard.find (n.channelId);
+
+            if (route == heard.end())
+                continue;
+
+            auto& events = plan.outputs[(size_t) route->second.first].events;
+            const auto ch = (juce::uint8) (route->second.second - 1);
+            const auto key = (juce::uint8) juce::jlimit (0, 127, n.key);
+            events.push_back ({ ticksToSeconds (n.start), { (juce::uint8) (0x90 | ch), key, (juce::uint8) juce::jlimit (1, 127, n.velocity) }, 3 });
+            events.push_back ({ ticksToSeconds (n.end), { (juce::uint8) (0x80 | ch), key, 0 }, 3 });
+        }
+
+        // In time order; at one moment a note ends before another starts
+        for (auto& out : plan.outputs)
+            std::stable_sort (out.events.begin(), out.events.end(), [] (const MidiOutHub::Event& a, const MidiOutHub::Event& b)
+            {
+                if (a.seconds != b.seconds)
+                    return a.seconds < b.seconds;
+
+                return (a.bytes[0] & 0xf0) == 0x80 && (b.bytes[0] & 0xf0) == 0x90;
+            });
+    }
+
+    if (liveAudio)
+        midiOut->setOutputLatency (getLatencyInfo().outputSamples);
+
+    midiOut->setPlan (std::move (plan));
 }
 
 //==============================================================================
@@ -2238,11 +2686,12 @@ void AudioEngine::syncClips (bool notesOnly)
 
         removeAllClips();
 
+        // (a synth plugged in plays its notes from the MIDI out's plan, not from a clip)
         for (auto& channel : song.channels)
         {
             auto& slot = slots[channel.id];
 
-            if (slot.track != nullptr && channel.type != InstrumentType::audio)
+            if (slot.track != nullptr && channel.type != InstrumentType::audio && channel.type != InstrumentType::midiOut)
                 if ((slot.patternClip = slot.track->insertMIDIClip (pattern.name, clipRange (0, length), nullptr)))
                     fillClip (*slot.patternClip, pattern.findNotes (channel.id));
         }
@@ -2269,7 +2718,7 @@ void AudioEngine::syncClips (bool notesOnly)
                 auto notes = pattern->findNotes (channel.id);
                 auto& slot = slots[channel.id];
 
-                if (notes != nullptr && ! notes->empty() && slot.track != nullptr)
+                if (notes != nullptr && ! notes->empty() && slot.track != nullptr && channel.type != InstrumentType::midiOut)
                 {
                     if (auto clip = slot.track->insertMIDIClip (pattern->name, clipRange (placed.start, length), nullptr))
                     {
@@ -3055,6 +3504,12 @@ void AudioEngine::loadOptions()
     options.disabledMidiInputs = juce::StringArray::fromTokens (file.getValue ("nsDisabledMidiInputs"), "|", {});
     options.disabledMidiInputs.removeEmptyStrings();
 
+    // Synths plugged in: [[name, timing in ms, clock], ...]
+    if (auto* outs = juce::JSON::parse (file.getValue ("nsMidiOuts", "[]")).getArray())
+        for (auto& o : *outs)
+            if (o.size() >= 3 && o[0].toString().isNotEmpty())
+                options.midiOuts[o[0].toString()] = { juce::jlimit (-MidiOutHub::maxTimingMs, MidiOutHub::maxTimingMs, (int) o[1]), (bool) o[2] };
+
     options.metronome = file.getBoolValue ("nsMetronome", false);
     options.metronomeRecordingOnly = file.getBoolValue ("nsClickRecordingOnly", false);
     options.clickSound = juce::jlimit (0, metronome::soundNames().size() - 1, file.getIntValue ("nsClickSound", 0));
@@ -3080,10 +3535,14 @@ void AudioEngine::loadOptions()
 void AudioEngine::setOptions (const Options& o)
 {
     const bool monitoringChanged = o.lowLatencyMonitoring != options.lowLatencyMonitoring;
+    const bool midiOutsChanged = o.midiOuts != options.midiOuts;
     options = o;
 
     // Every amp hears the guitar at the interface's level (input calibration)
     NightAmp::setInterfaceLevel (options.interfaceInputDbu);
+
+    if (midiOutsChanged && midiOut != nullptr)
+        syncMidiOut();
 
     if (liveAudio)
     {
@@ -3101,6 +3560,13 @@ void AudioEngine::setOptions (const Options& o)
         file.setValue ("nsDonationAsked", options.donationAsked);
         file.setValue ("nsExportBits", options.exportBits);
         file.setValue ("nsDisabledMidiInputs", options.disabledMidiInputs.joinIntoString ("|"));
+
+        juce::Array<juce::var> outs;
+
+        for (auto& [name, s] : options.midiOuts)
+            outs.add (juce::Array<juce::var> { name, s.timingMs, s.clock });
+
+        file.setValue ("nsMidiOuts", juce::JSON::toString (juce::var (outs), true));
 
         file.setValue ("nsMetronome", options.metronome);
         file.setValue ("nsClickRecordingOnly", options.metronomeRecordingOnly);
@@ -3278,6 +3744,14 @@ void AudioEngine::timerCallback()
 
     if (! liveAudio)
         return;
+
+    // A synth plugged in (or back in) while running: its output opened, every two seconds
+    if (++midiOutRefresh >= 40)
+    {
+        midiOutRefresh = 0;
+        closeTracktionMidiOutputs();
+        midiOut->refreshPorts();
+    }
 
     // A device starting (opened, switched, or reset by its driver) suspends playback until
     // it's prepared; if the transport's own check runs meanwhile it stops itself. Carry on from
@@ -3825,7 +4299,7 @@ void AudioEngine::flushPluginStates()
     for (auto& channel : song.channels)
     {
         if (channel.type == InstrumentType::sampler || channel.type == InstrumentType::audio || channel.type == InstrumentType::kit
-             || channel.type == InstrumentType::instrument)
+             || channel.type == InstrumentType::instrument || channel.type == InstrumentType::midiOut)
             continue;
 
         if (auto plugin = getInstrument (channel.id))
