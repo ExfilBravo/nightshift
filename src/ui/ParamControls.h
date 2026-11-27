@@ -34,6 +34,9 @@ struct ParamControl : public juce::Component,
     // Greyed out but still readable: at 0.65 its words stay over 3 to 1 (at 0.4 they were under 2)
     void setDimmed (bool d)                         { dimmed = d; setAlpha (d ? 0.65f : 1.0f); }
 
+    /** Grabbed, let go, or changed with nothing held: recording automation writes its moves. */
+    void touch (bool down, bool held = true)        { automation::touch (param.value->getParameter(), down, held); }
+
     StockEffect::Param& param;
     bool dimmed = false;
 };
@@ -82,6 +85,9 @@ struct ParamKnob : public ParamControl
         slider.getProperties().set ("bipolar", p.range.start < 0.0f && p.range.end > 0.0f);
         slider.setValue (p.get(), juce::dontSendNotification);
         slider.setTooltip (p.name + " (drag; double-click to reset; right-click to automate it or link a MIDI knob)");
+        // (The wheel comes as a drag of its own each notch: a change with nothing held)
+        slider.onDragStart = [this] { grabbed = slider.isMouseButtonDown(); touch (true, grabbed); };
+        slider.onDragEnd = [this] { if (std::exchange (grabbed, false)) touch (false); };
         slider.onValueChange = [this]
         {
             if (! updating)
@@ -123,7 +129,7 @@ struct ParamKnob : public ParamControl
 
     KnobSlider slider;
     juce::String name;
-    bool updating = false;
+    bool updating = false, grabbed = false;
 };
 
 /** A small field: a caption, and a value dragged up and down (Shift for fine), stepped
@@ -154,7 +160,8 @@ struct ParamValue : public ParamControl
         g.drawText (param.text(), area, juce::Justification::centredRight, true);
     }
 
-    void mouseDown (const juce::MouseEvent&) override   { start = param.range.convertTo0to1 (param.get()); }
+    void mouseDown (const juce::MouseEvent&) override   { start = param.range.convertTo0to1 (param.get()); touch (true); }
+    void mouseUp (const juce::MouseEvent&) override     { touch (false); }
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
@@ -162,12 +169,13 @@ struct ParamValue : public ParamControl
         setNormalised (start - e.getDistanceFromDragStartY() * perPixel);
     }
 
-    void mouseDoubleClick (const juce::MouseEvent&) override   { param.set (param.defaultValue); repaint(); }
+    void mouseDoubleClick (const juce::MouseEvent&) override   { touch (true, false); param.set (param.defaultValue); repaint(); }
 
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
     {
         // A stepped parameter moves one step a notch
         const float steps = param.range.interval > 0.0f ? param.range.interval / (param.range.end - param.range.start) : 0.02f;
+        touch (true, false);
         setNormalised (param.range.convertTo0to1 (param.get()) + (w.deltaY > 0 ? steps : -steps));
     }
 
@@ -217,7 +225,7 @@ struct ParamToggle : public ParamControl
         g.drawText (name, getLocalBounds().withTrimmedLeft (26).withTrimmedRight (8), juce::Justification::centredLeft, true);
     }
 
-    void mouseDown (const juce::MouseEvent&) override   { param.set (isOn() ? 0.0f : 1.0f); repaint(); }
+    void mouseDown (const juce::MouseEvent&) override   { touch (true, false); param.set (isOn() ? 0.0f : 1.0f); repaint(); }
     void mouseEnter (const juce::MouseEvent&) override  { repaint(); }
     void mouseExit (const juce::MouseEvent&) override   { repaint(); }
 
@@ -231,7 +239,7 @@ struct ParamChoice : public ParamControl
     ParamChoice (StockEffect::Param& p, const juce::StringArray& options)
         : ParamControl (p), choices (options, SegmentedControl::Style::pill)
     {
-        choices.onChange = [this] (int index) { param.set ((float) index); };
+        choices.onChange = [this] (int index) { touch (true, false); param.set ((float) index); };
         addAndMakeVisible (choices);
         refresh();
     }
@@ -294,6 +302,7 @@ struct ParamMenu : public ParamControl
                             {
                                 if (safe != nullptr && result > 0)
                                 {
+                                    safe->touch (true, false);
                                     safe->param.set ((float) (result - 1));
                                     safe->repaint();
                                 }
@@ -302,6 +311,7 @@ struct ParamMenu : public ParamControl
 
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
     {
+        touch (true, false);
         param.set ((float) juce::jlimit (0, choices.size() - 1, index() + (w.deltaY > 0 ? -1 : 1)));
         repaint();
     }

@@ -121,8 +121,9 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     automationButton.setFilled (false);
     automationButton.setFramed (true);
     automationButton.setLabel ("Automation");
-    automationButton.setTooltip ("Automation: lanes under the tracks (the master's along the bottom) where you draw how volume, "
-                                 "pan or any knob changes over the song. Right-click a fader or knob to automate it");
+    automationButton.setTooltip ("Automation: lanes under the tracks (the buses' and the master's along the bottom) where you draw how "
+                                 "volume, pan or any knob changes over the song. Right-click a fader or knob to automate it, or record "
+                                 "its moves with the record automation button beside Record");
     automationButton.onClick = [this]
     {
         song.showAutomation = ! song.showAutomation;
@@ -137,8 +138,13 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
         if (auto key = audio.automationKeyFor (p))
             showControlMenu (key->first, key->second, name);
         else
-            showToast ("A bus's controls can't be automated or linked to a MIDI knob yet: a channel's and the master's can");
+            showToast ("This control isn't on a channel, a bus or the master, so it can't be automated");
     };
+
+    // Recording automation: a knob grabbed and let go; a lane starting to be written goes on show
+    automation::touchFor = [this] (tracktion::AutomatableParameter& p, bool down, bool held) { audio.touchParameter (p, down, held); };
+    audio.onAutomationWriting = [this] (int owner, const juce::String& param) { showWrittenLane (owner, param); };
+    toolbar.onRecordAutomation = [this] { toggleAutomationRecording(); };
 
     // A MIDI keyboard plugged in while running
     audio.onMidiInputAdded = [this] (const juce::String& name)
@@ -635,6 +641,8 @@ MainComponent::~MainComponent()
 {
     automation::showMenu = nullptr;
     automation::showMenuFor = nullptr;
+    automation::touchFor = nullptr;
+    audio.onAutomationWriting = nullptr;
     audio.onMidiInputAdded = nullptr;
     stopTimer();
     keyboardPoll.stopTimer();
@@ -2191,10 +2199,12 @@ void MainComponent::showControlMenu (int owner, const juce::String& param, const
 
 void MainComponent::showAutomationFor (int owner, const juce::String& param)
 {
-    if (owner != 0 && song.findChannel (owner) == nullptr)
+    if (! song.canOwnAutomation (owner))
         return;
 
-    if (owner != 0)
+    const auto* bus = song.findBus (owner);
+
+    if (song.findChannel (owner) != nullptr)
         playlist.addTrackFor (owner);
 
     const auto name = audio.automationName (owner, param);
@@ -2209,8 +2219,40 @@ void MainComponent::showAutomationFor (int owner, const juce::String& param)
         resized();
     }
 
-    showToast (name + (owner == 0 ? " is along the bottom of Arrange" : " is under its track in Arrange")
+    playlist.revealLane (owner, param);
+
+    showToast ((bus != nullptr ? bus->name + ": " : juce::String()) + name
+               + (owner == 0 || bus != nullptr ? " is along the bottom of Arrange" : " is under its track in Arrange")
                + ": click its lane to add points. Song mode plays them");
+}
+
+void MainComponent::showWrittenLane (int owner, const juce::String& param)
+{
+    // A lane being written is on show as it's written: lanes shown, a channel's under a track of
+    // its own (as Automate does), a bus's or the master's scrolled into view along the bottom
+    if (song.findChannel (owner) != nullptr)
+        playlist.addTrackFor (owner);
+
+    if (! song.showAutomation)
+    {
+        song.showAutomation = true;
+        song.notify (Song::Change::automation);
+    }
+
+    playlist.revealLane (owner, param);
+}
+
+void MainComponent::toggleAutomationRecording()
+{
+    const bool on = ! audio.isAutomationRecording();
+    audio.setAutomationRecording (on);
+    toolbar.refresh();
+
+    showToast (! on ? juce::String ("Recording automation is off: moving a control changes it, and its lane plays as it is")
+             : song.mode == PlayMode::song ? juce::String ("Recording automation: play the song and move a fader, a knob or a linked MIDI knob. "
+                                                           "Its lane is written from where you grab it to where you let go")
+                                           : juce::String ("Recording automation works in Song mode: switch to Song and play, then move a fader, "
+                                                           "a knob or a linked MIDI knob to write its lane"));
 }
 
 void MainComponent::songChanged (Song::Change c)
@@ -2653,6 +2695,8 @@ juce::PopupMenu MainComponent::createRecordMenu()
                   [set, v = ! o.startOnInput] { set ([v] (auto& x) { x.startOnInput = v; }); });
     menu.addItem ("Blend: keep the notes already in the pattern", true, o.blendNotes,
                   [set, v = ! o.blendNotes] { set ([v] (auto& x) { x.blendNotes = v; }); });
+    menu.addItem ("Record automation: a control moved while the song plays", true, audio.isAutomationRecording(),
+                  [this] { toggleAutomationRecording(); });
 
     juce::PopupMenu snap;
 

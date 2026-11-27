@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "Playlist.h"
+#include "TextAudit.h"
 #include "Theme.h"
 #include "TrackIcons.h"
 #include "Widgets.h"
@@ -72,8 +73,9 @@ void Playlist::songChanged (Song::Change c)
                                                                      || ! juce::isPositiveAndBelow (ref->index, (int) lane->points.size()))
                 *ref = {};
 
-    // The master's automation strip comes and goes, and grows with its lanes
-    if (c == Song::Change::automation || c == Song::Change::everything)
+    // The buses' and the master's automation strip comes and goes, and grows with their lanes (a
+    // bus taken away takes its own)
+    if (c == Song::Change::automation || c == Song::Change::everything || c == Song::Change::channels)
         resized();
     else
         updateScrollBars();
@@ -160,10 +162,44 @@ std::vector<juce::String> Playlist::laneParamsOf (int owner) const
     for (auto* lane : song.lanesOf (owner))
         params.push_back (lane->param);
 
-    if (params.empty())
+    // A channel and the master show their volume until they have lanes; a bus shows only its own
+    if (params.empty() && song.findBus (owner) == nullptr)
         params.push_back ("volume");
 
     return params;
+}
+
+void Playlist::revealLane (int owner, const juce::String& param)
+{
+    resized();      // (the strip as it is now, lanes just added in it)
+    const auto lanes = stripLanes();
+    const int shown = masterArea.getHeight() / automationLaneHeight;
+
+    for (int i = 0; i < (int) lanes.size(); ++i)
+        if (lanes[(size_t) i].first == owner && lanes[(size_t) i].second == param)
+        {
+            if (i < stripScroll)
+                stripScroll = i;
+            else if (shown > 0 && i >= stripScroll + shown)
+                stripScroll = i - shown + 1;
+
+            repaint();
+            return;
+        }
+}
+
+std::vector<std::pair<int, juce::String>> Playlist::stripLanes() const
+{
+    std::vector<std::pair<int, juce::String>> lanes;
+
+    for (auto& bus : song.buses)
+        for (auto& param : laneParamsOf (bus.id))
+            lanes.emplace_back (bus.id, param);
+
+    for (auto& param : laneParamsOf (0))
+        lanes.emplace_back (0, param);
+
+    return lanes;
 }
 
 int Playlist::automationRowFor (int owner) const
@@ -209,15 +245,19 @@ std::vector<Playlist::LaneView> Playlist::visibleLanes() const
                                { 0.0f, y, (float) headerWidth, (float) automationLaneHeight } });
     }
 
-    // The master's, along the bottom
-    const auto params = laneParamsOf (0);
+    // The buses' and the master's, along the bottom (from the first scrolled to, as many as fit)
+    const auto strip = stripLanes();
 
-    for (int i = 0; i < (int) params.size(); ++i)
+    for (int i = stripScroll; i < (int) strip.size(); ++i)
     {
-        const float y = (float) masterArea.getY() + (float) (i * automationLaneHeight);
-        lanes.push_back ({ 0, params[(size_t) i],
+        const float y = (float) masterArea.getY() + (float) ((i - stripScroll) * automationLaneHeight);
+
+        if (y + (float) automationLaneHeight > (float) masterArea.getBottom() + 0.5f)
+            break;
+
+        lanes.push_back ({ strip[(size_t) i].first, strip[(size_t) i].second,
                            { (float) masterArea.getX(), y, (float) masterArea.getWidth(), (float) automationLaneHeight },
-                           { 0.0f, y, (float) headerWidth, (float) automationLaneHeight } });
+                           { 0.0f, y, (float) headerWidth, (float) automationLaneHeight }, true });
     }
 
     return lanes;
@@ -274,7 +314,49 @@ juce::String Playlist::laneText (const LaneView& lane, float value) const
 
 juce::String Playlist::laneName (const LaneView& lane) const
 {
-    return (lane.owner == 0 ? juce::String ("Master: ") : juce::String()) + audio.automationName (lane.owner, lane.param);
+    // Along the bottom, whose it is first: "Master: Volume", "Reverb bus: Pan"
+    if (lane.owner == 0)
+        return "Master: " + audio.automationName (0, lane.param);
+
+    if (auto bus = song.findBus (lane.owner))
+        return bus->name + ": " + audio.automationName (lane.owner, lane.param);
+
+    return audio.automationName (lane.owner, lane.param);
+}
+
+std::optional<juce::Point<float>> Playlist::bendHandle (const LaneView& lane, int index) const
+{
+    const auto* data = song.findLane (lane.owner, lane.param);
+
+    if (data == nullptr || index < 0 || index + 1 >= (int) data->points.size())
+        return std::nullopt;
+
+    const auto& a = data->points[(size_t) index];
+    const auto& b = data->points[(size_t) index + 1];
+    const float x1 = tickToX (a.tick), x2 = tickToX (b.tick);
+
+    if (x2 - x1 < 28.0f || std::abs (laneValueToY (lane, b.value) - laneValueToY (lane, a.value)) < 6.0f)
+        return std::nullopt;
+
+    return juce::Point<float> ((x1 + x2) * 0.5f, laneValueToY (lane, data->valueAt ((a.tick + b.tick) * 0.5)));
+}
+
+int Playlist::bendHandleAt (const LaneView& lane, juce::Point<float> p) const
+{
+    const auto* data = song.findLane (lane.owner, lane.param);
+    int best = -1;
+    float bestDistance = 7.0f;
+
+    if (data != nullptr)
+        for (int i = 0; i + 1 < (int) data->points.size(); ++i)
+            if (const auto handle = bendHandle (lane, i))
+                if (const float d = handle->getDistanceFrom (p); d <= bestDistance)
+                {
+                    bestDistance = d;
+                    best = i;
+                }
+
+    return best;
 }
 
 int Playlist::pointAt (const LaneView& lane, juce::Point<float> p) const
@@ -1241,7 +1323,9 @@ void Playlist::resized()
     vScroll.setBounds (r.removeFromRight (10).withTrimmedTop (rulerHeight));
     rulerArea = r.removeFromTop (rulerHeight).withTrimmedLeft (headerWidth);
 
-    // The tempo along the top and the master's automation along the bottom while automation shows
+    // The tempo along the top and the buses' and the master's automation along the bottom while
+    // automation shows: as many of those lanes as fit in two fifths of the height (one at least),
+    // the wheel scrolling through the rest
     masterArea = masterHeaderArea = tempoArea = tempoHeaderArea = {};
 
     if (song.showAutomation)
@@ -1250,7 +1334,11 @@ void Playlist::resized()
         tempoHeaderArea = tempoStrip.removeFromLeft (headerWidth);
         tempoArea = tempoStrip;
 
-        auto strip = r.removeFromBottom ((int) laneParamsOf (0).size() * automationLaneHeight);
+        const int total = (int) stripLanes().size();
+        const int shown = juce::jlimit (1, std::max (1, total), r.getHeight() * 2 / 5 / automationLaneHeight);
+        stripScroll = juce::jlimit (0, std::max (0, total - shown), stripScroll);
+
+        auto strip = r.removeFromBottom (shown * automationLaneHeight);
         masterHeaderArea = strip.removeFromLeft (headerWidth);
         masterArea = strip;
     }
@@ -1298,7 +1386,7 @@ void Playlist::paint (juce::Graphics& g)
     if (! tempoArea.isEmpty())
         paintTempoLane (g);
 
-    // The master's automation along the bottom, with the song position through it
+    // The buses' and the master's automation along the bottom, with the song position through it
     if (! masterArea.isEmpty())
     {
         const auto strip = masterArea.getUnion (masterHeaderArea);
@@ -1308,7 +1396,7 @@ void Playlist::paint (juce::Graphics& g)
         g.fillRect (strip);
 
         for (auto& lane : visibleLanes())
-            if (lane.owner == 0)
+            if (lane.inStrip)
             {
                 paintAutomationLane (g, lane);
                 paintAutomationHeader (g, lane);
@@ -1318,6 +1406,18 @@ void Playlist::paint (juce::Graphics& g)
         {
             g.setColour (playhead);
             g.fillRect (tickToX (playheadTicks), (float) masterArea.getY(), 2.0f, (float) masterArea.getHeight());
+        }
+
+        // More lanes than fit: a slim bar down the right edge says where these are among them
+        if (const int total = (int) stripLanes().size(), shown = masterArea.getHeight() / automationLaneHeight; total > shown)
+        {
+            const auto track = juce::Rectangle<float> ((float) masterArea.getRight() - 8.0f, (float) masterArea.getY() + 3.0f,
+                                                       5.0f, (float) masterArea.getHeight() - 6.0f);
+            g.setColour (hairlineStrong);
+            g.fillRoundedRectangle (track, 2.5f);
+            g.setColour (text.withAlpha (0.7f));
+            g.fillRoundedRectangle (track.withHeight (track.getHeight() * (float) shown / (float) total)
+                                         .withY (track.getY() + track.getHeight() * (float) stripScroll / (float) total), 2.5f);
         }
 
         g.setColour (hairlineStrong);
@@ -1334,7 +1434,8 @@ void Playlist::paintAutomationLane (juce::Graphics& g, const LaneView& lane)
 {
     const auto area = lane.area;
     const auto* channel = song.findChannel (lane.owner);
-    const auto colour = channel != nullptr ? channel->colour : accent;
+    const auto* bus = song.findBus (lane.owner);
+    const auto colour = channel != nullptr ? channel->colour : bus != nullptr ? bus->colour : accent;
     g.setColour (juce::Colours::black.withAlpha (0.24f));
     g.fillRect (area);
     g.setColour (hairline);
@@ -1363,26 +1464,82 @@ void Playlist::paintAutomationLane (juce::Graphics& g, const LaneView& lane)
         return;
     }
 
-    // Level before the first point and after the last, straight lines between
+    // The line as it plays: level before the first point and after the last, each line between
+    // as its point bends it, through the control's skew (a frequency's straight line in Hz
+    // curves up the lane as its knob would turn). Worked out every two pixels and at every point
     const auto& points = data->points;
     auto at = [&] (const AutomationPoint& p) { return juce::Point<float> (tickToX (p.tick), laneValueToY (lane, p.value)); };
-    const float left = std::min (area.getX(), at (points.front()).x), right = std::max (area.getRight(), at (points.back()).x);
-    juce::Path line;
-    line.startNewSubPath (left, at (points.front()).y);
+    const auto* param = audio.findAutomationParameter (lane.owner, lane.param);
+
+    auto yOf = [&] (float value)
+    {
+        const float norm = param != nullptr ? param->valueRange.convertTo0to1 (juce::jlimit (param->valueRange.start, param->valueRange.end, value))
+                                            : juce::jlimit (0.0f, 1.0f, value);
+        return inner.getBottom() - norm * inner.getHeight();
+    };
+
+    std::vector<float> xs;
+
+    for (float x = area.getX(); x < area.getRight(); x += 2.0f)
+        xs.push_back (x);
+
+    xs.push_back (area.getRight());
 
     for (auto& p : points)
-        line.lineTo (at (p));
+        if (const float x = tickToX (p.tick); x > area.getX() && x < area.getRight())
+            xs.push_back (x);
 
-    line.lineTo (right, at (points.back()).y);
+    std::sort (xs.begin(), xs.end());
+
+    // (left to right, so the line it's on only moves on)
+    size_t next = 0;
+
+    auto valueAt = [&] (double tick)
+    {
+        if (tick <= points.front().tick)
+            return points.front().value;
+
+        while (next < points.size() && points[next].tick <= tick)
+            ++next;
+
+        if (next >= points.size())
+            return points.back().value;
+
+        const auto& a = points[next - 1];
+        const auto& b = points[next];
+        return a.value + (b.value - a.value) * automationcurve::shape ((float) ((tick - a.tick) / std::max (1, b.tick - a.tick)), a.curve);
+    };
+
+    juce::Path line;
+    line.startNewSubPath (xs.front(), yOf (valueAt (xToTick (xs.front()))));
+
+    for (size_t i = 1; i < xs.size(); ++i)
+        line.lineTo (xs[i], yOf (valueAt (xToTick (xs[i]))));
 
     juce::Path fill (line);
-    fill.lineTo (right, inner.getBottom());
-    fill.lineTo (left, inner.getBottom());
+    fill.lineTo (area.getRight(), inner.getBottom());
+    fill.lineTo (area.getX(), inner.getBottom());
     fill.closeSubPath();
     g.setColour (colour.withAlpha (0.16f));
     g.fillPath (fill);
     g.setColour (colour.interpolatedWith (juce::Colours::white, 0.3f));
     g.strokePath (line, juce::PathStrokeType (1.8f));
+
+    // Each line's middle handle, to bend it (filled while it's bent or being bent)
+    for (int i = 0; i + 1 < (int) points.size(); ++i)
+        if (const auto handle = bendHandle (lane, i); handle.has_value() && handle->x > area.getX() - 6.0f && handle->x < area.getRight() + 6.0f)
+        {
+            const bool bending = drag == Drag::bend && bendPoint.on (lane) && bendPoint.index == i;
+            const auto ring = juce::Rectangle<float> (9.0f, 9.0f).withCentre (*handle);
+            g.setColour (panel);
+            g.fillEllipse (ring);
+            g.setColour (colour.interpolatedWith (juce::Colours::white, 0.5f).withAlpha (bending ? 1.0f : 0.85f));
+
+            if (bending || points[(size_t) i].curve != 0.0f)
+                g.fillEllipse (ring.reduced (2.0f));
+
+            g.drawEllipse (ring, 1.3f);
+        }
 
     for (int i = 0; i < (int) points.size(); ++i)
     {
@@ -1428,18 +1585,25 @@ void Playlist::paintAutomationHeader (juce::Graphics& g, const LaneView& lane)
     g.setColour (hairline);
     g.fillRect (h.withTop (h.getBottom() - 1.0f));
 
-    // A curve, lit when the lane has points; its name; the arrow that says a menu opens
+    // A curve, lit when the lane has points (red while recording writes it); its name; the arrow
+    // that says a menu opens
     const auto* data = song.findLane (lane.owner, lane.param);
     const bool there = audio.findAutomationParameter (lane.owner, lane.param) != nullptr;
     auto curve = icons::automation();
     curve.applyTransform (juce::AffineTransform::scale (1.4f).translated (16.0f, h.getCentreY() - 7.0f));
-    g.setColour (data != nullptr && ! data->points.empty() ? accent : textFaint);
+    g.setColour (audio.isWritingLane (lane.owner, lane.param) ? danger : data != nullptr && ! data->points.empty() ? accent : textFaint);
     g.strokePath (curve, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
     auto chevron = icons::chevronDown();
     chevron.applyTransform (juce::AffineTransform::scale (1.3f).translated (h.getRight() - 28.0f, h.getCentreY() - 6.5f));
     g.setColour (textFaint);
     g.strokePath (chevron, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    // (A bus's lane starts with the bus's name, the user's own words: it may be cut short to fit)
+    std::optional<textaudit::TheirWords> theirs;
+
+    if (song.findBus (lane.owner) != nullptr)
+        theirs.emplace();
 
     g.setColour (there ? text : textFaint);
     g.setFont (font (16.0f, true));
@@ -1542,7 +1706,7 @@ void Playlist::paintGrid (juce::Graphics& g)
 
     // Channels' automation lanes, under their tracks
     for (auto& lane : visibleLanes())
-        if (lane.owner != 0)
+        if (! lane.inStrip)
             paintAutomationLane (g, lane);
 
     // The box being dragged to select clips
@@ -1835,7 +1999,7 @@ void Playlist::paintHeaders (juce::Graphics& g)
 
     // Channels' automation lanes: each one's name, which opens its menu
     for (auto& lane : visibleLanes())
-        if (lane.owner != 0)
+        if (! lane.inStrip)
             paintAutomationHeader (g, lane);
 }
 
@@ -2172,11 +2336,20 @@ juce::String Playlist::getTooltip()
     for (auto& lane : visibleLanes())
     {
         if (lane.header.contains (p.toFloat()))
-            return "Click for this lane's menu: a lane for another control (an effect's, the instrument's, a send), "
-                   "clear its points, or remove it";
+            return lane.owner == 0 ? juce::String ("Click for this lane's menu: a lane for another of the master's controls or a bus's, "
+                                                   "clear its points, or remove it")
+                                   : juce::String ("Click for this lane's menu: a lane for another control (an effect's, the instrument's, "
+                                                   "a send), clear its points, or remove it");
 
         if (lane.area.contains (p.toFloat()))
-            return "Click to add a point, drag a point to move it, right-click one to delete it. Song mode plays it";
+        {
+            if (pointAt (lane, p.toFloat()) < 0 && bendHandleAt (lane, p.toFloat()) >= 0)
+                return "Drag up or down to bend this line: it eases in, starting slowly, or out, getting there first. "
+                       "Double-click or right-click to straighten it";
+
+            return "Click to add a point, drag a point to move it, right-click one to delete it; drag the dot in the middle of a "
+                   "line to bend it. Song mode plays it";
+        }
     }
 
     if (gridArea.contains (p) && tool != Tool::erase && tool != Tool::split)
@@ -2219,6 +2392,15 @@ void Playlist::mouseMove (const juce::MouseEvent& e)
         setMouseCursor (clickable ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
         return;
     }
+
+    // An automation lane: a line's middle handle bends up and down
+    for (auto& lane : visibleLanes())
+        if (lane.area.contains (e.position) && (lane.inStrip ? masterArea : gridArea).contains (e.getPosition()))
+        {
+            const bool bendable = pointAt (lane, e.position) < 0 && bendHandleAt (lane, e.position) >= 0;
+            setMouseCursor (bendable ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+            return;
+        }
 
     const auto hit = clipAt (e.position);
 
@@ -2739,15 +2921,13 @@ void Playlist::mouseDown (const juce::MouseEvent& e)
     // Automation lanes first: a name opens its lane's menu, the lane takes points
     for (auto& lane : visibleLanes())
     {
-        const bool onMaster = lane.owner == 0;
-
-        if (lane.header.contains (e.position) && (onMaster ? masterHeaderArea : headerArea).contains (e.getPosition()))
+        if (lane.header.contains (e.position) && (lane.inStrip ? masterHeaderArea : headerArea).contains (e.getPosition()))
         {
             showAutomationMenu (lane);
             return;
         }
 
-        if (lane.area.contains (e.position) && (onMaster ? masterArea : gridArea).contains (e.getPosition()))
+        if (lane.area.contains (e.position) && (lane.inStrip ? masterArea : gridArea).contains (e.getPosition()))
         {
             automationMouseDown (lane, e);
             return;
@@ -3229,6 +3409,37 @@ void Playlist::mouseDrag (const juce::MouseEvent& e)
             break;
         }
 
+        case Drag::bend:
+        {
+            // The line's middle follows the mouse up and down: easing in below the straight line's
+            // middle on a rise (above on a fall), out the other way
+            auto* data = song.findLane (bendPoint.owner, bendPoint.param);
+
+            if (! dragMoved || data == nullptr || ! juce::isPositiveAndBelow (bendPoint.index + 1, (int) data->points.size()))
+                break;
+
+            const auto views = visibleLanes();
+            const auto view = std::find_if (views.begin(), views.end(), [this] (auto& v) { return bendPoint.on (v); });
+            auto& a = data->points[(size_t) bendPoint.index];
+            const auto& b = data->points[(size_t) bendPoint.index + 1];
+
+            if (view == views.end() || b.value == a.value)
+                break;
+
+            const float curve = automationcurve::fromMiddle ((laneYToValue (*view, e.position.y) - a.value) / (b.value - a.value));
+
+            if (std::abs (curve - a.curve) > 1.0e-4f)
+            {
+                if (! std::exchange (bendCheckpointed, true))
+                    song.checkpoint();
+
+                a.curve = curve;
+                song.notify (Song::Change::automation);
+            }
+
+            break;
+        }
+
         case Drag::tempo:
         {
             // Up and down its tempo (whole bpm, Alt tenths); a change also along, on the snap and
@@ -3301,10 +3512,10 @@ void Playlist::mouseUp (const juce::MouseEvent&)
     if (drag == Drag::move || drag == Drag::moveAudio)
         dropTracksLeftBehind();
 
-    const bool boxed = drag == Drag::box || drag == Drag::point || drag == Drag::tempo;
+    const bool boxed = drag == Drag::box || drag == Drag::point || drag == Drag::tempo || drag == Drag::bend;
     drag = Drag::none;
     dragIndex = dragLane = -1;
-    dragPoint = {};
+    dragPoint = bendPoint = {};
     dragTempo = noTempoPoint;
     originClips.clear();
     originAudio.clear();
@@ -3318,10 +3529,11 @@ void Playlist::automationMouseDown (const LaneView& lane, const juce::MouseEvent
     // Points belong to the lane, not the clips: clicking here lets go of selected clips
     clearSelection();
     const int hit = pointAt (lane, e.position);
+    const int bend = hit < 0 ? bendHandleAt (lane, e.position) : -1;
 
     if (e.mods.isPopupMenu())
     {
-        // Right-click: a point goes; anywhere else, the lane's menu
+        // Right-click: a point goes, a bent line straightens; anywhere else, the lane's menu
         if (auto* data = song.findLane (lane.owner, lane.param); data != nullptr && hit >= 0)
         {
             song.checkpoint();
@@ -3329,11 +3541,28 @@ void Playlist::automationMouseDown (const LaneView& lane, const juce::MouseEvent
             chosenPoint = {};
             song.notify (Song::Change::automation);
         }
+        else if (data != nullptr && bend >= 0 && data->points[(size_t) bend].curve != 0.0f)
+        {
+            song.checkpoint();
+            data->points[(size_t) bend].curve = 0.0f;
+            song.notify (Song::Change::automation);
+        }
         else
         {
             showAutomationMenu (lane);
         }
 
+        return;
+    }
+
+    // A line's middle handle: dragged up and down, it bends the line (the undo step once it moves)
+    if (bend >= 0)
+    {
+        chosenPoint = {};
+        bendPoint = { lane.owner, lane.param, bend };
+        bendCheckpointed = false;
+        drag = Drag::bend;
+        repaint();
         return;
     }
 
@@ -3375,7 +3604,7 @@ void Playlist::showAutomationMenu (const LaneView& lane)
         {
             song.checkpoint();
 
-            if (song.lanesOf (owner).empty())
+            if (song.lanesOf (owner).empty() && song.findBus (owner) == nullptr)
                 song.laneFor (owner, "volume", audio.automationName (owner, "volume"));
 
             song.laneFor (owner, target.param, audio.automationName (owner, target.param));
@@ -3399,9 +3628,36 @@ void Playlist::showAutomationMenu (const LaneView& lane)
     for (auto& [name, items] : groups)
         add.addSubMenu (name, items);
 
+    // Along the bottom with the master's: lanes for a bus's controls (its volume, pan and effects)
+    juce::PopupMenu busLanes;
+
+    if (lane.inStrip)
+        for (auto& bus : song.buses)
+        {
+            juce::PopupMenu controls;
+            const auto busShown = laneParamsOf (bus.id);
+            const int busId = bus.id;
+
+            for (auto& target : audio.automationTargets (busId))
+            {
+                const bool there = std::find (busShown.begin(), busShown.end(), target.param) != busShown.end();
+                controls.addItem (target.group.isEmpty() ? target.name : target.group + ": " + target.name, ! there, there, [this, busId, target]
+                {
+                    song.checkpoint();
+                    song.laneFor (busId, target.param, audio.automationName (busId, target.param));
+                    song.notify (Song::Change::automation);
+                });
+            }
+
+            busLanes.addSubMenu (bus.name, controls);
+        }
+
     const auto* data = song.findLane (owner, param);
     menu.addSectionHeader (laneName (lane));
     menu.addSubMenu ("Add a lane for", add);
+
+    if (busLanes.getNumItems() > 0)
+        menu.addSubMenu ("Add a lane for a bus", busLanes);
     menu.addItem ("Clear this lane's points", data != nullptr && ! data->points.empty(), false, [this, owner, param]
     {
         if (auto* l = song.findLane (owner, param))
@@ -3424,6 +3680,22 @@ void Playlist::showAutomationMenu (const LaneView& lane)
 
 void Playlist::mouseDoubleClick (const juce::MouseEvent& e)
 {
+    // An automation lane: a bent line's handle straightens it; anywhere else on a lane, the clicks
+    // were points (nothing more: not a clip on the track above)
+    for (auto& lane : visibleLanes())
+        if (lane.area.contains (e.position) || lane.header.contains (e.position))
+        {
+            if (auto* data = song.findLane (lane.owner, lane.param); data != nullptr && lane.area.contains (e.position))
+                if (const int bend = bendHandleAt (lane, e.position); bend >= 0 && data->points[(size_t) bend].curve != 0.0f)
+                {
+                    song.checkpoint();
+                    data->points[(size_t) bend].curve = 0.0f;
+                    song.notify (Song::Change::automation);
+                }
+
+            return;
+        }
+
     // FL: a track's name opens its channel, or its pattern when it plays several (renaming
     // is in the right-click menu)
     if (headerArea.contains (e.getPosition()))
@@ -3537,6 +3809,16 @@ void Playlist::showLaneMenu (int folder, int lane)
 
 void Playlist::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
+    // Over the lanes along the bottom, with more of them than fit: through them, a lane a notch
+    if (masterArea.getUnion (masterHeaderArea).contains (e.getPosition()) && ! e.mods.isAnyModifierKeyDown()
+         && std::abs (w.deltaY) >= std::abs (w.deltaX))
+        if (const int total = (int) stripLanes().size(), shown = masterArea.getHeight() / automationLaneHeight; total > shown)
+        {
+            stripScroll = juce::jlimit (0, total - shown, stripScroll + (w.deltaY > 0 ? -1 : 1));
+            repaint();
+            return;
+        }
+
     if (e.mods.isCtrlDown() || e.mods.isCommandDown())     // Cmd on a Mac
     {
         const double anchor = xToTick (e.position.x);

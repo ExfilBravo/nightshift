@@ -47,6 +47,10 @@ public:
     /** Called at the UI rate with the strip's peak since last time. */
     void pushLevel (std::pair<float, float> peak)   { meter.push (peak.first, peak.second); }
 
+    /** At the UI rate: the fader, pan bar and sends where their automation has them while Song
+        mode plays it, back where the song has them after. */
+    void followAutomation();
+
     std::function<void (int effectId)> onOpenEffect;
     std::function<void (int channelId)> onOpenInstrument, onOpenPianoRoll, onShowSteps, onSelect;
 
@@ -102,6 +106,7 @@ private:
     int hovered = -1, draggingSend = 0;
     float sendDragStart = 0.0f;
     bool dropping = false;
+    std::map<int, float> shownSends;            // each send's level as last drawn (it follows its automation)
 
     Channel* channel() const;
     Bus* bus() const;

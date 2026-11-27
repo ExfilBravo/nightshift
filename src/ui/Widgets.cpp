@@ -402,6 +402,7 @@ void MiniBar::mouseDown (const juce::MouseEvent& e)
     }
 
     dragStartValue = value;
+    held = true;
 
     if (onDragStart != nullptr)
         onDragStart();
@@ -415,6 +416,12 @@ void MiniBar::mouseDrag (const juce::MouseEvent& e)
     // The whole range across the bar's width; Shift drags a fifth as far
     const double perPixel = (max - min) / std::max (1, getWidth()) * (e.mods.isShiftDown() ? 0.2 : 1.0);
     change (dragStartValue + e.getDistanceFromDragStartX() * perPixel);
+}
+
+void MiniBar::mouseUp (const juce::MouseEvent&)
+{
+    if (std::exchange (held, false) && onDragEnd != nullptr)
+        onDragEnd();
 }
 
 void MiniBar::mouseDoubleClick (const juce::MouseEvent&)
@@ -859,6 +866,7 @@ void Fader::mouseDown (const juce::MouseEvent& e)
     }
 
     dragStartValue = value;
+    held = true;
 
     if (onDragStart != nullptr)
         onDragStart();
@@ -871,6 +879,12 @@ void Fader::mouseDrag (const juce::MouseEvent& e)
 
     const double perPixel = 1.0 / travel() * (e.mods.isShiftDown() ? 0.2 : 1.0);
     change (dragStartValue - e.getDistanceFromDragStartY() * perPixel);
+}
+
+void Fader::mouseUp (const juce::MouseEvent&)
+{
+    if (std::exchange (held, false) && onDragEnd != nullptr)
+        onDragEnd();
 }
 
 void Fader::mouseDoubleClick (const juce::MouseEvent&)
