@@ -214,8 +214,10 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   sound); **Amount** is how far (at 0 the sound comes out exactly as it went in). It moves the pitch without changing
   the length by reading the sound back a little faster or slower and stepping back or on by a whole period at a time,
   across a crossfade, so it runs a fixed 9.4 ms behind (at 48 kHz), which it tells the engine: the track is lined up
-  with the rest. Its panel draws the last few seconds, what it heard (faint) and what comes out (in its colour) over the
-  key's notes, the note it hears now and how far off it was.
+  with the rest. On an armed audio track you're monitoring it stays in, so you sing or play through it live (its 9.4 ms
+  with it), while other plugins that would delay what you hear step aside as before. Its panel draws the last few
+  seconds, what it heard (faint) and what comes out (in its colour) over the key's notes, the note it hears now and how
+  far off it was.
 - **Effects** – stock or any VST3 (the Nightshift Lofi four included) goes in a channel's chain, after its
   instrument (or straight off an audio track's input), a bus's, or the master's before the limiter.
   Double-click one in the sidebar's Effects or Plugin effects to put it on the selected channel, drag it onto
@@ -1009,8 +1011,9 @@ shows loops in time with the song, one pitched, a recording as played and a riff
 went in that much later; a sine 30 cents flat (and one 40 sharp) coming out within 2 cents of A, half way at 50%, to A
 flat in A flat major, to F sharp from an F in a song whose notes are in E minor (and the key following when they're
 rewritten in C major); Speed robotic on pitch 80 ms into a note where natural is still on its way, natural keeping a
-singer's vibrato and robotic ironing it flat; a low sawtooth at 110 Hz; silence and noise left alone; and a render where
-a click through it lands with one on a track without it. `--snapshot ... --effectpanel nightshiftTune --tunedemo`
+singer's vibrato and robotic ironing it flat; a low sawtooth at 110 Hz; silence and noise left alone; an armed vocal
+being monitored keeping its pitch correction in while another track's steps aside; and a render where a click through
+it lands with one on a track without it. `--snapshot ... --effectpanel nightshiftTune --tunedemo`
 shows its panel after a sung phrase.
 `--automationtest` renders a steady tone while a channel's volume lane fades it out, its pan lane sweeps it left
 to right, a filter's cutoff lane closes on it and the master's volume lane fades the mix; checks Pattern mode
@@ -1073,8 +1076,8 @@ the text check, which reads back every piece of text as it's drawn and lists any
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
 behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by
 something at least half opaque (the studio dimmed behind the start screen, a row label under an automation lane) isn't
-there to be read, so it isn't checked. `--texttest` runs it over 65 views (every tab, AI agent, Nova page, effect
-window and dialog, the start screen the first time and after it, a laptop's 1366 x 768, Samples) and fails on any
+there to be read, so it isn't checked. `--texttest` runs it over 68 views (every tab, AI agent, Nova page, effect
+window and dialog, the start screen the first time and after it, a laptop's 1366 x 768, Samples, stretched clips) and fails on any
 of those; the user's own words (a channel's name, a sound's, a project's folder) may be cut short to fit, ours never.
 Sizes are Segoe UI's (a stand-in font's are measured by its letters). Where Segoe UI is installed, texttest also checks
 Selawik (the Mac's font) takes the same room; run it with `NIGHTSHIFT_FONT=selawik` set and every view is drawn and
@@ -1320,7 +1323,8 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
 
 ## Layout
 
-- `src/model` – the song: channels, patterns, notes, playlist; JSON save/load; snapshot undo.
+- `src/model` – the song: channels, patterns, notes, playlist; JSON save/load; snapshot undo; the song's key heard
+  from its notes (`SongKey`).
 - `src/app` – Check for updates (`Updates`: GitHub's latest release, the installer's download, checked and started).
 - `src/audio` – `AudioEngine` mirrors the song into a Tracktion Edit (one track per channel, MIDI clips per
   pattern placement, a track per bus); the drum kit synthesiser, Nova (`Nova`: its parameters, DSP and
@@ -1332,8 +1336,10 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
   silent instrument that hands on what a keyboard plays) and MIDI files (`MidiFiles`: the notes as the song plays them,
   a .mid written and read, a file's parts brought in as channels); the sample browser's folders and what's in them
   (`Samples`: Downloads, Music and folders added, looked through on a thread of their own) and a sample heard from it
-  (`SamplePreview`: played after the master, as the metronome is); `fx` holds
-  the stock effects (Tracktion plugins) and their DSP building blocks. Drum kits: `Kits` (the SFZ reader and
+  (`SamplePreview`: played after the master, as the metronome is); time-stretching (`Stretcher`: a take rendered along
+  its folder's time map by Signalsmith Stretch, lined up, and the cache of renders; `LoopTempo`: a loop's tempo from its
+  file, its name or its length); `fx` holds
+  the stock effects (Tracktion plugins, Pitch Correction's in `Tune.cpp`) and their DSP building blocks. Drum kits: `Kits` (the SFZ reader and
   player, fetching), `DrumGizmo` (mixing a studio kit to stereo), `Machines` (the 808 and 909),
   `KitImport` (a kit from a folder), `DrumSynth` (what the synthesised drums are made of), `ZipReader`
   (ZIP64).

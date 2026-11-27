@@ -4591,6 +4591,7 @@ namespace
                         fx.pluginId = d.createIdentifierString();
 
                 vocals.effects.push_back (fx);
+                const int vocalsId = vocals.id;
                 auto& pattern = song.addPatternFor (keysId);
                 int at = 0;
 
@@ -4630,6 +4631,33 @@ namespace
                 audio.syncNow();
                 check (vocalTune != nullptr && vocalTune->getSongRoot() == 0 && ! vocalTune->isSongMinor(),
                        "rewritten in C major, the song's key follows (" + songkey::find (song).name() + ")");
+
+                // Singing through it: armed and monitored, the vocal's pitch correction stays in while what would delay
+                // the monitoring steps aside (Low latency), another track's pitch correction with it
+                {
+                    auto& guitar = song.addChannel ("Guitar", InstrumentType::audio);
+                    guitar.input = audio.getInputNames()[0];
+                    Effect other = fx;
+                    other.id = song.createId();
+                    guitar.effects.push_back (other);
+
+                    if (auto* v = song.findChannel (vocalsId))
+                        v->armed = v->monitor = true;
+
+                    song.notify (Song::Change::channels);
+                    audio.syncNow();
+                    const auto bypassed = audio.getEdit().getLowLatencyDisabledPlugins();
+                    auto* sung = audio.getEffect (fx.id);
+                    auto* elsewhere = audio.getEffect (other.id);
+                    check (sung != nullptr && elsewhere != nullptr && ! bypassed.contains (sung->itemID) && bypassed.contains (elsewhere->itemID),
+                           "monitoring the armed vocal, its pitch correction stays in (heard live), another track's steps aside");
+
+                    if (auto* v = song.findChannel (vocalsId))
+                        v->armed = v->monitor = false;
+
+                    song.notify (Song::Change::channels);
+                    audio.syncNow();
+                }
             }
 
             // The engine makes up for its latency: a click on a track with it (panned left) and on one without (right)

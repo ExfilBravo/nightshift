@@ -3567,10 +3567,11 @@ void Playlist::mouseDrag (const juce::MouseEvent& e)
             const bool fit = trimLeft ? song.stretchAudioTo (clip, std::min (at, (int) std::floor (end) - least), end)
                                       : song.stretchAudioTo (clip, clip.start, std::max (at, clip.start + least));
 
+            // (drawn as it goes; the song hears of it when it's let go, so the take is rendered once, not every step)
             if (fit)
             {
                 song.audioClips[(size_t) dragIndex] = clip;
-                notifyPlaylist();
+                repaint();
             }
 
             break;
@@ -3729,12 +3730,15 @@ void Playlist::mouseUp (const juce::MouseEvent&)
         clip.setComp (take.from, take.to, dragLane);
         song.notify (Song::Change::playlist);
     }
-    else if (drag == Drag::stretch && dragMoved && juce::isPositiveAndBelow (dragIndex, (int) song.audioClips.size()) && onMessage != nullptr)
+    else if (drag == Drag::stretch && dragMoved && juce::isPositiveAndBelow (dragIndex, (int) song.audioClips.size()))
     {
-        // What it plays at now
+        // Now the song (and the engine) hears of it; and what it plays at now
+        notifyPlaylist();
         const auto& clip = song.audioClips[(size_t) dragIndex];
-        onMessage ("Stretched to fit: it plays at " + juce::String (juce::roundToInt (clip.speed * 100.0)) + "% of "
-                     + (Song::followsTempo (clip) ? "its speed in time with the song" : "the speed it was played at"));
+
+        if (onMessage != nullptr)
+            onMessage ("Stretched to fit: it plays at " + juce::String (juce::roundToInt (clip.speed * 100.0)) + "% of "
+                         + (Song::followsTempo (clip) ? "its speed in time with the song" : "the speed it was played at"));
     }
 
     if (drag == Drag::move || drag == Drag::moveAudio)

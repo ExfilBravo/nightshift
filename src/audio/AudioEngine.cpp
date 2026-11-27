@@ -3075,10 +3075,23 @@ void AudioEngine::syncInputs()
     for (auto& c : song.channels)
         monitoring = monitoring || (c.type == InstrumentType::audio && c.armed && c.monitor);
 
+    // ...except pitch correction on a track being monitored: singing or playing through it live is what it's for
+    // (its 9.4 ms comes with it); on any other track it steps aside like the rest
     if (monitoring && options.lowLatencyMonitoring)
+    {
+        juce::Array<te::EditItemID> monitoredTracks;
+
+        for (auto& c : song.channels)
+            if (c.type == InstrumentType::audio && c.armed && c.monitor)
+                if (auto it = slots.find (c.id); it != slots.end() && it->second.track != nullptr)
+                    monitoredTracks.add (it->second.track->itemID);
+
         for (auto p : te::getAllPlugins (*edit, false))
             if (p->getLatencySeconds() > 0.0)
-                bypass.add (p->itemID);
+                if (dynamic_cast<NightTune*> (p) == nullptr || p->getOwnerTrack() == nullptr
+                     || ! monitoredTracks.contains (p->getOwnerTrack()->itemID))
+                    bypass.add (p->itemID);
+    }
 
     if (bypass != edit->getLowLatencyDisabledPlugins())
         edit->setLowLatencyDisabledPlugins (bypass);
