@@ -13,6 +13,7 @@
 #include "Sfz.h"
 #include "Nova.h"
 #include "GuitarSound.h"
+#include "MidiFiles.h"
 #include <tracktion_engine/playback/graph/tracktion_EditNodeBuilder.h>
 #include <set>
 
@@ -267,7 +268,11 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
     engine->getPluginManager().createBuiltInType<SfzPlugin>();
     engine->getPluginManager().createBuiltInType<NovaPlugin>();
     engine->getPluginManager().createBuiltInType<GuitarPlugin>();
+    engine->getPluginManager().createBuiltInType<MidiOutPlugin>();
     stockfx::registerAll (*engine);
+
+    // Synths plugged in: a command-line run's counts time in samples and catches what it sends
+    midiOut = std::make_unique<MidiOutHub> (! openAudioDevice);
     loadOptions();
 
     if (liveAudio)
@@ -442,9 +447,16 @@ void AudioEngine::changeListenerCallback (juce::ChangeBroadcaster* source)
         return;
     }
 
-    // The device or its inputs changed: inputs are rebuilt, so targets and meters are too
+    // The device or its inputs changed: inputs are rebuilt, so targets and meters are too (and
+    // the MIDI outputs: Tracktion's closed, the hub's opened again for one plugged back in)
     pending |= needInputs;
     triggerAsyncUpdate();
+
+    if (liveAudio)
+    {
+        closeTracktionMidiOutputs();
+        midiOut->refreshPorts();
+    }
 }
 
 void AudioEngine::syncNow()
@@ -480,6 +492,10 @@ void AudioEngine::handleAsyncUpdate()
     // Last, onto whatever plugins are there now (a chain rebuilt, the mode or tempo changed)
     if (flags & (needAutomation | needTempo | needChannels | needMixer | needClips))
         syncAutomation();
+
+    // Synths plugged in: their notes as the song now plays them (unchanged, nothing's disturbed)
+    if (flags & (needTempo | needChannels | needMixer | needNotes | needClips | needMutes | needInputs))
+        syncMidiOut();
 }
 
 void AudioEngine::syncMutes()
@@ -744,14 +760,16 @@ void AudioEngine::playbackContextChanged()
     if (context == nullptr || metronomePlugin == nullptr)
         return;
 
+    // After it, the synths plugged in take their timing from what's heard (see MidiOutHub)
     context->setInsertOptionalLastStageNodeForDeviceCallback (
-        [plugin = metronomePlugin, &dm = engine->getDeviceManager()] (te::OutputDevice& device, const te::CreateNodeParams& params,
-                                                                     std::unique_ptr<te::graph::Node> node)
+        [plugin = metronomePlugin, &dm = engine->getDeviceManager(), hub = midiOut.get()] (te::OutputDevice& device, const te::CreateNodeParams& params,
+                                                                                         std::unique_ptr<te::graph::Node> node)
         {
             if (device.isMidi() || dm.getDefaultWaveOutDeviceID() != device.getDeviceID())
                 return node;
 
-            return te::createGeneratorPluginNode (plugin, params, std::move (node));
+            node = te::createGeneratorPluginNode (plugin, params, std::move (node));
+            return hub != nullptr ? hub->createNode (std::move (node), params.processState) : std::move (node);
         });
 
     context->reallocate();
@@ -771,6 +789,7 @@ juce::String AudioEngine::sourceKey (const Channel& c)
         case InstrumentType::audio:   return {};
         case InstrumentType::kit:     return c.kit;
         case InstrumentType::instrument: return c.instrument;
+        case InstrumentType::midiOut: return "midiOut";     // where it goes is the hub's, not the plugin's
         case InstrumentType::sampler: break;
     }
 
@@ -1298,6 +1317,15 @@ void AudioEngine::buildInstrument (Slot& slot, const Channel& channel)
             if ((plugin = cache.createNewPlugin (SfzPlugin::xmlTypeName, {})))
                 if (auto sfzPlugin = dynamic_cast<SfzPlugin*> (plugin.get()))
                     sfzPlugin->setInstrument (channel.instrument);
+            break;
+        }
+
+        case InstrumentType::midiOut:
+        {
+            // Silent: what a keyboard plays on it goes straight out of the MIDI output
+            if ((plugin = cache.createNewPlugin (MidiOutPlugin::xmlTypeName, {})))
+                if (auto out = dynamic_cast<MidiOutPlugin*> (plugin.get()))
+                    out->setRoute (midiOut.get(), channel.id);
             break;
         }
 
@@ -2369,6 +2397,151 @@ bool AudioEngine::applyControllerLinks (const juce::String& device, const juce::
 }
 
 //==============================================================================
+juce::StringArray AudioEngine::getMidiOutputNames() const
+{
+    return midiOut->getOutputNames();
+}
+
+MidiOutHub::OutputSettings AudioEngine::getMidiOutSettings (const juce::String& output) const
+{
+    auto found = options.midiOuts.find (output);
+    return found != options.midiOuts.end() ? found->second : MidiOutHub::OutputSettings();
+}
+
+void AudioEngine::setMidiOutSettings (const juce::String& output, MidiOutHub::OutputSettings s)
+{
+    s.timingMs = juce::jlimit (-MidiOutHub::maxTimingMs, MidiOutHub::maxTimingMs, s.timingMs);
+    auto o = options;
+
+    // Kept only while it differs from on time, without the clock
+    if (s == MidiOutHub::OutputSettings())
+        o.midiOuts.erase (output);
+    else
+        o.midiOuts[output] = s;
+
+    setOptions (o);
+}
+
+void AudioEngine::sendTestNote (int channelId)
+{
+    auto c = song.findChannel (channelId);
+
+    if (c == nullptr || c->type != InstrumentType::midiOut || c->midiOutDevice.isEmpty())
+        return;
+
+    syncNow();
+    const int ch = juce::jlimit (1, 16, c->midiOutChannel);
+    const int key = juce::jlimit (0, 127, c->rootKey);
+
+    if (c->midiProgram >= 0)
+        midiOut->sendNow (c->midiOutDevice, juce::MidiMessage::programChange (ch, c->midiProgram));
+
+    midiOut->sendNow (c->midiOutDevice, juce::MidiMessage::noteOn (ch, key, (juce::uint8) 100));
+
+    juce::Timer::callAfterDelay (400, [weakAlive = std::weak_ptr<bool> (alive), hub = midiOut.get(), device = c->midiOutDevice, ch, key]
+    {
+        if (auto stillAlive = weakAlive.lock(); stillAlive && *stillAlive)
+            hub->sendNow (device, juce::MidiMessage::noteOff (ch, key));
+    });
+}
+
+void AudioEngine::sendMidiProgram (int channelId)
+{
+    if (auto c = song.findChannel (channelId); c != nullptr && c->type == InstrumentType::midiOut
+                                                && c->midiOutDevice.isNotEmpty() && c->midiProgram >= 0)
+        midiOut->sendNow (c->midiOutDevice, juce::MidiMessage::programChange (juce::jlimit (1, 16, c->midiOutChannel), c->midiProgram));
+}
+
+void AudioEngine::closeTracktionMidiOutputs()
+{
+    // NightShift never plays a track out of Tracktion's MIDI outputs; the hub opens what it needs
+    auto& dm = engine->getDeviceManager();
+
+    for (int i = 0; i < dm.getNumMidiOutDevices(); ++i)
+        if (auto* d = dm.getMidiOutDevice (i); d != nullptr && d->isEnabled())
+            d->setEnabled (false);
+}
+
+void AudioEngine::syncMidiOut()
+{
+    MidiOutHub::Plan plan;
+    plan.baseUnit = song.meterUnit;
+    std::map<juce::String, int> outputIndex;
+
+    auto outputFor = [&] (const juce::String& name)
+    {
+        if (auto found = outputIndex.find (name); found != outputIndex.end())
+            return found->second;
+
+        MidiOutHub::Output out;
+        out.name = name;
+        out.settings = getMidiOutSettings (name);
+        plan.outputs.push_back (std::move (out));
+        return outputIndex[name] = (int) plan.outputs.size() - 1;
+    };
+
+    // Each channel playing a synth plugged in: where it goes, and the sound it asks for
+    std::map<int, std::pair<int, int>> heard;     // channel -> output, MIDI channel
+
+    for (auto& c : song.channels)
+    {
+        if (c.type != InstrumentType::midiOut || c.midiOutDevice.isEmpty())
+            continue;
+
+        const int out = outputFor (c.midiOutDevice);
+        const int ch = juce::jlimit (1, 16, c.midiOutChannel);
+        plan.routes.push_back ({ c.id, out, ch, c.muted });
+
+        if (! c.muted)
+            heard[c.id] = { out, ch };
+
+        if (c.midiProgram >= 0)
+            plan.outputs[(size_t) out].programs.push_back (juce::MidiMessage::programChange (ch, juce::jlimit (0, 127, c.midiProgram)));
+    }
+
+    // Outputs following the tempo, whether or not a channel plays them
+    for (auto& [name, s] : options.midiOuts)
+        if (s.clock)
+            outputFor (name);
+
+    // Their notes as the song plays them (the current pattern round and round in Pattern mode),
+    // in the engine's seconds: where Tracktion's tempo map puts them
+    if (! heard.empty())
+    {
+        const int patternId = song.mode == PlayMode::pattern ? song.currentPattern().id : 0;
+
+        for (auto& n : midifile::notesAsPlayed (song, patternId, true))
+        {
+            const auto route = heard.find (n.channelId);
+
+            if (route == heard.end())
+                continue;
+
+            auto& events = plan.outputs[(size_t) route->second.first].events;
+            const auto ch = (juce::uint8) (route->second.second - 1);
+            const auto key = (juce::uint8) juce::jlimit (0, 127, n.key);
+            events.push_back ({ ticksToSeconds (n.start), { (juce::uint8) (0x90 | ch), key, (juce::uint8) juce::jlimit (1, 127, n.velocity) }, 3 });
+            events.push_back ({ ticksToSeconds (n.end), { (juce::uint8) (0x80 | ch), key, 0 }, 3 });
+        }
+
+        // In time order; at one moment a note ends before another starts
+        for (auto& out : plan.outputs)
+            std::stable_sort (out.events.begin(), out.events.end(), [] (const MidiOutHub::Event& a, const MidiOutHub::Event& b)
+            {
+                if (a.seconds != b.seconds)
+                    return a.seconds < b.seconds;
+
+                return (a.bytes[0] & 0xf0) == 0x80 && (b.bytes[0] & 0xf0) == 0x90;
+            });
+    }
+
+    if (liveAudio)
+        midiOut->setOutputLatency (getLatencyInfo().outputSamples);
+
+    midiOut->setPlan (std::move (plan));
+}
+
+//==============================================================================
 void AudioEngine::removeAllClips()
 {
     rowClips.clear();
@@ -2478,11 +2651,12 @@ void AudioEngine::syncClips (bool notesOnly)
 
         removeAllClips();
 
+        // (a synth plugged in plays its notes from the MIDI out's plan, not from a clip)
         for (auto& channel : song.channels)
         {
             auto& slot = slots[channel.id];
 
-            if (slot.track != nullptr && channel.type != InstrumentType::audio)
+            if (slot.track != nullptr && channel.type != InstrumentType::audio && channel.type != InstrumentType::midiOut)
                 if ((slot.patternClip = slot.track->insertMIDIClip (pattern.name, clipRange (0, length), nullptr)))
                     fillClip (*slot.patternClip, pattern.findNotes (channel.id));
         }
@@ -2509,7 +2683,7 @@ void AudioEngine::syncClips (bool notesOnly)
                 auto notes = pattern->findNotes (channel.id);
                 auto& slot = slots[channel.id];
 
-                if (notes != nullptr && ! notes->empty() && slot.track != nullptr)
+                if (notes != nullptr && ! notes->empty() && slot.track != nullptr && channel.type != InstrumentType::midiOut)
                 {
                     if (auto clip = slot.track->insertMIDIClip (pattern->name, clipRange (placed.start, length), nullptr))
                     {
@@ -3292,6 +3466,12 @@ void AudioEngine::loadOptions()
     options.disabledMidiInputs = juce::StringArray::fromTokens (file.getValue ("nsDisabledMidiInputs"), "|", {});
     options.disabledMidiInputs.removeEmptyStrings();
 
+    // Synths plugged in: [[name, timing in ms, clock], ...]
+    if (auto* outs = juce::JSON::parse (file.getValue ("nsMidiOuts", "[]")).getArray())
+        for (auto& o : *outs)
+            if (o.size() >= 3 && o[0].toString().isNotEmpty())
+                options.midiOuts[o[0].toString()] = { juce::jlimit (-MidiOutHub::maxTimingMs, MidiOutHub::maxTimingMs, (int) o[1]), (bool) o[2] };
+
     options.metronome = file.getBoolValue ("nsMetronome", false);
     options.metronomeRecordingOnly = file.getBoolValue ("nsClickRecordingOnly", false);
     options.clickSound = juce::jlimit (0, metronome::soundNames().size() - 1, file.getIntValue ("nsClickSound", 0));
@@ -3317,7 +3497,11 @@ void AudioEngine::loadOptions()
 void AudioEngine::setOptions (const Options& o)
 {
     const bool monitoringChanged = o.lowLatencyMonitoring != options.lowLatencyMonitoring;
+    const bool midiOutsChanged = o.midiOuts != options.midiOuts;
     options = o;
+
+    if (midiOutsChanged && midiOut != nullptr)
+        syncMidiOut();
 
     if (liveAudio)
     {
@@ -3333,6 +3517,13 @@ void AudioEngine::setOptions (const Options& o)
         file.setValue ("nsDonationAsked", options.donationAsked);
         file.setValue ("nsExportBits", options.exportBits);
         file.setValue ("nsDisabledMidiInputs", options.disabledMidiInputs.joinIntoString ("|"));
+
+        juce::Array<juce::var> outs;
+
+        for (auto& [name, s] : options.midiOuts)
+            outs.add (juce::Array<juce::var> { name, s.timingMs, s.clock });
+
+        file.setValue ("nsMidiOuts", juce::JSON::toString (juce::var (outs), true));
 
         file.setValue ("nsMetronome", options.metronome);
         file.setValue ("nsClickRecordingOnly", options.metronomeRecordingOnly);
@@ -3506,6 +3697,14 @@ void AudioEngine::timerCallback()
 {
     if (! liveAudio)
         return;
+
+    // A synth plugged in (or back in) while running: its output opened, every two seconds
+    if (++midiOutRefresh >= 40)
+    {
+        midiOutRefresh = 0;
+        closeTracktionMidiOutputs();
+        midiOut->refreshPorts();
+    }
 
     // A device starting (opened, switched, or reset by its driver) suspends playback until
     // it's prepared; if the transport's own check runs meanwhile it stops itself. Carry on from
@@ -4053,7 +4252,7 @@ void AudioEngine::flushPluginStates()
     for (auto& channel : song.channels)
     {
         if (channel.type == InstrumentType::sampler || channel.type == InstrumentType::audio || channel.type == InstrumentType::kit
-             || channel.type == InstrumentType::instrument)
+             || channel.type == InstrumentType::instrument || channel.type == InstrumentType::midiOut)
             continue;
 
         if (auto plugin = getInstrument (channel.id))

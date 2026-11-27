@@ -21,6 +21,7 @@
 #include "audio/DrumSynth.h"
 #include "audio/Instruments.h"
 #include "audio/Sfz.h"
+#include "audio/MidiFiles.h"
 #include "ui/Donate.h"
 #include "ai/Drummer.h"
 #include "ai/Genres.h"
@@ -126,6 +127,29 @@ namespace
             for (int row = 0; row < song.numTracks(); ++row)
                 if (song.tracks[(size_t) row].channelId == surge)
                     song.playlist.push_back ({ p.id, row, 4 * song.ticksPerBar() });
+        }
+
+        // Synths plugged in: --midiouts "Synth module,Drum machine" seem plugged in (their messages are
+        // caught), and --midioutchannel adds a channel playing the first, a clip of it in Arrange, selected
+        if (auto outputs = args.valueAfter ("--midiouts"); outputs.isNotEmpty())
+            MidiOutHub::testOutputs = juce::StringArray::fromTokens (outputs, ",", {});
+
+        if (args.has ("--midioutchannel") && ! MidiOutHub::testOutputs.isEmpty())
+        {
+            const auto output = MidiOutHub::testOutputs[0];
+            auto& c = song.addChannel (output, InstrumentType::midiOut);
+            c.midiOutDevice = output;
+            c.midiOutChannel = 2;
+            c.midiProgram = 4;
+            const int id = c.id;
+
+            Track t;
+            t.channelId = id;
+            const int row = song.insertTrack (t);
+            auto& p = song.addPatternFor (id);
+            p.notesFor (id) = { { 0, 192, 60, 100 }, { 192, 192, 64, 90 }, { 384, 384, 67, 80 } };
+            song.playlist.push_back ({ p.id, row, 0 });
+            song.selectedChannelId = id;
         }
 
         if (auto patternName = args.valueAfter ("--pattern"); patternName.isNotEmpty())
@@ -246,7 +270,8 @@ namespace
           --render <file.wav>                   render the demo song (or --project <file>)
           --snapshot <file.png> [--show playlist,rack,piano] [--raise playlist] [--toggle rack] [--size 1600x940]
                      [--arm <channel names>] [--search <text>] [--opensounds "Plugin effects;Nightshift"] [--lofi] [--settings] [--live]
-                     [--midilight <keyboard>]
+                     [--midilight <keyboard>] [--midiouts "Synth,Drum machine" [--midioutchannel]] [--exportmidi]
+          --midiouttest / --midifiletest        synths plugged in (MIDI out), caught with their timing; .mid files out and in
           --rectest <folder> [--countin] [--monitor]   record from a virtual input and check the take's timing
           --comptest <folder> [--countin] [--monitor]  loop-record takes, comp them, check takes and joins
           --pianotest                           check which channel the piano roll edits, and its picker
@@ -11375,18 +11400,20 @@ namespace
                 { "Master: Loudness", "--masterpage 0" }, { "Master: Tone, punch & width", "--masterpage 1 --shapeexample" },
                 { "the start screen", "--startscreen --recent \"Demo song,Late night beat\"" },
                 { "the start screen after the first time", "--startscreen --asked --recent \"Demo song,Late night beat\"" }, { "Audio settings", "--settings" },
+                { "Audio settings with synths plugged in", "--settings --midiouts \"Synth module,Drum machine,USB MIDI Interface\"" },
                 { "the metronome", "--metronome" }, { "the EQ", "--effectpanel nightshiftEQ" },
                 { "the compressor", "--effectpanel nightshiftCompressor" }, { "the filter", "--effectpanel nightshiftFilter" },
                 { "the reverb", "--effectpanel nightshiftReverb" }, { "the delay", "--effectpanel nightshiftDelay" },
                 { "the chorus", "--effectpanel nightshiftChorus" }, { "the NAM amp, empty", "--effectpanel nightshiftAmp" },
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
-                { "Save changes?", "--closedialog" }, { "About", "--about 900" },
+                { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
                 { "automation lanes", "--automationdemo" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
                 { "a plugin's Inspector", "--moretracks --select \"Surge XT\"" },
                 { "an instrument's Inspector", "--moretracks --select \"Violin Section\"" },
+                { "a synth plugged in's Inspector", "--midiouts \"Synth module\" --midioutchannel --select \"Synth module\"" },
                 { "a sound search", "--search piano" }, { "no drum kits yet", "--nokits --raise drummer" },
                 { "a MIDI keyboard playing", "--midilight \"Keystation 49\"" }, { "the Lofi effects", "--lofi --select Kick" },
                 { "armed to record", "--moretracks --armrecord" }
@@ -11915,6 +11942,22 @@ namespace
             for (auto& d : juce::MidiOutput::getAvailableDevices())
                 std::cout << "JUCE out: " << d.name << "  [" << d.identifier << "]" << std::endl;
 
+            // Synths plugged in: NightShift's own sender (as the studio's) opens each output and sends it
+            // "all notes off" on channel 16, which nothing hears. (Before the engine below opens Tracktion's.)
+            {
+                MidiOutHub hub (false);
+
+                for (auto& name : hub.getOutputNames())
+                {
+                    hub.sendNow (name, juce::MidiMessage::allNotesOff (16));
+
+                    for (int i = 0; i < 20; ++i)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+                    std::cout << "NightShift's MIDI out: " << name << (hub.isOpen (name) ? ": opened, sent" : ": couldn't open it") << std::endl;
+                }
+            }
+
             AudioEngine::headlessMidiDevices = true;
             Song song;
             song.loadBlank();
@@ -12366,6 +12409,907 @@ namespace
 
             out.reset();
             AudioEngine::headlessMidiDevices = false;
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--midiouttest"))
+        {
+            // Synths plugged in (MIDI out), with two made-up outputs whose messages are caught with
+            // their times: a channel's pattern out on its MIDI channel, each note heard where the song
+            // has it (the graph's latency after the block that plays it); timing earlier (looking
+            // ahead, round the loop) and later; the clock, start and stop; what a keyboard plays,
+            // straight out; a mute, a program, a stop letting go, an edit while playing, Song mode
+            // through a tempo change and from bar 2; saving; and nothing left held
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            const double sr = 48000.0;
+            const int block = 512;
+            MidiOutHub::testOutputs = { "Test synth", "Drum machine" };
+            AudioEngine::routeHostedMidi = true;
+
+            Song song;
+            song.loadBlank();
+            song.bpm = 120.0;
+            auto& keysChannel = song.addChannel ("Keys", InstrumentType::midiOut);
+            keysChannel.midiOutDevice = "Test synth";
+            keysChannel.midiOutChannel = 2;
+            const int keys = keysChannel.id;
+            const int lead = song.addChannel ("Lead", InstrumentType::synth).id;
+            song.selectedChannelId = keys;
+
+            // One bar: beat 1 for an eighth, beat 2 for a quarter, the and of 3 for a 16th; Lead plays too
+            auto& pattern = song.currentPattern();
+            pattern.notesFor (keys) = { { 0, 48, 60, 100 }, { 96, 96, 64, 90 }, { 240, 24, 67, 80 } };
+            pattern.notesFor (lead) = { { 0, 96, 48, 100 } };
+            song.mode = PlayMode::pattern;
+            song.notify (Song::Change::everything);
+            AudioEngine audio (song, false);
+            audio.syncNow();
+
+            auto o = audio.getOptions();
+            o.metronome = false;
+            o.countInBars = 0;
+            audio.setOptions (o);
+
+            juce::AudioBuffer<float> buffer (2, block);
+            auto run = [&] (double seconds, std::optional<juce::MidiMessage> first = std::nullopt)
+            {
+                for (int b = 0; b < (int) std::ceil (seconds * sr / block); ++b)
+                {
+                    juce::MidiBuffer midi;
+
+                    if (b == 0 && first.has_value())
+                        midi.addEvent (*first, 0);
+
+                    buffer.clear();
+                    audio.processHostedBlock (buffer, midi);
+
+                    if (b % 8 == 0)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                }
+            };
+
+            auto& hub = audio.getMidiOut();
+            using Sent = MidiOutHub::Sent;
+
+            auto take = [&]
+            {
+                hub.flush();
+                return hub.takeSent();
+            };
+
+            auto onlyFrom = [] (const std::vector<Sent>& all, const juce::String& output, std::function<bool (const juce::MidiMessage&)> wanted)
+            {
+                std::vector<Sent> list;
+
+                for (auto& s : all)
+                    if (s.output == output && wanted (s.message))
+                        list.push_back (s);
+
+                return list;
+            };
+
+            auto isOn = [] (const juce::MidiMessage& m) { return m.isNoteOn(); };
+            auto isNote = [] (const juce::MidiMessage& m) { return m.isNoteOnOrOff(); };
+
+            // For a failure: what went out, when it's heard (from the first), and when it was sent
+            auto listOf = [] (const std::vector<Sent>& list, size_t from = 0, size_t count = 12)
+            {
+                juce::StringArray lines;
+                const double origin = list.empty() ? 0.0 : list.front().heardMs;
+
+                for (size_t i = from; i < std::min (list.size(), from + count); ++i)
+                    lines.add (juce::String (list[i].heardMs - origin, 3) + "/" + juce::String (list[i].sentMs - origin, 3) + " "
+                               + list[i].message.getDescription());
+
+                return " [" + lines.joinIntoString ("; ") + "]";
+            };
+
+            // Every note let go by the end: as many offs as ons, key by key
+            auto balanced = [] (const std::vector<Sent>& all)
+            {
+                std::map<juce::String, int> count;
+
+                for (auto& s : all)
+                    if (s.message.isNoteOnOrOff())
+                        count[s.output + ":" + juce::String (s.message.getChannel()) + ":" + juce::String (s.message.getNoteNumber())]
+                            += s.message.isNoteOn() ? 1 : -1;
+
+                return std::all_of (count.begin(), count.end(), [] (auto& c) { return c.second == 0; });
+            };
+
+            const auto names = audio.getMidiOutputNames();
+            check (names == juce::StringArray { "Test synth", "Drum machine" }, "the outputs there are: " + names.joinIntoString (", "));
+
+            // Pattern mode, round and round (a bar at 120 is 2 s)
+            run (0.2);
+            take();
+            audio.togglePlay();
+            run (4.6);
+            audio.stop();
+            run (0.2);
+            auto sent = take();
+            auto notes = onlyFrom (sent, "Test synth", isNote);
+            auto ons = onlyFrom (sent, "Test synth", isOn);
+            const double latency = hub.getLatencyMs();
+
+            {
+                bool channel2 = ! notes.empty();
+
+                for (auto& n : notes)
+                    channel2 = channel2 && n.message.getChannel() == 2;
+
+                check (ons.size() >= 6 && channel2, "Keys' notes go out of Test synth on MIDI channel 2 (" + juce::String ((int) ons.size()) + " notes in 2.3 passes)");
+            }
+
+            if (ons.size() >= 6)
+            {
+                const double t0 = ons[0].heardMs;
+                const bool keysRight = ons[0].message.getNoteNumber() == 60 && ons[1].message.getNoteNumber() == 64 && ons[2].message.getNoteNumber() == 67
+                                    && ons[0].message.getVelocity() == 100 && ons[1].message.getVelocity() == 90 && ons[2].message.getVelocity() == 80;
+                check (keysRight, "C, E and G at velocities 100, 90 and 80");
+                check (std::abs (ons[1].heardMs - t0 - 500.0) < 0.05 && std::abs (ons[2].heardMs - t0 - 1250.0) < 0.05
+                           && std::abs (ons[3].heardMs - t0 - 2000.0) < 0.05 && std::abs (ons[5].heardMs - t0 - 3250.0) < 0.05,
+                       "each heard where the song has it: beat 2 at +500 ms, the and of 3 at +1250, round the loop at +2000 and +3250 ("
+                           + juce::String (ons[1].heardMs - t0, 3) + ", " + juce::String (ons[2].heardMs - t0, 3) + ", "
+                           + juce::String (ons[3].heardMs - t0, 3) + ", " + juce::String (ons[5].heardMs - t0, 3) + ")");
+
+                // The first note's end, an eighth (250 ms) later
+                const auto offs = onlyFrom (sent, "Test synth", [] (const juce::MidiMessage& m) { return m.isNoteOff() && m.getNoteNumber() == 60; });
+                check (! offs.empty() && std::abs (offs[0].heardMs - t0 - 250.0) < 0.05, "and let go an eighth later (+"
+                           + (offs.empty() ? juce::String ("never") : juce::String (offs[0].heardMs - t0, 3)) + " ms)");
+
+                // Sent as it's heard: the block that plays it, plus what the graph holds it back
+                const bool onTime = std::all_of (ons.begin(), ons.end(), [] (const Sent& s) { return std::abs (s.sentMs - s.heardMs) < 0.001; });
+                check (onTime && latency > 0.0, "timing 0: each sent the moment it's heard, the graph's " + juce::String (latency, 2) + " ms after its block");
+            }
+
+            check (balanced (sent), "every note let go by the time it's stopped");
+            check (onlyFrom (sent, "Drum machine", [] (const juce::MidiMessage&) { return true; }).empty(), "nothing to the drum machine, which nothing plays");
+
+            // Lead, a built-in synth, never goes out
+            check (std::none_of (sent.begin(), sent.end(), [] (const Sent& s) { return s.message.isNoteOn() && s.message.getNoteNumber() == 48; }),
+                   "Lead's note (its own synth) goes to no output");
+
+            // Earlier for a slow synth: 30 ms ahead, looking past the loop's end for the next bar's first note
+            audio.setMidiOutSettings ("Test synth", { -30, false });
+            audio.syncNow();
+            audio.setPlayheadTicks (0);
+            take();
+            audio.togglePlay();
+            run (4.6);
+            audio.stop();
+            run (0.2);
+            sent = take();
+            ons = onlyFrom (sent, "Test synth", isOn);
+
+            if (ons.size() >= 6)
+            {
+                bool early = true;
+
+                for (size_t i = 1; i < ons.size(); ++i)
+                    early = early && std::abs (ons[i].sentMs - (ons[i].heardMs - 30.0)) < 0.001;
+
+                // The second bar's downbeat goes out 30 ms before the bar starts, while the first is still playing
+                check (early && ons[3].sentMs < ons[3].heardMs - 29.99,
+                       "30 ms earlier: each note sent 30 ms before it's heard, the next pass's first note before the loop comes round ("
+                           + juce::String (ons[3].heardMs - ons[3].sentMs, 3) + " ms ahead)");
+                check (ons[0].sentMs <= ons[0].heardMs - std::min (30.0, latency) + 0.001,
+                       "the very first, as early as it can go after Play (" + juce::String (ons[0].heardMs - ons[0].sentMs, 2) + " ms ahead)");
+            }
+            else
+            {
+                check (false, "30 ms earlier: only " + juce::String ((int) ons.size()) + " notes sent");
+            }
+
+            check (balanced (sent), "every note let go, sent early too");
+
+            // Later
+            audio.setMidiOutSettings ("Test synth", { 20, false });
+            audio.syncNow();
+            audio.setPlayheadTicks (0);
+            take();
+            audio.togglePlay();
+            run (2.2);
+            audio.stop();
+            run (0.2);
+            ons = onlyFrom (take(), "Test synth", isOn);
+            check (! ons.empty() && std::all_of (ons.begin(), ons.end(), [] (const Sent& s) { return std::abs (s.sentMs - s.heardMs - 20.0) < 0.001; }),
+                   "20 ms later: each sent 20 ms after it's heard");
+            audio.setMidiOutSettings ("Test synth", {});
+            check (audio.getOptions().midiOuts.empty(), "back on time, nothing kept for it");
+
+            // The clock on the drum machine: a song position and start on the downbeat, 24 to the beat,
+            // a start again as the pattern comes round, stop with Stop
+            audio.setMidiOutSettings ("Drum machine", { 0, true });
+            audio.syncNow();
+            audio.setPlayheadTicks (0);
+            take();
+            audio.togglePlay();
+            run (2.6);
+            audio.stop();
+            run (0.2);
+            sent = take();
+            auto clock = onlyFrom (sent, "Drum machine", [] (const juce::MidiMessage&) { return true; });
+
+            {
+                std::vector<double> ticks, starts;
+                bool stopLast = ! clock.empty() && clock.back().message.getRawData()[0] == 0xfc;
+                bool positionFirst = clock.size() > 2 && clock[0].message.isSongPositionPointer()
+                                  && clock[0].message.getSongPositionPointerMidiBeat() == 0 && clock[1].message.isMidiStart();
+
+                for (auto& c : clock)
+                {
+                    if (c.message.isMidiClock())
+                        ticks.push_back (c.heardMs);
+
+                    if (c.message.isMidiStart())
+                        starts.push_back (c.heardMs);
+                }
+
+                bool steady = ticks.size() > 50;
+                size_t odd = 0;
+
+                for (size_t i = 1; i < ticks.size(); ++i)
+                    if (std::abs (ticks[i] - ticks[i - 1] - 500.0 / 24.0) >= 0.01 && odd == 0)
+                        odd = i;
+
+                steady = steady && odd == 0;
+
+                // Where it went wrong, if it did: the messages round the first odd gap
+                size_t at = 0;
+
+                for (size_t i = 0, k = 0; i < clock.size(); ++i)
+                    if (clock[i].message.isMidiClock() && k++ == odd)
+                        at = i;
+
+                check (positionFirst, "the drum machine gets a song position of 0 and start first");
+                check (steady, "then a clock every 20.833 ms, 24 to the beat at 120 (" + juce::String ((int) ticks.size()) + " in 2.6 s)"
+                           + (steady ? juce::String() : listOf (clock, at >= 4 ? at - 4 : 0, 10)));
+                check (starts.size() == 2 && ! ticks.empty() && std::abs (starts[1] - starts[0] - 2000.0) < 0.05 && std::abs (starts[0] - ticks[0]) < 0.001,
+                       "start again as the bar comes round, 2 s on, the first clock with the first start (" + juce::String ((int) starts.size()) + " starts)"
+                           + (starts.size() == 2 ? juce::String() : listOf (clock, 0, 6)));
+                check (stopLast, "and stop when the song stops");
+            }
+
+            // Its notes out with the clock's: the song position before the downbeat's note at the same moment
+            {
+                const auto first = onlyFrom (sent, "Test synth", isOn);
+                check (! first.empty() && ! clock.empty() && std::abs (first[0].heardMs - clock[1].heardMs) < 0.001,
+                       "Keys' first note and the drum machine's start land together");
+            }
+
+            audio.setMidiOutSettings ("Drum machine", {});
+
+            // What a keyboard plays on Keys goes out at once, on Keys' MIDI channel: one plugged in
+            // (the engine's input, routed as a keyboard's) and the computer's
+            {
+                auto hasInput = [&audio]
+                {
+                    for (auto& d : audio.getEdit().engine.getDeviceManager().getMidiInDevices())
+                        if (tracktion::HostedAudioDeviceInterface::isHostedMidiInputDevice (*d))
+                            return true;
+
+                    return false;
+                };
+
+                for (int i = 0; i < 100 && ! hasInput(); ++i)
+                    settleMessages (20);
+
+                settleMessages (50);
+                audio.syncNow();
+                run (0.1);
+                take();
+                const double before = hub.nowMs();
+                run (0.05, juce::MidiMessage::noteOn (1, 72, (juce::uint8) 99));
+                run (0.05, juce::MidiMessage::noteOff (1, 72));
+                auto live = onlyFrom (take(), "Test synth", isNote);
+                check (live.size() == 2 && live[0].live && live[0].message.getChannel() == 2 && live[0].message.getNoteNumber() == 72
+                           && live[0].message.getVelocity() == 99 && live[0].sentMs - before < 12.0 && live[1].message.isNoteOff(),
+                       "a key on a keyboard plugged in goes straight out on channel 2, within a block ("
+                           + (live.empty() ? juce::String ("nothing") : juce::String (live[0].sentMs - before, 1) + " ms") + "), and its release");
+
+                audio.liveNoteOn (keys, 74, 70);
+                run (0.05);
+                audio.liveNoteOff (keys, 74);
+                run (0.05);
+                live = onlyFrom (take(), "Test synth", isNote);
+                check (live.size() == 2 && live[0].message.getNoteNumber() == 74 && live[0].message.getChannel() == 2 && live[1].message.isNoteOff(),
+                       "the computer keyboard's too");
+
+                audio.sendTestNote (keys);
+                run (0.05);
+                settleMessages (450);
+                run (0.05);
+                live = onlyFrom (take(), "Test synth", isNote);
+                check (live.size() == 2 && live[0].message.getNoteNumber() == 60 && live[1].message.isNoteOff(), "a test note: middle C on and off");
+            }
+
+            // A program asked for goes first as playing starts; muted, it plays nothing
+            {
+                auto* c = song.findChannel (keys);
+                c->midiProgram = 5;
+                song.notify (Song::Change::channels);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.6);
+                audio.stop();
+                run (0.1);
+                sent = onlyFrom (take(), "Test synth", [] (const juce::MidiMessage&) { return true; });
+                check (! sent.empty() && sent[0].message.isProgramChange() && sent[0].message.getProgramChangeNumber() == 5
+                           && sent[0].message.getChannel() == 2 && sent.size() > 1 && sent[1].message.isNoteOn(),
+                       "program 5 on channel 2 goes out first, then the notes");
+
+                c->muted = true;
+                song.notify (Song::Change::mixer);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (1.0);
+                audio.liveNoteOn (keys, 76, 70);
+                run (0.05);
+                audio.liveNoteOff (keys, 76);
+                audio.stop();
+                run (0.1);
+                ons = onlyFrom (take(), "Test synth", isOn);
+                check (ons.empty(), "muted, Keys plays nothing, its pattern or a key");
+                c->muted = false;
+                c->midiProgram = -1;
+                song.notify (Song::Change::mixer);
+                audio.syncNow();
+            }
+
+            // Stopping mid-note lets go of it; editing while playing leaves nothing held
+            {
+                pattern.notesFor (keys) = { { 0, 384, 62, 100 } };
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.5);
+                pattern.notesFor (keys) = { { 96, 48, 65, 100 } };
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                run (2.5);
+                audio.stop();
+                run (0.1);
+                sent = take();
+                ons = onlyFrom (sent, "Test synth", isOn);
+                const bool letGo = ons.size() >= 2 && ons[0].message.getNoteNumber() == 62 && ons[1].message.getNoteNumber() == 65 && balanced (sent);
+                check (letGo, "a held note let go when its pattern changes under it, the new one played, nothing left held"
+                                  + (letGo ? juce::String() : listOf (onlyFrom (sent, "Test synth", isNote))));
+
+                pattern.notesFor (keys) = { { 0, 384, 62, 100 } };
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.5);
+                audio.stop();
+                run (0.1);
+                sent = take();
+                const auto offs = onlyFrom (sent, "Test synth", [] (const juce::MidiMessage& m) { return m.isNoteOff(); });
+                check (offs.size() == 1 && balanced (sent), "stopped in the middle of a bar-long note, it's let go");
+            }
+
+            // Song mode: a clip at bar 1 and bar 3, the tempo halving at bar 3; played from bar 2
+            {
+                pattern.notesFor (keys) = { { 0, 48, 60, 100 } };
+                song.mode = PlayMode::song;
+                const int row = song.trackForChannel (keys, 0, 384);
+                song.playlist = { { pattern.id, row, 0 }, { pattern.id, row, 2 * 384 } };
+                song.setTempoAt (2 * 384, 60.0);
+                song.notify (Song::Change::everything);
+                audio.setMidiOutSettings ("Test synth", { 0, true });
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (5.0);
+                audio.stop();
+                run (0.1);
+                sent = onlyFrom (take(), "Test synth", [] (const juce::MidiMessage&) { return true; });
+                ons = onlyFrom (sent, "Test synth", isOn);
+                std::vector<double> ticks;
+
+                for (auto& s : sent)
+                    if (s.message.isMidiClock())
+                        ticks.push_back (s.heardMs);
+
+                check (ons.size() == 2 && std::abs (ons[1].heardMs - ons[0].heardMs - 4000.0) < 0.05,
+                       "Song mode: bar 3's note 4 s after bar 1's (two bars at 120)");
+
+                // The clock's beat is twice as long once the tempo halves
+                bool halved = ticks.size() > 120;
+
+                if (halved)
+                {
+                    const double changeAt = ons[0].heardMs + 4000.0;
+                    double before = 0.0, after = 0.0;
+
+                    for (size_t i = 1; i < ticks.size(); ++i)
+                    {
+                        if (ticks[i] < changeAt - 1.0)
+                            before = ticks[i] - ticks[i - 1];
+                        else if (ticks[i - 1] > changeAt + 1.0)
+                            after = ticks[i] - ticks[i - 1];
+                    }
+
+                    halved = std::abs (before - 500.0 / 24.0) < 0.01 && std::abs (after - 1000.0 / 24.0) < 0.01;
+                    check (halved, "the clock follows the tempo: every " + juce::String (before, 3) + " ms at 120, every " + juce::String (after, 3) + " ms at 60"
+                               + (halved ? juce::String() : listOf (sent, 0, 14)));
+                }
+                else
+                {
+                    check (false, "the clock follows the tempo (only " + juce::String ((int) ticks.size()) + " clocks)");
+                }
+
+                // From bar 2: a song position of 16 sixteenths and continue
+                audio.setPlayheadTicks (384);
+                take();
+                audio.togglePlay();
+                run (0.5);
+                audio.stop();
+                run (0.1);
+                sent = onlyFrom (take(), "Test synth", [] (const juce::MidiMessage&) { return true; });
+                check (sent.size() > 2 && sent[0].message.isSongPositionPointer() && sent[0].message.getSongPositionPointerMidiBeat() == 16
+                           && sent[1].message.isMidiContinue(),
+                       "played from bar 2: song position 16 (16ths) and continue");
+                audio.setMidiOutSettings ("Test synth", {});
+            }
+
+            // Saved with the song; switched to a built-in sound, it goes out no more
+            {
+                Song saved;
+                saved.fromVar (song.toVar());
+                auto* c = saved.findChannel (keys);
+                check (c != nullptr && c->type == InstrumentType::midiOut && c->midiOutDevice == "Test synth" && c->midiOutChannel == 2,
+                       "a synth plugged in is saved with the song: its output and MIDI channel");
+
+                auto* k = song.findChannel (keys);
+                k->type = InstrumentType::synth;
+                k->synthPreset = "Velvet Keys";
+                song.notify (Song::Change::channels);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.6);
+                audio.stop();
+                run (0.1);
+                check (onlyFrom (take(), "Test synth", isOn).empty() && audio.getTrack (keys) != nullptr && ! audio.getTrack (keys)->getClips().isEmpty(),
+                       "made a NightShift synth again, Keys plays its clips itself and nothing goes out");
+            }
+
+            // In the studio: Add channel's Synth plugged in, each new one on a MIDI channel of its own
+            // there; a drum kit switched over to one goes on 10
+            {
+                Song studio;
+                studio.loadBlank();
+                AudioEngine studioAudio (studio, false);
+                MainComponent main (studio, studioAudio);
+                auto& rack = main.getRack();
+                const int first = rack.addMidiOutChannel ("Test synth");
+                const int second = rack.addMidiOutChannel ("Test synth");
+                const auto* a = studio.findChannel (first);
+                const auto* b = studio.findChannel (second);
+                check (a != nullptr && b != nullptr && a->type == InstrumentType::midiOut && a->name == "Test synth" && a->midiOutChannel == 1
+                           && b->midiOutChannel == 2 && studio.selectedChannelId == second,
+                       "Add channel > Synth plugged in: Test synth on MIDI channel 1, another on 2, selected");
+
+                auto& padChannel = studio.addChannel ("Night Pad", InstrumentType::synth);
+                padChannel.synthPreset = "Night Pad";
+                const int pad = padChannel.id;
+                studio.notify (Song::Change::channels);
+                rack.playOnMidiOut (pad, "Test synth");
+                const auto* p = studio.findChannel (pad);
+                check (p != nullptr && p->type == InstrumentType::midiOut && p->midiOutChannel == 3 && p->name == "Test synth",
+                       "a NightShift synth's channel played on Test synth instead: on channel 3, the next free there, named after it");
+
+                const int kit = studio.addChannel ("Drums", InstrumentType::kit).id;
+                studio.notify (Song::Change::channels);
+                rack.playOnMidiOut (kit, "Drum machine");
+                const auto* d = studio.findChannel (kit);
+                check (d != nullptr && d->type == InstrumentType::midiOut && d->midiOutDevice == "Drum machine" && d->midiOutChannel == 10
+                           && d->name == "Drum machine",
+                       "a drum kit played on the drum machine instead: on channel 10, named after it");
+                check (studio.undo() && studio.findChannel (kit)->type == InstrumentType::kit, "undone, a kit again");
+            }
+
+            // The AI drummer on a synth plugged in writes General MIDI's drums
+            {
+                Channel drums;
+                drums.type = InstrumentType::midiOut;
+                drums.midiOutChannel = 10;
+                const auto map = drummer::keyMapFor (drums);
+                check (map ("kick") == 36 && map ("snare") == 38 && map ("hat_closed") == 42, "the AI drummer plays a drum machine plugged in on General MIDI's keys");
+            }
+
+            AudioEngine::routeHostedMidi = false;
+            MidiOutHub::testOutputs.clear();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--midifiletest"))
+        {
+            // MIDI files: a song written out and read back note for note (tempo jumps and a glide,
+            // a 7/8 stretch, a split clip, a synth plugged in on its own channel, programs and
+            // names), brought back in as channels; one pattern's; a file of another program's
+            // (480 to the beat, every channel in one track, 3/8, a drum part, a note never let go);
+            // and something that isn't one
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            drumkits::machines::ensure();
+            const auto folder = juce::File::createTempFile ("midifiles");
+            folder.createDirectory();
+
+            Song song;
+            song.loadBlank();
+            song.bpm = 100.0;
+            const int bar = song.ticksPerBar();
+
+            auto& leadChannel = song.addChannel ("Lead", InstrumentType::synth);
+            leadChannel.synthPreset = "Supersaw Lead";
+            leadChannel.midiProgram = 81;
+            const int lead = leadChannel.id;
+            const int bass = song.addChannel ("Bass", InstrumentType::synth).id;
+            auto& outChannel = song.addChannel ("Synth out", InstrumentType::midiOut);
+            outChannel.midiOutDevice = "Test synth";
+            outChannel.midiOutChannel = 3;
+            outChannel.midiProgram = 5;
+            const int out = outChannel.id;
+
+            auto& riff = song.addPattern ("Riff");
+            riff.notesFor (lead) = { { 0, 48, 72, 100 }, { 48, 24, 74, 64 }, { 96, 200, 76, 127 }, { 300, 84, 79, 1 } };
+            riff.notesFor (bass) = { { 0, 96, 36, 110 }, { 192, 96, 43, 90 } };
+            const int riffId = riff.id;
+            auto& verse = song.addPattern ("Verse");
+            verse.notesFor (out) = { { 0, 384, 60, 80 }, { 0, 384, 64, 80 }, { 384, 192, 67, 70 }, { 576, 1, 69, 70 } };
+            const int verseId = verse.id;
+
+            // Bar 1 and (split: its second half only) bar 3; the verse from bar 5, into the 7/8
+            const int row = song.trackForChannel (lead, 0, bar);
+            song.playlist = { { riffId, row, 0 }, { riffId, row, 2 * bar + 144, 144, 240 }, { verseId, song.trackForChannel (out, 4 * bar, 6 * bar), 4 * bar } };
+            song.setTempoAt (2 * bar, 132.0);
+            song.setTempoAt (6 * bar, 90.0, true);
+            song.setMeterAt (4 * bar, 7, 8);
+            song.setMeterAt (song.barStart (8), 4, 4);
+            song.mode = PlayMode::song;
+
+            const auto played = midifile::notesAsPlayed (song, 0, true);
+            const auto file = folder.getChildFile ("song.mid");
+            const bool saved = midifile::save (song, file);
+            check (saved && file.getSize() > 100, "the song saves as a MIDI file (" + juce::String (file.getSize()) + " bytes)");
+
+            juce::String error;
+            const auto read = midifile::read (file, error);
+            check (read.has_value(), "and reads back" + (error.isNotEmpty() ? " (" + error + ")" : juce::String()));
+
+            if (read.has_value())
+            {
+                const auto& parts = read->parts;
+                check (parts.size() == 3 && parts[0].name == "Lead" && parts[1].name == "Bass" && parts[2].name == "Synth out",
+                       "a part for each channel with notes, named after it (" + juce::String ((int) parts.size()) + ")");
+
+                if (parts.size() == 3)
+                {
+                    check (parts[2].midiChannel == 3 && parts[0].midiChannel != 10 && parts[1].midiChannel != 10 && parts[0].midiChannel != parts[1].midiChannel
+                               && parts[0].midiChannel != 3 && parts[1].midiChannel != 3,
+                           "the synth plugged in on its own channel 3, the others each on one of their own (" + juce::String (parts[0].midiChannel)
+                               + ", " + juce::String (parts[1].midiChannel) + ")");
+                    check (parts[0].program == 81 && parts[1].program == -1 && parts[2].program == 5, "Lead's program 81 and the synth's 5 come back; Bass has none");
+
+                    // Note for note: each channel's notes as the song plays them
+                    bool same = true;
+                    int count = 0;
+                    const int ids[] = { lead, bass, out };
+
+                    for (int p = 0; p < 3; ++p)
+                    {
+                        std::vector<Note> expected;
+
+                        for (auto& n : played)
+                            if (n.channelId == ids[p])
+                                expected.push_back ({ (int) n.start, (int) (n.end - n.start), n.key, n.velocity });
+
+                        same = same && expected == parts[(size_t) p].notes;
+                        count += (int) expected.size();
+                    }
+
+                    check (same && count == 12, "every note back where it was, as long, on its key and as hard (" + juce::String (count)
+                               + " notes, the split clip's second half only, cut at its end)");
+                }
+
+                check (std::abs (read->bpm - 100.0) < 1.0e-6 && read->meterBeats == 4 && read->meterUnit == 4, "100 to the minute in 4/4 at the start");
+
+                const bool meters = read->meterChanges.size() == 2 && read->meterChanges[0] == MeterChange { 4 * bar, 7, 8 }
+                                 && read->meterChanges[1] == MeterChange { song.barStart (8), 4, 4 };
+                check (meters, "7/8 from bar 5 and 4/4 again from bar 9, where they were");
+
+                // The tempo: the jump exact, the glide a 16th at a time, in time with it all the way
+                Song back;
+                back.loadBlank();
+                back.bpm = read->bpm;
+                back.meterBeats = read->meterBeats;
+                back.meterUnit = read->meterUnit;
+                back.tempoChanges = read->tempoChanges;
+                back.meterChanges = read->meterChanges;
+                back.tidyTimeline();
+                double worst = 0.0;
+
+                for (int t = 0; t <= 10 * bar; t += ticksPerStep)
+                    worst = std::max (worst, std::abs (back.secondsAt (t) - song.secondsAt (t)));
+
+                const bool jump = std::any_of (read->tempoChanges.begin(), read->tempoChanges.end(),
+                                               [bar] (const TempoChange& t) { return t.tick == 2 * bar && std::abs (t.bpm - 132.0) < 1.0e-6; });
+                check (jump && worst < 0.0005, "the tempo jump to 132 at bar 3 exact, the glide to 90 kept in time (worst "
+                           + juce::String (worst * 1000.0, 3) + " ms over ten bars)");
+                check (read->warnings.isEmpty(), "nothing it had to change" + (read->warnings.isEmpty() ? juce::String() : ": " + read->warnings.joinIntoString ("; ")));
+
+                // Brought in as channels: the same notes play, the same tempo and time signatures
+                Song in;
+                in.loadBlank();
+                const auto added = midifile::addToSong (in, *read, true);
+                const auto again = midifile::notesAsPlayed (in, 0, true);
+                bool same = added.size() == 3 && again.size() == played.size();
+
+                for (size_t i = 0; same && i < again.size(); ++i)
+                {
+                    const auto& a = again[i];
+                    const auto& b = played[i];
+                    const int index = (int) (std::find (added.begin(), added.end(), a.channelId) - added.begin());
+                    const int originalId = index == 0 ? lead : index == 1 ? bass : out;
+                    same = a.start == b.start && a.end == b.end && a.key == b.key && a.velocity == b.velocity && b.channelId == originalId;
+                }
+
+                check (same, "brought in, its three channels play the same " + juce::String ((int) again.size()) + " notes");
+                check (in.bpm == 100.0 && in.tempoChanges == back.tempoChanges && in.meterChanges == back.meterChanges && in.mode == PlayMode::song,
+                       "with the file's tempo and time signatures, in Song mode");
+
+                auto* c = added.size() == 3 ? in.findChannel (added[0]) : nullptr;
+                check (c != nullptr && c->name == "Lead" && c->midiProgram == 81 && c->type == InstrumentType::synth && c->synthPreset == "Supersaw Lead",
+                       "Lead comes in on Supersaw Lead (General MIDI's 82, a saw lead), its program kept");
+
+                // Each channel's clips on a track of its own, from the bar its part starts
+                std::set<int> rows;
+
+                for (auto& clip : in.playlist)
+                    rows.insert (clip.track);
+
+                const auto* outPart = added.size() == 3 ? in.findChannel (added[2]) : nullptr;
+                const auto clipFor = [&in] (int channelId) -> const PlaylistClip*
+                {
+                    for (auto& clip : in.playlist)
+                        if (auto p = in.findPattern (clip.patternId); p != nullptr && p->findNotes (channelId) != nullptr)
+                            return &clip;
+
+                    return nullptr;
+                };
+
+                check (rows.size() == 3 && in.playlist.size() == 3 && outPart != nullptr && clipFor (outPart->id) != nullptr
+                           && clipFor (outPart->id)->start == 4 * bar,
+                       "a clip each on a track of its own, Synth out's from bar 5, where its notes start");
+            }
+
+            // One pattern's notes, at the start's tempo in its own time signature
+            {
+                const auto patternFile = folder.getChildFile ("riff.mid");
+                midifile::save (song, patternFile, riffId);
+                juce::String patternError;
+                const auto one = midifile::read (patternFile, patternError);
+                bool same = one.has_value() && one->parts.size() == 2 && one->tempoChanges.empty() && one->meterChanges.empty()
+                         && std::abs (one->bpm - 100.0) < 1.0e-6;
+
+                if (same)
+                {
+                    const auto expected = midifile::notesAsPlayed (song, riffId, true);
+                    std::vector<Note> leadNotes;
+
+                    for (auto& n : expected)
+                        if (n.channelId == lead)
+                            leadNotes.push_back ({ (int) n.start, (int) (n.end - n.start), n.key, n.velocity });
+
+                    same = leadNotes == one->parts[0].notes && leadNotes.size() == 4;
+                }
+
+                check (same, "one pattern exported: its two channels' notes, at 100 with no changes");
+            }
+
+            // Another program's file: 480 to the beat, all of it in one track, 90 to the minute in 3/8
+            {
+                juce::MidiMessageSequence track;
+                auto add = [&track] (juce::MidiMessage m, double tick) { m.setTimeStamp (tick); track.addEvent (m); };
+                add (juce::MidiMessage::textMetaEvent (3, "Song"), 0);
+                add (juce::MidiMessage::tempoMetaEvent (666667), 0);
+                add (juce::MidiMessage::timeSignatureMetaEvent (3, 8), 0);
+                add (juce::MidiMessage::programChange (1, 33), 0);
+                add (juce::MidiMessage::noteOn (1, 40, (juce::uint8) 100), 0);
+                add (juce::MidiMessage::noteOn (1, 40, (juce::uint8) 0), 240);        // a note-on at 0 is a release
+                add (juce::MidiMessage::noteOn (1, 43, (juce::uint8) 90), 480);
+                add (juce::MidiMessage::noteOff (1, 43), 960);
+                add (juce::MidiMessage::noteOn (10, 36, (juce::uint8) 120), 0);
+                add (juce::MidiMessage::noteOff (10, 36), 60);
+                add (juce::MidiMessage::noteOn (10, 38, (juce::uint8) 110), 480);
+                add (juce::MidiMessage::noteOff (10, 38), 540);
+                add (juce::MidiMessage::noteOn (2, 60, (juce::uint8) 70), 120);       // never let go: it lasts to the end
+                add (juce::MidiMessage::endOfTrack(), 1440);
+
+                juce::MidiFile written;
+                written.setTicksPerQuarterNote (480);
+                written.addTrack (track);
+                const auto otherFile = folder.getChildFile ("other.mid");
+
+                {
+                    juce::FileOutputStream stream (otherFile);
+                    written.writeTo (stream, 0);
+                }
+
+                juce::String otherError;
+                const auto other = midifile::read (otherFile, otherError);
+                check (other.has_value() && other->parts.size() == 3, "another program's file (480 to the beat, every channel in one track) reads as 3 parts");
+
+                if (other.has_value() && other->parts.size() == 3)
+                {
+                    const auto& bassPart = other->parts[0];
+                    const auto& padPart = other->parts[1];
+                    const auto& drumPart = other->parts[2];
+                    check (bassPart.midiChannel == 1 && bassPart.program == 33 && bassPart.name == "Song - Electric Bass (finger)"
+                               && drumPart.isDrums() && drumPart.name == "Song - Drums" && padPart.midiChannel == 2,
+                           "split by channel and named for the track and what each plays (\"" + bassPart.name + "\", \"" + drumPart.name + "\")");
+                    check (bassPart.notes == std::vector<Note> { { 0, 48, 40, 100 }, { 96, 96, 43, 90 } }, "the bass's notes in NightShift's ticks, a release by a silent note-on");
+                    check (padPart.notes.size() == 1 && padPart.notes[0].start == 24 && padPart.notes[0].end() == 288, "a note never let go lasts to the track's end");
+                    check (std::abs (other->bpm - 90.0) < 0.001 && other->meterBeats == 6 && other->meterUnit == 8
+                               && other->warnings.contains ("3/8 plays as 6/8"),
+                           "90 to the minute; 3/8, which NightShift hasn't, as 6/8 and said so (" + other->warnings.joinIntoString ("; ") + ")");
+
+                    // Brought into a song with its own tempo: the bass on a bass sound, the drums on a kit
+                    Song in;
+                    in.loadBlank();
+                    in.bpm = 140.0;
+                    const auto added = midifile::addToSong (in, *other, false, 4 * in.ticksPerBar());
+                    auto* bassChannel = added.size() == 3 ? in.findChannel (added[0]) : nullptr;
+                    auto* drumChannel = added.size() == 3 ? in.findChannel (added[2]) : nullptr;
+                    check (in.bpm == 140.0 && in.tempoChanges.empty() && in.meterBeats == 4, "dropped into a song, the song keeps its tempo and time signature");
+                    juce::StringArray what;
+
+                    for (auto id : added)
+                        if (auto* c = in.findChannel (id))
+                            what.add (c->name + ": type " + juce::String ((int) c->type) + " " + c->synthPreset + c->kit + c->instrument);
+
+                    const bool onBass = bassChannel != nullptr && bassChannel->type == InstrumentType::synth && bassChannel->synthPreset == "Finger Bass";
+                    check (onBass, "the bass on Finger Bass" + (onBass ? juce::String() : " (" + what.joinIntoString ("; ") + ")"));
+
+                    bool kitKeys = drumChannel != nullptr && drumChannel->type == InstrumentType::kit && drumChannel->kit.isNotEmpty();
+
+                    if (kitKeys)
+                    {
+                        auto kit = drumkits::load (drumChannel->kit);
+                        const Pattern* drumPattern = nullptr;
+
+                        for (auto& p : in.patterns)
+                            if (p.findNotes (drumChannel->id) != nullptr)
+                                drumPattern = &p;
+
+                        kitKeys = kit != nullptr && drumPattern != nullptr && drumPattern->findNotes (drumChannel->id)->size() == 2
+                               && (*drumPattern->findNotes (drumChannel->id))[0].key == drumkits::keyForVoice (*kit, "kick")
+                               && (*drumPattern->findNotes (drumChannel->id))[1].key == drumkits::keyForVoice (*kit, "snare");
+                    }
+
+                    check (kitKeys, "the drums on a drum kit" + (drumChannel != nullptr ? " (" + drumkits::displayName (drumChannel->kit) + ")" : juce::String())
+                               + ", General MIDI's kick and snare on the kit's own");
+
+                    const PlaylistClip* first = nullptr;
+
+                    for (auto& clip : in.playlist)
+                        if (first == nullptr || clip.start < first->start)
+                            first = &clip;
+
+                    check (first != nullptr && first->start == 4 * in.ticksPerBar(), "placed from bar 5, where it was dropped");
+                }
+            }
+
+            // Not a MIDI file
+            {
+                const auto notMidi = folder.getChildFile ("not.mid");
+                notMidi.replaceWithText ("hello");
+                juce::String notError;
+                const bool refused = ! midifile::read (notMidi, notError).has_value();
+                check (refused && notError.isNotEmpty(), "a file that isn't one says so: \"" + notError + "\"");
+            }
+
+            // In the studio: Open makes a new project of a .mid, one dropped comes into the song at the
+            // bar it lands on (and Ctrl+Z takes it out), and Export MIDI file asks what, then writes it
+            {
+                Song studio;
+                studio.loadDemo();
+                AudioEngine audio (studio, false);
+                MainComponent main (studio, audio);
+                main.setSize (1600, 940);
+                auto pump = [] { for (int i = 0; i < 10; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (5); };
+                // Every dialog up dismissed (as Escape would), a few goes at most
+                auto closeDialogs = [&pump]
+                {
+                    pump();
+
+                    for (int tries = 0; tries < 20; ++tries)
+                    {
+                        auto* modal = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+
+                        if (modal == nullptr)
+                            return;
+
+                        modal->exitModalState (0);
+                        pump();
+                    }
+
+                    std::cout << "(a dialog that wouldn't close)" << std::endl;
+                };
+
+                pump();
+                main.openMidiFile (file);
+                pump();
+                check (studio.channels.size() == 3 && studio.bpm == 100.0 && studio.meterChanges.size() == 2 && studio.mode == PlayMode::song
+                           && studio.hasUnsavedChanges(),
+                       "Open on song.mid: a new project of its three tracks, at 100 with its 7/8, not saved yet ("
+                           + juce::String ((int) studio.channels.size()) + " channels)");
+
+                const auto before = studio.channels.size();
+                const auto otherFile = folder.getChildFile ("other.mid");
+                main.addMidiFile (otherFile, 4 * studio.ticksPerBar());
+                pump();
+                check (studio.channels.size() == before + 3 && studio.bpm == 100.0, "another dropped on bar 5: its three tracks come in, the song keeps its tempo");
+                check (studio.undo() && studio.channels.size() == before, "and Ctrl+Z takes them out again");
+
+                main.exportMidi();
+                pump();
+                auto* dialog = dynamic_cast<juce::AlertWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (0));
+                auto* what = dialog != nullptr ? dialog->getComboBoxComponent ("what") : nullptr;
+                check (what != nullptr && what->getNumItems() == 4 && what->getItemText (0) == "The whole song, as Arrange plays it"
+                           && what->getSelectedItemIndex() == 0,
+                       "Export MIDI file asks what it should hold: the whole song (chosen, in Song mode) or one of its patterns"
+                           + (what != nullptr ? " (" + juce::String (what->getNumItems()) + " choices)" : juce::String()));
+                closeDialogs();
+
+                // What Choose where to save... does once there's a file (its message box aside: shown
+                // with no callback, it would wait for a click)
+                const auto exported = folder.getChildFile ("exported.mid");
+                const auto [saved, said] = main.saveMidiFile (exported, 0);
+                const auto notesInSong = midifile::notesAsPlayed (studio, 0, true).size();
+                juce::String exportError;
+                const auto back = midifile::read (exported, exportError);
+                check (saved && back.has_value() && back->parts.size() == 3 && back->meterChanges.size() == 2
+                           && [&]
+                              {
+                                  size_t count = 0;
+
+                                  for (auto& part : back->parts)
+                                      count += part.notes.size();
+
+                                  return count == notesInSong;
+                              }()
+                           && said.contains (juce::String ((int) notesInSong) + " notes on 3 tracks, the whole song"),
+                       "and writes the song's notes, every one, with its time signatures, and says so: \""
+                           + said.fromFirstOccurrenceOf ("\n", false, false) + "\"");
+            }
+
+            folder.deleteRecursively();
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
             return failures == 0 ? 0 : 1;
         }
@@ -14915,11 +15859,20 @@ namespace
                 }
             }
 
-            // The Audio settings window (F10) on its own
+            // The Audio settings window (F10) on its own; with --midiouts, the first output 12 ms early
+            // and the second sent the tempo
             std::unique_ptr<AudioSettings> settings;
 
             if (args.has ("--settings"))
+            {
+                if (MidiOutHub::testOutputs.size() >= 2)
+                {
+                    audio.setMidiOutSettings (MidiOutHub::testOutputs[0], { -12, false });
+                    audio.setMidiOutSettings (MidiOutHub::testOutputs[1], { 0, true });
+                }
+
                 settings = std::make_unique<AudioSettings> (audio);
+            }
 
             // The metronome's panel on its own (--metronome odd: 7/8 as 2+2+3, triplets, beat 6 off);
             // --armrecord arms Record
@@ -14993,6 +15946,13 @@ namespace
             {
                 song.notify (Song::Change::transport);      // a change, so there's something unsaved
                 main.confirmDiscard ([] {});
+                closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+            }
+
+            // Export MIDI file's question: the whole song or a pattern (as it looks; nothing is saved)
+            if (args.has ("--exportmidi"))
+            {
+                main.exportMidi();
                 closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
             }
 
@@ -15227,7 +16187,7 @@ public:
             window->main->openProjectFile (file);
     }
 
-    /** The .nsproj a launch (or an Explorer double-click) asked for, if any. A relative path
+    /** The .nsproj (or .mid) a launch (or an Explorer double-click) asked for, if any. A relative path
         is resolved against this process's working directory; a hand-over from a second
         instance can't know that directory, so it passes false and takes absolute paths only. */
     static juce::File projectFileFrom (const juce::String& commandLine, bool resolveRelative)
@@ -15236,7 +16196,8 @@ public:
         {
             const auto path = token.unquoted();
 
-            if (! path.endsWithIgnoreCase (".nsproj"))
+            // A project, or a MIDI file to make one of
+            if (! (path.endsWithIgnoreCase (".nsproj") || path.endsWithIgnoreCase (".mid") || path.endsWithIgnoreCase (".midi")))
                 continue;
 
             juce::File file;

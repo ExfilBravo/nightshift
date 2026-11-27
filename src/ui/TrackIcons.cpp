@@ -350,6 +350,13 @@ juce::String forChannel (const Channel& c)
             const auto words = fromWords (c.name + " " + c.pluginId.upToLastOccurrenceOf ("-", false, false));
             return words.isNotEmpty() ? words : juce::String ("synth");
         }
+
+        case InstrumentType::midiOut:
+        {
+            // A drum machine on General MIDI's drum channel, else what its name says
+            const auto words = fromWords (c.name + " " + c.midiOutDevice);
+            return words.isNotEmpty() ? words : juce::String (c.midiOutChannel == 10 ? "drums" : "synth");
+        }
     }
 
     return "synth";

@@ -1405,6 +1405,7 @@ static juce::String typeToString (InstrumentType t)
         case InstrumentType::audio:   return "audio";
         case InstrumentType::kit:     return "kit";
         case InstrumentType::instrument: return "instrument";
+        case InstrumentType::midiOut: return "midiOut";
         case InstrumentType::sampler: break;
     }
 
@@ -1418,6 +1419,7 @@ static InstrumentType typeFromString (const juce::String& s)
     if (s == "audio")   return InstrumentType::audio;
     if (s == "kit")     return InstrumentType::kit;
     if (s == "instrument") return InstrumentType::instrument;
+    if (s == "midiOut") return InstrumentType::midiOut;
     return InstrumentType::sampler;
 }
 
@@ -1821,6 +1823,10 @@ juce::var Song::toVar() const
         o->setProperty ("kit", c.kit);
         o->setProperty ("instrument", c.instrument);
 
+        // A synth plugged in: [the MIDI output, its channel, the program asked for]
+        if (c.type == InstrumentType::midiOut || c.midiOutDevice.isNotEmpty() || c.midiProgram >= 0)
+            o->setProperty ("midiOut", juce::Array<juce::var> { c.midiOutDevice, c.midiOutChannel, c.midiProgram });
+
         if (! c.drummer.turns.empty())
             o->setProperty ("drummer", drummerToVar (c.drummer));
 
@@ -2063,6 +2069,14 @@ void Song::fromVar (const juce::var& v)
             c.pluginState = o.getProperty ("pluginState", {}).toString();
             c.kit = o.getProperty ("kit", {}).toString();
             c.instrument = o.getProperty ("instrument", {}).toString();
+
+            if (auto* out = o.getProperty ("midiOut", {}).getArray(); out != nullptr && out->size() >= 3)
+            {
+                c.midiOutDevice = (*out)[0].toString();
+                c.midiOutChannel = juce::jlimit (1, 16, (int) (*out)[1]);
+                c.midiProgram = juce::jlimit (-1, 127, (int) (*out)[2]);
+            }
+
             c.drummer = drummerFromVar (o.getProperty ("drummer", {}));
             c.bass = bassFromVar (o.getProperty ("bass", {}));
             c.guitar = guitarFromVar (o.getProperty ("guitar", {}));

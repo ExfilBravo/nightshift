@@ -87,6 +87,9 @@ public:
 
     DropTarget dropTargetAt (juce::Point<int> position, const juce::String& description) const;
 
+    /** The start of the bar under a point, or -1 off the tracks: where a MIDI file dropped there goes. */
+    int barStartAt (juce::Point<int> position) const;
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;

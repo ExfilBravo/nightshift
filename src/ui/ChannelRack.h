@@ -124,6 +124,19 @@ public:
     /** A sampled instrument (its SFZ under SfzPlugin::folder()), as a channel named after it. */
     int addInstrumentChannel (const juce::String& path);
 
+    /** A channel playing a synth plugged in to a MIDI output, named after it, on the first MIDI
+        channel no other channel uses there, selected. Undoable. Returns its id. */
+    int addMidiOutChannel (const juce::String& output);
+
+    /** Makes a channel play a synth plugged in (its notes, levels and AI parts stay). Undoable. */
+    void playOnMidiOut (int channelId, const juce::String& output);
+
+    /** The MIDI outputs, each calling `chosen` with its name ("None plugged in" when there are none). */
+    juce::PopupMenu createMidiOutMenu (std::function<void (const juce::String&)> chosen, const juce::String& ticked = {});
+
+    /** Audio settings, where an output's timing and tempo are. */
+    std::function<void()> onShowAudioSettings;
+
     /** Every installed instrument by category, each calling `chosen` with its path. */
     static juce::PopupMenu createInstrumentMenu (std::function<void (const juce::String&)> chosen, const juce::String& ticked = {});
 

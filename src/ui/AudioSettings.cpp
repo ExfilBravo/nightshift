@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "AudioSettings.h"
+#include "TextAudit.h"
 #include "Theme.h"
 
 namespace nightshift
@@ -63,6 +64,7 @@ AudioSettings::AudioSettings (AudioEngine& a)
     selector.setSize (width, 380);
     selector.addComponentListener (this);
     refreshMidiInputs();
+    refreshMidiOutputs();
     setSize (width, wantedHeight());
     refreshReadout();
     startTimerHz (4);
@@ -89,6 +91,93 @@ void AudioSettings::refreshMidiInputs()
         b->onClick = [this, b, name] { audio.setMidiInputEnabled (name, b->getToggleState()); };
         addAndMakeVisible (b);
     }
+
+    if (getHeight() != wantedHeight())
+        setSize (width, wantedHeight());
+
+    resized();
+    repaint();
+}
+
+//==============================================================================
+AudioSettings::OutputRow::OutputRow (AudioEngine& a, const juce::String& n)
+    : audio (a), name (n)
+{
+    const auto s = audio.getMidiOutSettings (name);
+
+    timing.setSliderStyle (juce::Slider::LinearHorizontal);
+    timing.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    timing.setRange (-100.0, 50.0, 1.0);
+    timing.setValue (s.timingMs, juce::dontSendNotification);
+    timing.setDoubleClickReturnValue (true, 0.0);
+    timing.setTooltip ("When its notes go out: earlier for a synth that's slow to sound (or one you hear through NightShift), "
+                       "later if it's ahead. Double-click for on time.");
+    timing.onValueChange = [this] { apply(); };
+    addAndMakeVisible (timing);
+
+    tempo.setColour (juce::ToggleButton::textColourId, text);
+    tempo.setColour (juce::ToggleButton::tickColourId, accent);
+    tempo.setToggleState (s.clock, juce::dontSendNotification);
+    tempo.setTooltip ("Sends NightShift's tempo with start and stop (MIDI clock), so a drum machine or an arpeggiator plays in time with the song");
+    tempo.onClick = [this] { apply(); };
+    addAndMakeVisible (tempo);
+}
+
+juce::String AudioSettings::OutputRow::describe (int ms)
+{
+    if (ms == 0)
+        return "On time";
+
+    return juce::String (std::abs (ms)) + (ms < 0 ? " ms early" : " ms late");
+}
+
+void AudioSettings::OutputRow::apply()
+{
+    audio.setMidiOutSettings (name, { juce::roundToInt (timing.getValue()), tempo.getToggleState() });
+    repaint (valueArea);
+}
+
+void AudioSettings::OutputRow::resized()
+{
+    // Its name, its timing (slider and what it is now), then Send tempo
+    auto r = getLocalBounds();
+    nameArea = r.removeFromLeft (186);
+    r.removeFromLeft (8);
+    timing.setBounds (r.removeFromLeft (150).withSizeKeepingCentre (150, 24));
+    r.removeFromLeft (8);
+    valueArea = r.removeFromLeft (100);
+    r.removeFromLeft (6);
+    tempo.setBounds (r.withSizeKeepingCentre (r.getWidth(), 24));
+}
+
+void AudioSettings::OutputRow::paint (juce::Graphics& g)
+{
+    g.setColour (text);
+    g.setFont (font (16.0f));
+
+    {
+        textaudit::TheirWords theirs;       // the output's name, as its maker gave it
+        g.drawText (name, nameArea, juce::Justification::centredLeft, true);
+    }
+
+    g.setColour (textDim);
+    g.setFont (font (15.0f));
+    g.drawText (describe (juce::roundToInt (timing.getValue())), valueArea, juce::Justification::centredLeft, true);
+}
+
+void AudioSettings::refreshMidiOutputs()
+{
+    // A row for each MIDI output (they come and go as they're plugged in)
+    const auto names = audio.getMidiOutputNames();
+
+    if (names == outputNames && outputRows.size() == names.size())
+        return;
+
+    outputNames = names;
+    outputRows.clear();
+
+    for (auto& name : names)
+        addAndMakeVisible (outputRows.add (new OutputRow (audio, name)));
 
     if (getHeight() != wantedHeight())
         setSize (width, wantedHeight());
@@ -141,6 +230,7 @@ void AudioSettings::timerCallback()
 {
     refreshReadout();
     refreshMidiInputs();
+    refreshMidiOutputs();
 }
 
 void AudioSettings::refreshReadout()
@@ -202,13 +292,21 @@ void AudioSettings::resized()
     r.removeFromTop (2);
     preferInterface.setBounds (r.removeFromTop (24));
 
-    // MIDI keyboards and controllers, at the bottom
-    auto midi = getLocalBounds().removeFromBottom (midiHeight()).reduced (16, 0);
+    // MIDI keyboards and controllers, then synths plugged in, at the bottom
+    auto bottom = getLocalBounds();
+    auto outs = bottom.removeFromBottom (midiOutHeight()).reduced (16, 0);
+    auto midi = bottom.removeFromBottom (midiHeight()).reduced (16, 0);
     midiTitleArea = midi.removeFromTop (34);
     midiHintArea = midi.removeFromBottom (46);
 
     for (auto* b : midiSwitches)
         b->setBounds (midi.removeFromTop (26));
+
+    outTitleArea = outs.removeFromTop (34);
+    outHintArea = outs.removeFromBottom (46);
+
+    for (auto* row : outputRows)
+        row->setBounds (outs.removeFromTop (32));
 }
 
 void AudioSettings::paint (juce::Graphics& g)
@@ -252,6 +350,26 @@ void AudioSettings::paint (juce::Graphics& g)
     g.drawFittedText ("They play the selected channel and record when Record is armed. Right-click a fader or a knob "
                       "in NightShift to link it to a knob on your controller.",
                       midiHintArea, juce::Justification::centredLeft, 2, 1.0f);
+
+    // Synths plugged in
+    g.setColour (outline);
+    g.drawHorizontalLine (outTitleArea.getY(), 0.0f, (float) getWidth());
+    g.setColour (textFaint);
+    g.setFont (labelFont());
+    g.drawText ("MIDI OUT: SYNTHS PLUGGED IN", outTitleArea.withTrimmedTop (8), juce::Justification::centredLeft, true);
+    g.setFont (font (16.0f));
+
+    if (outputRows.isEmpty())
+    {
+        g.setColour (textDim);
+        g.drawText ("None plugged in yet: a synth on USB or an interface's MIDI out shows up here.",
+                    outTitleArea.withY (outTitleArea.getBottom()).withHeight (32), juce::Justification::centredLeft, true);
+    }
+
+    g.setColour (textFaint);
+    g.drawFittedText ("Choose one as a channel's instrument to play it. Notes late? Move its timing earlier. "
+                      "Send tempo keeps its arpeggiator or a drum machine in time.",
+                      outHintArea, juce::Justification::centredLeft, 2, 1.0f);
 }
 
 } // namespace nightshift

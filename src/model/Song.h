@@ -34,8 +34,9 @@ struct Note
 };
 
 /** sampler/synth/plugin/kit channels play notes; an audio channel is a track you record into.
-    A kit channel plays a multi-sampled drum kit, and has an AI drummer to write for it. */
-enum class InstrumentType { sampler, synth, plugin, audio, kit, instrument };
+    A kit channel plays a multi-sampled drum kit, and has an AI drummer to write for it. A midiOut
+    channel plays a synth plugged in: its notes go out of a MIDI output, in time with the song. */
+enum class InstrumentType { sampler, synth, plugin, audio, kit, instrument, midiOut };
 
 /** An effect plugin in a channel's chain or the master's. */
 struct Effect
@@ -175,6 +176,11 @@ struct Channel
 
     juce::String kit;                // kit: the drum kit (a folder under drumkits::folder())
     juce::String instrument;         // instrument: a sampled instrument's SFZ (under SfzPlugin::folder())
+
+    juce::String midiOutDevice;      // midiOut: the MIDI output it plays, by the name the system gives it
+    int midiOutChannel = 1;          // midiOut: the MIDI channel its notes go out on, 1..16
+    int midiProgram = -1;            // the sound a synth is asked for (a program change, 0..127) before it
+                                     // plays, -1 for none: a MIDI file's comes in here and goes out again
     Drummer drummer;                 // kit (or a drum plugin): the AI drummer writing for it
     Bassist bass;                    // synth (or a bass plugin): the AI bassist writing for it
     Guitarist guitar;                // a guitar: the AI guitarist writing for it

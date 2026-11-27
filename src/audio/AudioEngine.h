@@ -8,6 +8,7 @@
 #include "Nova.h"
 #include "Metronome.h"
 #include "Mastering.h"
+#include "MidiOut.h"
 
 namespace te = tracktion;
 
@@ -230,6 +231,9 @@ public:
         // MIDI inputs switched off in Audio settings (the rest play the selected channel)
         juce::StringArray disabledMidiInputs;
 
+        // Synths plugged in: each MIDI output's timing and whether it follows the tempo, by its name
+        std::map<juce::String, MidiOutHub::OutputSettings> midiOuts;
+
         bool operator== (const Options&) const = default;
     };
 
@@ -367,6 +371,24 @@ public:
     /** Tests: that one input is routed as a MIDI keyboard is (to the channel being played,
         always heard), so MIDI handed to processHostedBlock plays through the engine. */
     static inline bool routeHostedMidi = false;
+
+    //==============================================================================
+    /** Synths plugged in (MIDI out). A channel whose instrument is one (InstrumentType::midiOut)
+        sends its notes out of a MIDI output on a MIDI channel, in time with the song: its patterns
+        and clips as they play, and what a keyboard plays on it, at once. An output can be timed
+        earlier for a synth slow to sound (or later), and can follow the tempo: MIDI clock, start
+        and stop. The outputs there are (a command-line run's: MidiOutHub::testOutputs). */
+    juce::StringArray getMidiOutputNames() const;
+    MidiOutHub::OutputSettings getMidiOutSettings (const juce::String& output) const;
+    void setMidiOutSettings (const juce::String& output, MidiOutHub::OutputSettings);
+
+    /** A short middle C (or the channel's root) on a channel's synth plugged in, to hear it's connected. */
+    void sendTestNote (int channelId);
+
+    /** Asks a channel's synth for its program (Channel::midiProgram) now. */
+    void sendMidiProgram (int channelId);
+
+    MidiOutHub& getMidiOut()                        { return *midiOut; }
 
     //==============================================================================
     /** Renders the current pattern (pattern mode) or the whole song, plus a tail. */
@@ -616,6 +638,14 @@ private:
     std::optional<MidiLearn> midiLearn;
 
     void syncMidiInputs();
+
+    /** The song's notes on synths plugged in, as the MIDI out plays them (see MidiOutHub). */
+    void syncMidiOut();
+
+    /** Tracktion's own MIDI outputs closed: the hub opens the ones it needs (a port open twice fails on Windows). */
+    void closeTracktionMidiOutputs();
+    std::unique_ptr<MidiOutHub> midiOut;
+    int midiOutRefresh = 0;
     void drainMidi();
     void recordNoteOn (int channelId, int key, int velocity, double secondsAgo);
     void recordNoteOff (int channelId, int key, double secondsAgo);
