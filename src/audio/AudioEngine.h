@@ -772,6 +772,13 @@ private:
     bool renderTracks (const juce::Array<te::Track*>& tracks, const juce::Array<te::EditItemID>& sources, const juce::File&,
                        double seconds, double tail, bool loop, bool throughMaster, int bitDepth, double sampleRate);
 
+    /** Every render's last step: `params` (what to render and how, not where or when) over [0, seconds) and up to
+        `tail` more while there's sound, written to a WAV at `bitDepth` (16: dithered). Tracktion's renderer plays a
+        note at exactly its start late by the latency of what it goes through (the master limiter's 4 ms lookahead,
+        a plugin's more), while every later note is on time; so the render starts a little before the song and that
+        is left out of the file. `loop` folds what rings on past `seconds` back onto the start, as a pattern loops. */
+    bool renderSpan (te::Renderer::Parameters params, const juce::File&, double seconds, double tail, bool loop, int bitDepth);
+
     // What syncAutomation last wrote into each lane's parameter ("owner/param"), so it writes
     // a curve again only when the lane, the tempo or the parameter changed
     struct WrittenAutomation

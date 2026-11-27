@@ -4567,27 +4567,147 @@ bool AudioEngine::renderToFile (const juce::File& file, double tailSeconds, int 
     ScopedLatencyBypassLift everythingOn (*edit);
 
     te::Renderer::Parameters params (*edit);
-    params.destFile = file;
-    params.audioFormat = engine->getAudioFileFormatManager().getWavFormat();
-    params.bitDepth = bitDepth == 16 || bitDepth == 32 ? bitDepth : 24;
-    params.ditheringEnabled = params.bitDepth == 16;    // the quietest parts fade out smoothly, not in steps
     params.sampleRateForAudio = 48000.0;
     params.blockSizeForAudio = 512;
-    params.time = te::TimeRange (te::TimePosition(), te::TimePosition::fromSeconds (ticksToSeconds (loopEndTicks) + tailSeconds));
     params.tracksToDo = te::toBitSet (te::getAllTracks (*edit));
     params.usePlugins = true;
     params.useMasterPlugins = true;
     params.canRenderInMono = false;
 
-    file.getParentDirectory().createDirectory();
-    file.deleteFile();
-    const bool ok = te::Renderer::renderToFile ("Export", params).existsAsFile();
+    // (16-bit dithered: the quietest parts fade out smoothly, not in steps)
+    return renderSpan (params, file, ticksToSeconds (loopEndTicks) + tailSeconds, 0.0, false, bitDepth);
+}
+
+bool AudioEngine::renderSpan (te::Renderer::Parameters params, const juce::File& file, double seconds, double tail, bool loop, int bitDepth)
+{
+    // How far before the song it starts: past the latency of everything it could go through, and a quarter of a second
+    double latency = 0.0;
+
+    for (auto p : te::getAllPlugins (*edit, false))
+        latency += std::max (0.0, p->getLatencySeconds());
+
+    const double rate = params.sampleRateForAudio, preroll = 0.25 + std::min (latency, 10.0);
+    const auto raw = juce::File::createTempFile (".wav");
+    struct Gone { juce::File f; ~Gone() { f.deleteFile(); } } gone { raw };
+
+    // The whole tail is rendered (Tracktion's own stops at a level of its own, a faint reverb cut short), and
+    // only true silence trimmed off its end below
+    params.destFile = raw;
+    params.audioFormat = engine->getAudioFileFormatManager().getWavFormat();
+    params.bitDepth = 32;
+    params.ditheringEnabled = false;
+    params.time = te::TimeRange (te::TimePosition::fromSeconds (-preroll), te::TimePosition::fromSeconds (seconds + tail));
+    params.endAllowance = {};
+    params.wrapRemainder = false;
+
+    const bool rendered = te::Renderer::renderToFile ("Render", params).existsAsFile();
 
     // Rendering frees the live playback graph; bring it back for previews
     if (liveAudio)
         edit->getTransport().ensureContextAllocated();
 
-    return ok;
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (rendered ? formats.createReaderFor (raw) : nullptr);
+    const juce::int64 skip = (juce::int64) std::llround (preroll * rate), region = (juce::int64) std::llround (seconds * rate);
+
+    if (reader == nullptr || reader->lengthInSamples <= skip)
+        return false;
+
+    const int channels = (int) reader->numChannels;
+    juce::int64 available = reader->lengthInSamples - skip;
+    const int depth = bitDepth == 16 || bitDepth == 32 ? bitDepth : 24;
+
+    // A tail ends where it falls silent (under -120 dB), never before the span itself
+    if (tail > 0.0 && ! loop)
+    {
+        constexpr int block = 65536;
+        juce::AudioBuffer<float> scan (channels, block);
+        juce::int64 end = available;
+
+        while (end > region)
+        {
+            const int n = (int) std::min<juce::int64> (block, end - region);
+            reader->read (&scan, 0, n, skip + end - n, true, channels > 1);
+            int last = -1;
+
+            for (int ch = 0; ch < channels; ++ch)
+                for (int i = n; --i > last;)
+                    if (std::abs (scan.getSample (ch, i)) > 1.0e-6f)
+                    {
+                        last = i;
+                        break;
+                    }
+
+            if (last >= 0)
+            {
+                end = end - n + last + 1;
+                break;
+            }
+
+            end -= n;
+        }
+
+        available = std::max (std::min (region, available), end);
+    }
+
+    file.getParentDirectory().createDirectory();
+    file.deleteFile();
+    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+    auto writer = juce::WavAudioFormat().createWriterFor (stream, juce::AudioFormatWriterOptions{}
+                                                                      .withSampleRate (rate)
+                                                                      .withNumChannels (channels)
+                                                                      .withBitsPerSample (depth));
+
+    if (writer == nullptr)
+        return false;
+
+    std::vector<te::Ditherer> ditherers ((size_t) channels);
+
+    for (auto& d : ditherers)
+        d.reset (16);
+
+    auto write = [&] (juce::AudioBuffer<float>& b, int n)
+    {
+        if (depth == 16)
+            for (int ch = 0; ch < channels; ++ch)
+                ditherers[(size_t) ch].process (b.getWritePointer (ch), n);
+
+        return writer->writeFromAudioSampleBuffer (b, 0, n);
+    };
+
+    if (loop)
+    {
+        // A pattern as it loops: its length, with what rang on past its end added back from its start, round and round
+        juce::AudioBuffer<float> looped (channels, (int) region), pass (channels, (int) region);
+        looped.clear();
+
+        for (juce::int64 from = 0; from < available; from += region)
+        {
+            const int n = (int) std::min (region, available - from);
+            reader->read (&pass, 0, n, skip + from, true, channels > 1);
+
+            for (int ch = 0; ch < channels; ++ch)
+                looped.addFrom (ch, 0, pass, ch, 0, n);
+        }
+
+        return write (looped, (int) region);
+    }
+
+    // Everything after the run-in, as it came out
+    constexpr int block = 65536;
+    juce::AudioBuffer<float> chunk (channels, block);
+
+    for (juce::int64 from = 0; from < available; from += block)
+    {
+        const int n = (int) std::min<juce::int64> (block, available - from);
+        reader->read (&chunk, 0, n, skip + from, true, channels > 1);
+
+        if (! write (chunk, n))
+            return false;
+    }
+
+    return true;
 }
 
 bool AudioEngine::renderTracks (const juce::Array<te::Track*>& tracks, const juce::Array<te::EditItemID>& sources, const juce::File& file,
@@ -4617,30 +4737,18 @@ bool AudioEngine::renderTracks (const juce::Array<te::Track*>& tracks, const juc
     ScopedLatencyBypassLift everythingOn (*edit);
 
     te::Renderer::Parameters params (*edit);
-    params.destFile = file;
-    params.audioFormat = engine->getAudioFileFormatManager().getWavFormat();
-    params.bitDepth = bitDepth == 16 || bitDepth == 32 ? bitDepth : 24;
-    params.ditheringEnabled = params.bitDepth == 16;
     params.sampleRateForAudio = sampleRate;
     params.blockSizeForAudio = 512;
-    params.time = te::TimeRange (te::TimePosition(), te::TimePosition::fromSeconds (seconds));
-    params.endAllowance = te::TimeDuration::fromSeconds (tail);
-    params.wrapRemainder = loop;
     params.tracksToDo = te::toBitSet (all);
     params.tracksToProcessWhileMuted = sources;
     params.usePlugins = true;
     params.useMasterPlugins = throughMaster;
     params.canRenderInMono = false;
 
-    file.getParentDirectory().createDirectory();
-    file.deleteFile();
-    const bool ok = te::Renderer::renderToFile ("Render", params).existsAsFile();
+    const bool ok = renderSpan (params, file, seconds, tail, loop, bitDepth);
 
     for (auto& [track, destination] : rerouted)
         track->getOutput().setOutputToTrack (destination);
-
-    if (liveAudio)
-        edit->getTransport().ensureContextAllocated();
 
     return ok;
 }
