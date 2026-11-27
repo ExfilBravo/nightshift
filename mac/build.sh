@@ -190,8 +190,8 @@ if [ "$TESTS" = "1" ]; then
     PASSED=0
     FAILED=0
 
-    for suite in masteringtest startscreentest trackstest closetest pianotest arrangetest stepstest sidebartest samplestest fxtest savetest \
-                 fxstoptest looptest mutetest inspectortest stockfxtest bustest mixertest metertest drumtest drumbartest \
+    for suite in masteringtest stemtest mp3test startscreentest trackstest closetest pianotest arrangetest stepstest sidebartest samplestest fxtest savetest \
+                 fxstoptest looptest mutetest freezetest inspectortest stockfxtest bustest mixertest metertest drumtest drumbartest \
                  tunetest stretchtest \
                  offlinedrummertest offlinebasstest basstest offlineguitartest guitartest guitarsoundtest offlinekeystest keystest \
                  offlinesynthtest synthplayertest masterengineertest masteraitest songwritertest bandmetertest songtest machinetest kitimporttest \

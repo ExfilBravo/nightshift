@@ -323,9 +323,9 @@ public:
             const int w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), frozen)) + 14;
             const auto chip = nameArea.withTrimmedRight (typeWidth + 12).removeFromRight (w).withSizeKeepingCentre (w, 20);
             const bool playing = rack.audio.isPlayingFrozen (channelId);
-            g.setColour (accentCool.withAlpha (playing ? 0.16f : 0.06f));
+            g.setColour (accentCool.withAlpha (playing ? 0.3f : 0.08f));
             g.fillRoundedRectangle (chip.toFloat(), 5.0f);
-            g.setColour (playing ? accentCool : textFaint);
+            g.setColour (playing ? text : textFaint);
             g.drawText (frozen, chip, juce::Justification::centred, true);
             typeWidth += w + 6;
         }

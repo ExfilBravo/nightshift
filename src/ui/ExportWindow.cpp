@@ -150,7 +150,8 @@ juce::String ExportWindow::note() const
     switch (choice.kind)
     {
         case mp3:
-            return "One MP3 of " + what + ", mastered as the Master tab says. NightShift makes it itself, with the free LAME encoder.";
+            return "One MP3 of " + what + ", mastered as the Master tab says: about a tenth of a WAV's size, for sharing and "
+                   "listening on the go.";
 
         case stems:
             return "A WAV for each channel and bus that makes a sound, named after it. Each is as long as " + what

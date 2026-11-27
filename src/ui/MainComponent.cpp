@@ -3191,8 +3191,9 @@ namespace
                        "AudioDSPTools by Steven Atkinson (MIT), with Eigen (MPL 2.0) and nlohmann/json (MIT). On a Mac the "
                        "text is Selawik by Microsoft (SIL Open Font License 1.1), Segoe UI's open stand-in. The AI drummer's "
                        "feel is learned from the Groove MIDI Dataset by Jon Gillick, Adam Roberts, Jesse Engel, Douglas Eck "
-                       "and David Bamman (Google Magenta), CC BY 4.0. The 808, 909, Nova and the AI drummer are NightShift's "
-                       "own, and the AI drummer writes on this computer, offline.",
+                       "and David Bamman (Google Magenta), CC BY 4.0. MP3s are made with LAME 3.100 (lame.sourceforge.io), "
+                       "GNU LGPL 2. The 808, 909, Nova and the AI drummer are NightShift's own, and the AI drummer writes on "
+                       "this computer, offline.",
                        font (15.0f), textFaint);
             y += 14;
 

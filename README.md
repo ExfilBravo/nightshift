@@ -744,9 +744,41 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   it's working hard all the time, so a dense, pushed master (metalcore, trap) still gets louder as it's pushed.
   The master volume is applied here, in front of it (Tracktion's own master fader, which comes after the
   master plugins, stays at 0 dB), so turning the master up drives the limiter instead of going over.
-- **Projects** – `.nsproj` (JSON) save/open, undo/redo. **Export WAV** (Ctrl+R) asks how first: *Best
-  quality* (24-bit), *CD quality* (16-bit, dithered) or *Studio float* (32-bit); 48 kHz. The finished
-  message says how loud the file came out (LUFS) and its peak, and warns when the peak's above -1 dB.
+- **Projects** – `.nsproj` (JSON) save/open, undo/redo. **Export** (Ctrl+R, the top bar's Export) opens a
+  window asking what to make, and how, then where:
+  - *The song as a WAV file*: *Best quality* (24-bit), *CD quality* (16-bit, dithered) or *Studio float*
+    (32-bit); 48 kHz. The finished message says how loud the file came out (LUFS) and its peak, and warns
+    when the peak's above -1 dB.
+  - *The song as an MP3 file*: 320 kbps (the default), 256, 192 or 128, constant bit rate, joint stereo, 48 kHz,
+    the song's name as its title. NightShift makes it itself with LAME 3.100 (LGPL), built into it from source
+    (no lame.exe): `audio/Mp3Encoder` encodes the WAV render at LAME's high quality setting (`-h`) and writes
+    LAME's tag at the front, so players know its exact length. The finished message says how loud it is, and
+    warns when the peak's above -1 dB (an MP3 can go a little over 0 dB when it's played).
+  - *Each channel and bus as its own WAV (stems)*: in a new folder named after the song, a WAV per channel
+    and bus that makes a sound ("Bass.wav", "Reverb (bus).wav"), at the WAV qualities above, every one the
+    export's length (the song and the 2 s tail) so they line up sample for sample. A channel's is what it
+    plays into the master or its bus, after its effects, fader and pan (what it sends to a bus is in that
+    bus's); a bus's is what comes out of it. *Before the master's effects* (for mixing elsewhere: put
+    together, they're the mix before the master) or *Through the master's effects and loudness* (each as the
+    master turns it). Muted channels, channels with nothing to play and synths plugged in (NightShift doesn't
+    hear them) are left out, and the finished message names them. Tracktion's renderer does each, one track
+    and what it needs (a send's source, a sidechain's key) playing unheard (`AudioEngine::renderStems`).
+  - *The notes as a MIDI file*: Export MIDI file's question (below).
+  Every render starts a little before the song (`AudioEngine::renderSpan`): Tracktion's renderer played a note
+  at exactly 0:00 late by the latency of what it went through (the master limiter's 4.2 ms lookahead), every
+  later note on time, so a song's first beat was late in every export before.
+- **Freeze** – a channel's menu (right-click its name in Steps): *Freeze* plays its instrument and effects into
+  audio, which then plays in their place with them switched off, so a heavy synth or effect costs the computer
+  nothing (NightShift's engine takes switched-off plugins out of playback altogether). Its fader, pan, sends,
+  mute and output stay live. The song is rendered as Song mode plays it (a file for each Arrange row its notes
+  are on, muted and soloed with that row), and each pattern with its notes as a loop for Pattern mode (what
+  rings over from the end folded onto the start), 32-bit float WAVs in the project's audio folder (*Frozen*),
+  saved with the project. A frozen channel shows *Frozen* in Steps, and the piano roll says so over its notes.
+  Each file is stamped with what it was rendered from (its notes, its clips in Arrange, the tempo, swing, its
+  instrument and effects, their automation; `audio/Freeze`): change one of those (move its clip, the tempo)
+  and it plays live again, *Frozen* dimmed, until *Freeze again*; undo puts it back. Editing its notes (the
+  piano roll, its steps, Fill or Clear, the AI band's players, recording into it) asks to unfreeze it first.
+  *Unfreeze* switches everything back on. A synth plugged in (MIDI out) and audio tracks can't be frozen.
 - Only one Nightshift runs at a time: launching it again brings the open one forward
   (and opens the `.nsproj` it was given, if any).
 - A demo song (88 BPM, F minor) is on the start screen (and in the main menu).
@@ -776,7 +808,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
 | F2 | Rename the selected channel |
 | Shift and + / - | Next / previous pattern |
 | Ctrl+S, Ctrl+Shift+S, Ctrl+O, Ctrl+N | Save, save as, open, new (with unsaved changes, closing, New, Open and the demo ask first: Save, Save as, Don't save or Cancel; closing goes ahead only once the save is written) |
-| Ctrl+R | Export WAV |
+| Ctrl+R | Export: the song as a WAV or an MP3, stems, or a MIDI file |
 | Ctrl+Z, Ctrl+Y | Undo, redo |
 | Ctrl+A, Escape | Select all, select none (the editor clicked last: piano roll or Arrange) |
 | Escape | While linking a control to a MIDI controller's knob: stop waiting |
@@ -800,7 +832,9 @@ git clone --recurse-submodules https://github.com/ExfilBravo/nightshift.git
 ```
 
 The Tracktion Engine (with JUCE) and Neural Amp Modeler's core come in as submodules, in `external/`, at
-the exact commits NightShift is built with. The plugins go beside it, each built with its own `build.cmd`
+the exact commits NightShift is built with. LAME (the MP3 encoder) comes the first time the build is configured:
+CMake fetches its 3.100 release into `external/` and checks its SHA-256 (so that first build needs the internet;
+put `lame-3.100.tar.gz` in `external/` by hand to build offline). The plugins go beside it, each built with its own `build.cmd`
 (`setup.cmd` takes them into the setup when they're built):
 
 ```bash
@@ -954,6 +988,10 @@ Nightshift.exe --trackstest
 Nightshift.exe --closetest
 Nightshift.exe --startscreentest
 Nightshift.exe --masteringtest
+Nightshift.exe --stemtest
+Nightshift.exe --mp3test
+Nightshift.exe --freezetest
+Nightshift.exe --snapshot ui.png [--exportwindow 0|1|2|3] [--freeze "Kick,Keys" [--select Keys] [--askunfreeze]]
 Nightshift.exe --snapshot ui.png --raise master [--mastertarget streaming] [--playfor 24]
 Nightshift.exe --snapshot ui.png [--blanksong] [--template beat] [--startscreen [--recent "Name,Other name"]]
 Nightshift.exe --iconsheet icons.png
@@ -1109,8 +1147,9 @@ the text check, which reads back every piece of text as it's drawn and lists any
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
 behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by
 something at least half opaque (the studio dimmed behind the start screen, a row label under an automation lane) isn't
-there to be read, so it isn't checked. `--texttest` runs it over 68 views (every tab, AI agent, Nova page, effect
-window and dialog, the start screen the first time and after it, a laptop's 1366 x 768, Samples, stretched clips) and fails on any
+there to be read, so it isn't checked. `--texttest` runs it over 77 views (every tab, AI agent, Nova page, effect
+window and dialog, the start screen the first time and after it, a laptop's 1366 x 768, Samples, stretched clips, the
+Export window for each kind, frozen channels and the question before their notes change) and fails on any
 of those; the user's own words (a channel's name, a sound's, a project's folder) may be cut short to fit, ours never.
 Sizes are Segoe UI's (a stand-in font's are measured by its letters). Where Segoe UI is installed, texttest also checks
 Selawik (the Mac's font) takes the same room; run it with `NIGHTSHIFT_FONT=selawik` set and every view is drawn and
@@ -1185,7 +1224,24 @@ volume all the way up still peaks at -1 dB; Set loudness for Streaming and Loud 
 Master tab itself: F12, a click on Streaming, Set loudness (-14), undo, back to safe, and the export's
 report; then its second page: a tone knob, a band moved to the centre, Tone switched off, Punch, Width
 all the way down (the export comes out mono) and undo. `--snapshot ... --masterpage 1 [--shapeexample]`
-shows the second page. `--masterengineertest` checks the AI mastering engineer on signals whose answers are known: pink noise heard flat,
+shows the second page. `--stemtest` exports stems of a beat whose snare plays into a Drums bus (6 dB down) and
+whose hat sends to a Reverb bus, with a muted clap and a channel with no notes, and reads every file back: named
+after its channel or bus, the silent two left out, each the export's 384000 samples (8 s at 48 kHz), each starting
+where its notes do (to 0.1 ms), the bus the snare 6.00 dB down, the stems added up the mix before the master (to
+-152 dB), through the master each turned down by its volume and still lined up, 16-bit ones 16-bit, and Export's
+own folder and message. `--mp3test`: LAME 3.100 built in; a tone at each bit rate the size it should be; read back
+by JUCE's own MP3 reader, 1105 samples late (the encoder's and decoder's delay) and the level within 0.01 dB; the
+demo song exported as an MP3 (in about 4 s, rendering included) and held against its mix, and the mix encoded
+directly (what LAME changes, 30 dB under the music); the title tag and LAME's own tag; the finished message.
+`--freezetest` freezes a supersaw lead (Nova, seeded), a kick through an EQ, a compressor, a delay and a reverb, and
+a hat on two Arrange rows through a delay and a reverb: the song frozen renders the same as live (to -155 dB), with
+their plugins off; playing 8 s takes about 40% of the work it does live (measured, three turns each); moving a
+clip or the tempo plays them live until undo; Pattern mode plays the pattern's loop at the live level; editing
+their notes in the piano roll asks "Lead is frozen" (Cancel keeps it, Unfreeze lets the edit through), and Steps,
+the AI band and recording ask or say the same; saved and opened again it plays its files and sounds the same; and
+Unfreeze plays them live again. `--snapshot ... --exportwindow 0|1|2|3` shows the Export window (WAV, MP3, stems,
+MIDI file); `--freeze "Kick,Keys"` freezes channels first (their audio in a temp folder) and `--askunfreeze` asks
+about the selected one's notes. `--masterengineertest` checks the AI mastering engineer on signals whose answers are known: pink noise heard flat,
 a +6 dB bass shelf heard as about +5, mono as mono and two noises as wide; the words; a profile for every style;
 a beat mastered as trap at -9 LUFS under the ceiling, its bass in the middle; air into a dull mix for metalcore
 and out of a bright one for lofi, the move heard landing, nothing over +3 dB at the top; warmer, for Apple Music
@@ -1447,6 +1503,14 @@ AudioDSPTools by Steven Atkinson (MIT; the resampler comes from iPlug2 and Cocko
 [Eigen](https://eigen.tuxfamily.org) (MPL 2.0) and [nlohmann/json](https://github.com/nlohmann/json) (MIT), all
 GPL-compatible. They're in `external/NeuralAmpModelerCore` at tag v0.6.0 (`git clone --branch v0.6.0
 --recurse-submodules https://github.com/sdatkinson/NeuralAmpModelerCore.git`), with their licence files.
+
+MP3s are made with [LAME](https://lame.sourceforge.io) 3.100 (LAME Ain't an MP3 Encoder, originally by Mike Cheng,
+then Mark Taylor, now the LAME Project), licensed under the GNU Library General Public License, version 2 or later,
+which a GPLv3 program may include. CMakeLists.txt builds its encoding library (libmp3lame) into NightShift from the
+3.100 release: `lame-3.100.tar.gz` is fetched once into `external/` (from SourceForge, or Debian's copy of the same
+file), checked against its SHA-256 (`ddfe36ca...b1da1e`) every time the build is configured, and compiled with
+NightShift's `cmake/lame/config.h` on Windows and macOS alike; its `COPYING` is in `external/lame-3.100`. The MP3
+patents ran out in 2017.
 
 Time-stretching and pitch-shifting audio clips is done by [Signalsmith Stretch](https://signalsmith-audio.co.uk/code/stretch/)
 (Geraint Luff and Signalsmith Audio, MIT), which comes with Tracktion Engine (in its `3rd_party` folder) beside

@@ -15650,7 +15650,7 @@ namespace
                 { "tempo changes, glides curved", "--tempodemo --curved" }, { "the tempo dialog", "--tempodemo --curved --tempodialog" },
                 { "editing", "--editdemo" },
                 { "frozen channels in Steps", "--freeze \"Kick,Keys\"" },
-                { "a frozen channel in the piano roll", "--freeze Keys --select Keys --raise piano" },
+                { "a frozen channel in the piano roll", "--freeze Kick --raise piano" },
                 { "a frozen channel's notes asked about", "--freeze Keys --select Keys --askunfreeze" },
                 { "audio clips in time with the song, pitched and stretched", "--stretchdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
