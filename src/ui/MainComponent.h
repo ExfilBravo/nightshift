@@ -41,6 +41,7 @@ namespace nightshift
 */
 class MainComponent : public juce::Component,
                       public juce::DragAndDropContainer,
+                      public juce::FileDragAndDropTarget,
                       private Song::Listener,
                       private juce::Timer
 {
@@ -80,6 +81,25 @@ public:
     /** What the export's finished message says: where, how (bits, sample rate, how much), and
         how loud it came out, warning when the peak's above -1 dB. */
     static juce::String describeExport (const juce::File&, int bits, bool wholeSong, const mastering::Readings&);
+
+    /** Export MIDI file: the whole song's notes as Arrange plays them, or one pattern's, with the
+        tempo and time signature (see midifile::write), asked which first, then where. */
+    void exportMidi();
+
+    /** Writes the song's (patternId 0) or a pattern's notes to a .mid: whether it did, and what to
+        tell you (where, how many notes on how many tracks; or why not). */
+    std::pair<bool, juce::String> saveMidiFile (const juce::File&, int patternId);
+
+    /** A .mid opened (Open, or given to NightShift): a new project of its tracks as channels,
+        with its tempo and time signature. Asks to save changes first when it comes by Open. */
+    void openMidiFile (const juce::File&);
+
+    /** A .mid dropped on the studio: its tracks come in as channels, placed from `atTick` (the
+        bar it's dropped on in Arrange); the song takes its tempo when it has no notes yet. */
+    void addMidiFile (const juce::File&, int atTick);
+
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
     void showAudioSettings();
     void scanPlugins();
 

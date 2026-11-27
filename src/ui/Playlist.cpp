@@ -127,6 +127,14 @@ void Playlist::forgetClip (bool isAudio, int index)
 float Playlist::tickToX (double t) const       { return (float) (gridArea.getX() + (t - scrollTicks) * pxPerTick); }
 double Playlist::xToTick (float x) const        { return (x - gridArea.getX()) / pxPerTick + scrollTicks; }
 
+int Playlist::barStartAt (juce::Point<int> position) const
+{
+    if (! gridArea.contains (position))
+        return -1;
+
+    return song.barStart (song.barAt (std::max (0.0, xToTick ((float) position.x))));
+}
+
 int Playlist::takeLanesOn (int row) const
 {
     int lanes = 0;
@@ -528,6 +536,7 @@ juce::String Playlist::describeInstrument (const Channel& c) const
         case InstrumentType::kit:        return "Drum kit" + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + drumkits::displayName (c.kit);
         case InstrumentType::instrument: return instruments::displayName (c.instrument);
         case InstrumentType::audio:      return "Audio";
+        case InstrumentType::midiOut:    return "MIDI channel " + juce::String (c.midiOutChannel);
 
         case InstrumentType::plugin:
             if (auto desc = audio.getKnownPlugins().getTypeForIdentifierString (c.pluginId))

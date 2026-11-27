@@ -192,6 +192,7 @@ juce::String ChannelStrip::instrumentName (const Channel& c) const
         case InstrumentType::audio:   return c.input;
         case InstrumentType::kit:     return drumkits::displayName (c.kit);
         case InstrumentType::instrument: return instruments::displayName (c.instrument);
+        case InstrumentType::midiOut: return c.midiOutDevice.isEmpty() ? juce::String ("Not chosen yet") : c.midiOutDevice;
         case InstrumentType::sampler: break;
     }
 
@@ -228,6 +229,7 @@ juce::String ChannelStrip::typeLine() const
         case InstrumentType::audio:   return "Audio track";
         case InstrumentType::kit:     return c->drummer.turns.empty() ? "Drum kit" : "Drum kit, AI drummer";
         case InstrumentType::instrument: return isGuitar (*c) ? "Nightshift Guitar" : "Sampled instrument";
+        case InstrumentType::midiOut: return "Synth plugged in";
         case InstrumentType::sampler: break;
     }
 
