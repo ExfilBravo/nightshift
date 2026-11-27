@@ -29,6 +29,9 @@ public:
 
     std::function<void()> onMenu, onExport, onPlay, onRecord, onRecordMenu, onAudioSettings, onKeyboard;
 
+    /** The record automation switch beside Record was clicked. */
+    std::function<void()> onRecordAutomation;
+
     /** Keys pressed in the metronome's panel, handed on (to the studio's shortcuts). */
     std::function<bool (const juce::KeyPress&)> onKey;
 
@@ -68,6 +71,7 @@ private:
     IconButton stopButton { "Stop", theme::icons::stop() },
                playButton { "Play", theme::icons::play(), theme::accent },
                recordButton { "Record", theme::icons::record(), theme::danger },
+               automationRecordButton { "Record automation", theme::icons::automation(), theme::danger },
                loopButton { "Loop", theme::icons::loop(), theme::accentCool },
                metronomeButton { "Metronome", theme::icons::metronomeLine(), theme::accentCool },
                keyboardButton { "Computer keyboard", theme::icons::keyboard(), theme::accentCool },
@@ -100,6 +104,8 @@ private:
     bool unsaved = false, showProject = true, showCpu = true, showSignature = true, latencyCompact = false;
     juce::Point<int> lastMouse;
     int latencyState = 0, cpuPercent = 0;   // latency: 0 no audio, 1 high, 2 low
+    bool masterGrabbed = false;             // the master slider held by the mouse (not the wheel)
+    bool automationWriting = false;         // recording automation, and the song playing in Song mode
 
     void songChanged (Song::Change) override;
     void syncFromSong();

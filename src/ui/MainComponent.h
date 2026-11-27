@@ -216,8 +216,15 @@ public:
 
     /** Opens a parameter's automation lane in Arrange (a fader's or knob's right-click
         Automate): the lane added, automation shown, Arrange on screen, a toast saying where.
-        A channel with no track gets one. */
+        A channel with no track gets one; a bus's and the master's lanes are along the bottom. */
     void showAutomationFor (int owner, const juce::String& param);
+
+    /** The record automation switch (beside Record, and in its menu): on or off, saying how it works. */
+    void toggleAutomationRecording();
+
+    /** A lane has started being written (recording automation): lanes on show, a channel's under
+        a track of its own. */
+    void showWrittenLane (int owner);
 
     /** A fader's or knob's right-click menu: Automate it in Arrange, link it to a knob on a MIDI
         controller (MIDI learn), or forget that link. */

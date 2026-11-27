@@ -53,9 +53,17 @@ public:
     /** Lets go of everything: each lane written as it stands. */
     void finishAll();
 
-    static constexpr float tolerance = 0.006f;      // of the control's range
+    static constexpr float tolerance = 0.008f;      // of the control's range
     static constexpr int quietMs = 700;
     static constexpr int glideTicks = ticksPerStep; // back to what the lane had, once it's let go
+
+    /** How far in time a move may be off where it happened (a busy moment before it was heard):
+        a line passing that close to it, in time, fits it. */
+    static constexpr float jitterTicks = 3.0f;
+
+    /** Moves are the moments a control's value changes; held still this long, the line goes on
+        level (so a knob's steps, or a fader's pixels, aren't taken as a staircase). */
+    static constexpr int holdMs = 120;
 
 private:
     /** A control being written: its lane, what the lane had when this pass began, and the line so far. */
@@ -68,9 +76,10 @@ private:
         double lastMoveMs = 0.0, lastSampleMs = 0.0;   // its last real move, and the last time it was looked at
         std::vector<AutomationPoint> before;
         int start = 0;                              // ticks: where this pass began
-        std::vector<AutomationPoint> kept, raw;     // the line's points, and the moves since its last one
+        std::vector<AutomationPoint> moves;         // every move this pass, one a tick (the grab's own first)
+        std::vector<AutomationPoint> kept, raw;     // the line as it shows meanwhile, and the moves since its last point
 
-        int last() const                            { return raw.empty() ? kept.back().tick : raw.back().tick; }
+        int last() const                            { return moves.back().tick; }
     };
 
     Song& song;
@@ -88,6 +97,10 @@ private:
         past where it had got (round the loop) or a jump on: what's written so far is let go there
         and a new pass begins. */
     void add (Touch&, int tick, float value);
+
+    /** A pass's moves as the fewest points whose lines stay within `tolerance` of every one (within
+        `jitterTicks` of when it happened): Ramer, Douglas and Peucker's way. */
+    static std::vector<AutomationPoint> thin (const std::vector<AutomationPoint>& moves, const tracktion::AutomatableParameter*);
     std::vector<AutomationPoint> compose (const Touch&, bool letGo) const;
     bool write (const Touch&, bool letGo);
 

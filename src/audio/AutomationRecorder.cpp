@@ -159,12 +159,20 @@ void AutomationRecorder::begin (tracktion::AutomatableParameter& p, bool held, b
     t.before = song.laneFor (owner, param, audio.automationName (owner, param)).points;
     t.start = heardTick();
 
+    // Its moves heard from now (one on an effect added a moment ago isn't watched yet)
+    if (std::none_of (watched.begin(), watched.end(), [&p] (auto& ref) { return ref.get() == &p; }))
+    {
+        p.addListener (this);
+        watched.emplace_back (&p);
+    }
+
     // The control takes over from its lane where the lane has it now, so grabbing it doesn't
     // jump; from here until it's let go the parameter is the hand's, not the lane's
     const float value = p.getCurrentValue();
     audio.takeParameterValue (owner, param, value);
     p.startRecordingStatus();
 
+    t.moves.push_back ({ t.start, value });
     t.kept.push_back ({ t.start, value });
     touches.push_back (std::move (t));
     write (touches.back(), false);
@@ -193,7 +201,7 @@ void AutomationRecorder::add (Touch& t, int tick, float value)
             t.before = lane->points;
 
         t.start = tick;
-        t.kept = { { tick, value } };
+        t.moves = t.kept = { { tick, value } };
         t.raw.clear();
         changed = true;
         return;
@@ -201,21 +209,30 @@ void AutomationRecorder::add (Touch& t, int tick, float value)
 
     tick = std::max (tick, last);
 
-    // A move at the same moment as the last one stands in its place
+    // Every move, one a tick: a move at the same moment as the last stands in its place (but not
+    // the grab's own: a control moved the moment it's grabbed jumps there)
+    if (t.moves.size() > 1 && t.moves.back().tick == tick)
+        t.moves.back().value = value;
+    else
+        t.moves.push_back ({ tick, value });
+
     if (! t.raw.empty() && t.raw.back().tick == tick)
         t.raw.pop_back();
 
-    // Does a line from the last point to here pass close enough to every move since?
+    // The line as it shows meanwhile: does a line from its last point to here pass close enough to
+    // every move since? (Once it's let go, the whole pass is thinned again)
     const auto* p = t.target.get();
     const auto& anchor = t.kept.back();
     const float from = along (p, anchor.value), to = along (p, value);
+    const float span = (float) std::max (1, tick - anchor.tick);
+    const float slack = std::abs (to - from) / span * jitterTicks;
     bool fits = true;
 
     for (auto& move : t.raw)
     {
-        const float onLine = from + (to - from) * (float) (move.tick - anchor.tick) / (float) std::max (1, tick - anchor.tick);
+        const float onLine = from + (to - from) * (float) (move.tick - anchor.tick) / span;
 
-        if (std::abs (along (p, move.value) - onLine) > tolerance)
+        if (std::abs (along (p, move.value) - onLine) - slack > tolerance)
         {
             fits = false;
             break;
@@ -234,14 +251,71 @@ void AutomationRecorder::add (Touch& t, int tick, float value)
     changed = true;
 }
 
+std::vector<AutomationPoint> AutomationRecorder::thin (const std::vector<AutomationPoint>& moves, const tracktion::AutomatableParameter* p)
+{
+    if (moves.size() <= 2)
+        return moves;
+
+    // The first and last moves stay; between any two that stay, the move furthest from the line
+    // joining them stays too, if it's further than the tolerance (less what the line changes in
+    // the jitter's time), and so on into each half
+    std::vector<bool> keep (moves.size(), false);
+    keep.front() = keep.back() = true;
+    std::vector<std::pair<size_t, size_t>> pending { { 0, moves.size() - 1 } };
+
+    while (! pending.empty())
+    {
+        const auto [first, last] = pending.back();
+        pending.pop_back();
+
+        if (last <= first + 1)
+            continue;
+
+        const auto& a = moves[first];
+        const auto& b = moves[last];
+        const float from = along (p, a.value), to = along (p, b.value);
+        const float span = (float) std::max (1, b.tick - a.tick);
+        const float slack = std::abs (to - from) / span * jitterTicks;
+        float furthest = 0.0f;
+        size_t at = first;
+
+        for (size_t i = first + 1; i < last; ++i)
+        {
+            const float onLine = b.tick == a.tick ? to : from + (to - from) * (float) (moves[i].tick - a.tick) / span;
+            const float off = std::abs (along (p, moves[i].value) - onLine) - slack;
+
+            if (off > furthest)
+            {
+                furthest = off;
+                at = i;
+            }
+        }
+
+        if (furthest > tolerance)
+        {
+            keep[at] = true;
+            pending.push_back ({ first, at });
+            pending.push_back ({ at, last });
+        }
+    }
+
+    std::vector<AutomationPoint> line;
+
+    for (size_t i = 0; i < moves.size(); ++i)
+        if (keep[i])
+            line.push_back (moves[i]);
+
+    return line;
+}
+
 std::vector<AutomationPoint> AutomationRecorder::compose (const Touch& t, bool letGo) const
 {
-    auto line = t.kept;
+    const auto* p = t.target.get();
+    auto line = letGo ? thin (t.moves, p) : t.kept;
 
-    if (! t.raw.empty())
+    if (! letGo && ! t.raw.empty())
         line.push_back (t.raw.back());
 
-    const auto* p = t.target.get();
     const int from = t.start, to = line.back().tick;
     AutomationLane was;
     was.points = t.before;
@@ -416,7 +490,8 @@ void AutomationRecorder::timerCallback()
         return;
     }
 
-    // Held still the line goes on; a nudge left alone, or one whose plugin went, is let go
+    // Held still a moment, the line goes on level; a nudge left alone, or one whose plugin went,
+    // is let go
     const int now = heardTick();
     std::vector<size_t> letGo;
 
@@ -424,10 +499,11 @@ void AutomationRecorder::timerCallback()
     {
         auto& t = touches[i];
         auto* p = t.target.get();
+        const double still = nowMs() - t.lastMoveMs;
 
-        if (p == nullptr || (! t.held && nowMs() - t.lastMoveMs > quietMs))
+        if (p == nullptr || (! t.held && still > quietMs))
             letGo.push_back (i);
-        else
+        else if (still > holdMs)
             add (t, now, p->getCurrentValue());
     }
 
@@ -467,13 +543,14 @@ void AutomationRecorder::parameterChanged (tracktion::AutomatableParameter& p, f
     if (t == nullptr || ! isWriting())
         return;
 
-    // (The song's controls are set again whenever the mixer changes: only a real move keeps a
-    // nudge going)
+    // A move is a change: the song's controls are set again whenever the mixer changes, and that's
+    // no move (held still, the timer carries the line on)
     const float previous = t->raw.empty() ? t->kept.back().value : t->raw.back().value;
 
-    if (std::abs (value - previous) > 1.0e-6f)
-        t->lastMoveMs = nowMs();
+    if (std::abs (value - previous) <= 1.0e-6f)
+        return;
 
+    t->lastMoveMs = nowMs();
     add (*t, heardTick(), value);
 }
 
