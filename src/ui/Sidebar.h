@@ -5,6 +5,7 @@
 
 #include <JuceHeader.h>
 #include "audio/AudioEngine.h"
+#include "audio/Samples.h"
 #include "model/Song.h"
 #include "Widgets.h"
 
@@ -24,11 +25,20 @@ namespace nightshift
     pick a match and Enter adds it. At the bottom, Find new instruments looks for plugins
     installed since NightShift last looked (right-click it for the plugin list and its folders).
     Its words are for beginners: no "VST3", no "scan".
+
+    Samples is a browser of the audio files on this computer: the user's Downloads and Music,
+    then folders they add (Add a folder..., kept with NightShift; right-click one to take it
+    away), each a row that opens in place, folders in folders, all shut at first. Its folders
+    are looked through (on a thread of their own) only once Samples is opened or searched.
+    The search finds files by name in all of them. Click a sample to hear it through the
+    studio's output, click it again to stop; drag it onto Arrange for an audio track, or into
+    Steps (or double-click it) for a sampler channel.
 */
 class Sidebar : public juce::Component,
                 public juce::TooltipClient,
                 private Song::Listener,
-                private juce::ChangeListener
+                private juce::ChangeListener,
+                private juce::Timer
 {
 public:
     Sidebar (Song&, AudioEngine&);
@@ -46,6 +56,23 @@ public:
     std::function<void (const juce::String&)> onAddKitSound, onAddSynth;
     std::function<void (const juce::PluginDescription&)> onAddPlugin, onAddEffect;
     std::function<void (const juce::String& kitId)> onAddDrumKit;
+
+    /** A sample double-clicked (or Enter on it while searching): a sampler channel playing it. */
+    std::function<void (const juce::String& path)> onAddSample;
+
+    /** Samples' folders, top to bottom: the user's Downloads and Music, then the ones they added. */
+    juce::Array<juce::File> getSampleFolders() const;
+
+    /** Adds a folder to Samples (kept with NightShift), opens it and shows it; or takes one added away. */
+    void addSampleFolder (const juce::File&);
+    void removeSampleFolder (const juce::File&);
+
+    /** Looks through Samples' folders now (as opening Samples does) and waits for it, up to `ms`, then lists what it
+        found (tests, snapshots). False if it's still looking. */
+    bool lookThroughSamples (int ms);
+
+    /** Where the sidebar finds what's in Samples' folders (tests). */
+    const samples::Library& getSampleLibrary() const    { return sampleLibrary; }
 
     /** The button at the bottom: scan for new VST3 plugins (right-click: the plugin list, as
         onScanPlugins). While a scan runs it says so and can't be pressed. */
@@ -89,8 +116,11 @@ public:
     static constexpr int sectionHeaderHeight = 40, patternRowHeight = 36, soundRowHeight = 30, footerHeight = 54;
 
 private:
-    enum class Kind { pattern, group, kit, synth, plugin, scan, effect, drumkit, instrument, developer };
+    // (a sample folder opens like a developer; a note is a line of words, nothing to click)
+    enum class Kind { pattern, group, kit, synth, plugin, scan, effect, drumkit, instrument, developer, sampleFolder, sample, note };
     static constexpr int getKitsRow = 1, importKitRow = 2, getInstrumentsRow = 3;  // scan rows' ids: fetch the studio kits, a kit from a folder, fetch the instruments
+    static constexpr int addSampleFolderRow = 4;                                    // and add a folder to Samples
+    static constexpr int samplesGroup = 7;
 
     struct Row
     {
@@ -99,8 +129,8 @@ private:
         juce::Colour colour;
         int id = 0;                         // the pattern's id, or the group's index
         juce::PluginDescription plugin;
-        juce::String key;                   // a drum kit's folder, an instrument's SFZ, a developer as its plugins say it
-        int depth = 0;                      // 1: a developer in a plugin group, or one of its plugins
+        juce::String key;                   // a drum kit's folder, an instrument's SFZ, a developer as its plugins say it, a sample's or sample folder's full path
+        int depth = 0;                      // 1: a developer in a plugin group, or one of its plugins; a sample folder's depth in Samples
         juce::String tip;                   // a developer's: its whole name, as its plugins give it (a long one is cut short in the row)
     };
 
@@ -109,8 +139,11 @@ private:
     juce::TextEditor search;
     IconButton scanButton { "Find new instruments", theme::icons::refresh() };    // plain words: no "VST3", no "scan" (the user, 2026-11-06)
     std::vector<Row> patternRows, soundRows;
-    bool groupOpen[7] {};                   // all shut when NightShift opens (the user, 2026-11-06)
+    bool groupOpen[8] {};                   // all shut when NightShift opens (the user, 2026-11-06)
     juce::StringArray developersOpen;       // "group|developer", in both plugin groups: none when NightShift opens (the user, 2026-11-15)
+    juce::StringArray sampleFoldersOpen;    // Samples' folders shown open, by full path: none when NightShift opens
+    samples::Library sampleLibrary;
+    juce::File previewShown;                // the sample shown as playing
     int patternScroll = 0, soundScroll = 0, hoveredPattern = -1, hoveredSound = -1;
     int highlightedSound = -1, pressedSound = -1, pressedPattern = -1;
     bool addHovered = false, dragging = false;
@@ -137,10 +170,20 @@ private:
     void addSound (const Row&);
 
     static bool isSound (const Row& r)      { return r.kind == Kind::kit || r.kind == Kind::synth || r.kind == Kind::plugin || r.kind == Kind::effect || r.kind == Kind::drumkit
-                                                     || r.kind == Kind::instrument; }
+                                                     || r.kind == Kind::instrument || r.kind == Kind::sample; }
     void moveHighlight (int delta);
     void startDraggingSound (const Row&);
     void startDraggingPattern (const Row&);
+
+    // Samples
+    std::vector<Row> sampleRows (const juce::String& filter, int& count);
+    void addFolderRows (std::vector<Row>&, const juce::File&, const samples::Folder*, int depth);
+    void lookThroughSampleFolders (double maxAgeSeconds);
+    void toggleSamplePreview (const juce::File&);
+    void showSampleMenu (const Row&);
+    void chooseSampleFolder();
+    void timerCallback() override;
+    std::unique_ptr<juce::FileChooser> folderChooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Sidebar)
 };

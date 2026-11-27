@@ -342,6 +342,7 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     sidebar.onAddDrumKit = [this] (const juce::String& id) { openDrummer (rack.addDrumKitChannel (id)); drummerBar.focus(); };
     sidebar.onAddSynth = [this] (const juce::String& preset) { openSynth (rack.addSynthChannel (preset)); };
     sidebar.onAddPlugin = [this] (const juce::PluginDescription& d) { rack.addPluginChannel (d); showEditorTab (Panel::rack); };
+    sidebar.onAddSample = [this] (const juce::String& path) { rack.addSamplerChannel (path); showEditorTab (Panel::rack); };
     sidebar.onAddEffect = [this] (const juce::PluginDescription& d)
     {
         // On the selected channel (the master if there isn't one); the Inspector shows it

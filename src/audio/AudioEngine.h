@@ -91,6 +91,13 @@ public:
     void setPractising (bool);
     bool isPractising() const;
 
+    /** A sample heard from the sidebar's Samples: the file played through the studio's output (after the master, as
+        the metronome is), from its start, whether or not the song plays; stopPreview() or its end stops it. False
+        when it can't be read. getPreviewing() is the file playing, or none. */
+    bool previewSample (const juce::File&);
+    void stopPreview();
+    juce::File getPreviewing() const;
+
     /** The time signature playing now: the song's at its position in Song mode, the pattern's in
         Pattern mode. Changing it changes the stretch the song position is in (the start's, or a
         change's), or in Pattern mode the pattern's own if it has one, else the song's at the start. */
@@ -202,6 +209,7 @@ public:
     {
         bool lowLatencyMonitoring = true;   // bypass plugins that add delay while monitoring an armed track
         bool preferInterface = true;        // open the preferred interface with ASIO at startup
+        double interfaceInputDbu = 12.0;    // the interface's input level (dBu at 0 dBFS), for the NAM amps' input calibration
         int countInBars = 1;                // countdown before recording: 0, 1 or 2 bars
         bool computerKeyboard = true;       // the PC keyboard plays the selected channel
 
@@ -220,6 +228,7 @@ public:
         // Starting up
         bool startScreen = true;            // open on "What do you want to do?" (templates, recent projects)
         juce::StringArray recentProjects;   // newest first, full paths
+        juce::StringArray sampleFolders;    // folders added to the sidebar's Samples (beside Downloads and Music), full paths
         bool donationAsked = false;         // the start screen's "NightShift is free" banner has been shown (it asks once)
 
         // Export: 24 (for more work on it), 16 (with dither: CDs and most uploads) or 32 (float)
@@ -583,6 +592,7 @@ private:
     double countInEnd = -1.0e9;
 
     te::Plugin::Ptr metronomePlugin;
+    te::Plugin::Ptr previewPlugin;      // a SamplePreview, after the metronome
 
     /** Where in the take the sound being heard now is, in ticks (negative in the count-in). */
     double heardTakeTicks (double secondsAgo = 0.0) const;

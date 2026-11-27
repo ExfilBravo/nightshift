@@ -12,6 +12,7 @@
 #include "Sfz.h"
 #include "Nova.h"
 #include "GuitarSound.h"
+#include "SamplePreview.h"
 #include <tracktion_engine/playback/graph/tracktion_EditNodeBuilder.h>
 #include <set>
 
@@ -262,6 +263,7 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
 
     engine->getPluginManager().createBuiltInType<MasterLimiter>();
     engine->getPluginManager().createBuiltInType<MetronomePlugin>();
+    engine->getPluginManager().createBuiltInType<SamplePreview>();
     engine->getPluginManager().createBuiltInType<DrumKitPlugin>();
     engine->getPluginManager().createBuiltInType<SfzPlugin>();
     engine->getPluginManager().createBuiltInType<NovaPlugin>();
@@ -337,8 +339,10 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
             meter->measurer.addClient (meterClient);
     }
 
-    // On no track: it joins the output after the master (playbackContextChanged)
+    // On no track: it joins the output after the master (playbackContextChanged), and a sample heard from the
+    // sidebar after it
     metronomePlugin = edit->getPluginCache().createNewPlugin (MetronomePlugin::xmlTypeName, {});
+    previewPlugin = edit->getPluginCache().createNewPlugin (SamplePreview::xmlTypeName, {});
     edit->clickTrackEnabled = false;
 
     setOptions (options);
@@ -387,6 +391,7 @@ AudioEngine::~AudioEngine()
     masterMeter = nullptr;
     masterLimiter = nullptr;
     metronomePlugin = nullptr;
+    previewPlugin = nullptr;
     edit.reset();
 
     if (! liveAudio)
@@ -731,6 +736,30 @@ bool AudioEngine::isPractising() const
     return m != nullptr && m->isPractising();
 }
 
+bool AudioEngine::previewSample (const juce::File& file)
+{
+    auto* preview = dynamic_cast<SamplePreview*> (previewPlugin.get());
+
+    if (preview == nullptr)
+        return false;
+
+    // Heard whether or not the song plays: the output's graph runs for it as it does for practising
+    edit->getTransport().ensureContextAllocated();
+    return preview->play (file);
+}
+
+void AudioEngine::stopPreview()
+{
+    if (auto* preview = dynamic_cast<SamplePreview*> (previewPlugin.get()))
+        preview->stop();
+}
+
+juce::File AudioEngine::getPreviewing() const
+{
+    auto* preview = dynamic_cast<SamplePreview*> (previewPlugin.get());
+    return preview != nullptr ? preview->getPlaying() : juce::File();
+}
+
 void AudioEngine::playbackContextChanged()
 {
     // The metronome joins each output after the master chain: the master's effects, limiter
@@ -742,13 +771,15 @@ void AudioEngine::playbackContextChanged()
         return;
 
     context->setInsertOptionalLastStageNodeForDeviceCallback (
-        [plugin = metronomePlugin, &dm = engine->getDeviceManager()] (te::OutputDevice& device, const te::CreateNodeParams& params,
-                                                                     std::unique_ptr<te::graph::Node> node)
+        [plugin = metronomePlugin, preview = previewPlugin, &dm = engine->getDeviceManager()] (te::OutputDevice& device, const te::CreateNodeParams& params,
+                                                                                              std::unique_ptr<te::graph::Node> node)
         {
             if (device.isMidi() || dm.getDefaultWaveOutDeviceID() != device.getDeviceID())
                 return node;
 
-            return te::createGeneratorPluginNode (plugin, params, std::move (node));
+            // The metronome, then a sample heard from the sidebar (on the same output, after the master)
+            node = te::createGeneratorPluginNode (plugin, params, std::move (node));
+            return preview != nullptr ? te::createGeneratorPluginNode (preview, params, std::move (node)) : std::move (node);
         });
 
     context->reallocate();
@@ -3005,6 +3036,7 @@ void AudioEngine::loadOptions()
     auto& file = engine->getPropertyStorage().getPropertiesFile();
     options.lowLatencyMonitoring = file.getBoolValue ("nsLowLatencyMonitoring", true);
     options.preferInterface = file.getBoolValue ("nsPreferInterface", true);
+    options.interfaceInputDbu = juce::jlimit (-20.0, 40.0, file.getDoubleValue ("nsInterfaceInputDbu", NightAmp::defaultInterfaceLevel));
     options.countInBars = juce::jlimit (0, 2, file.getIntValue ("nsCountInBars", 1));
     options.computerKeyboard = file.getBoolValue ("nsComputerKeyboard", true);
     options.blendNotes = file.getBoolValue ("nsBlendNotes", true);
@@ -3012,6 +3044,8 @@ void AudioEngine::loadOptions()
     options.startScreen = file.getBoolValue ("nsStartScreen", true);
     options.recentProjects = juce::StringArray::fromTokens (file.getValue ("nsRecentProjects"), "|", {});
     options.recentProjects.removeEmptyStrings();
+    options.sampleFolders = juce::StringArray::fromTokens (file.getValue ("nsSampleFolders"), "|", {});
+    options.sampleFolders.removeEmptyStrings();
     options.donationAsked = file.getBoolValue ("nsDonationAsked", false);
     options.exportBits = file.getIntValue ("nsExportBits", 24);
 
@@ -3048,17 +3082,22 @@ void AudioEngine::setOptions (const Options& o)
     const bool monitoringChanged = o.lowLatencyMonitoring != options.lowLatencyMonitoring;
     options = o;
 
+    // Every amp hears the guitar at the interface's level (input calibration)
+    NightAmp::setInterfaceLevel (options.interfaceInputDbu);
+
     if (liveAudio)
     {
         auto& file = engine->getPropertyStorage().getPropertiesFile();
         file.setValue ("nsLowLatencyMonitoring", options.lowLatencyMonitoring);
         file.setValue ("nsPreferInterface", options.preferInterface);
+        file.setValue ("nsInterfaceInputDbu", options.interfaceInputDbu);
         file.setValue ("nsCountInBars", options.countInBars);
         file.setValue ("nsComputerKeyboard", options.computerKeyboard);
         file.setValue ("nsBlendNotes", options.blendNotes);
         file.setValue ("nsStartOnInput", options.startOnInput);
         file.setValue ("nsStartScreen", options.startScreen);
         file.setValue ("nsRecentProjects", options.recentProjects.joinIntoString ("|"));
+        file.setValue ("nsSampleFolders", options.sampleFolders.joinIntoString ("|"));
         file.setValue ("nsDonationAsked", options.donationAsked);
         file.setValue ("nsExportBits", options.exportBits);
         file.setValue ("nsDisabledMidiInputs", options.disabledMidiInputs.joinIntoString ("|"));
@@ -3233,6 +3272,10 @@ void AudioEngine::startPlaying()
 
 void AudioEngine::timerCallback()
 {
+    // A sample that's played to its end lets go of its file
+    if (auto* preview = dynamic_cast<SamplePreview*> (previewPlugin.get()))
+        preview->letGoIfDone();
+
     if (! liveAudio)
         return;
 

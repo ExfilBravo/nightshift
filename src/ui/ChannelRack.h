@@ -124,6 +124,10 @@ public:
     /** A sampled instrument (its SFZ under SfzPlugin::folder()), as a channel named after it. */
     int addInstrumentChannel (const juce::String& path);
 
+    /** A sampler channel playing an audio file (a sample from the sidebar), named after it and selected. Undoable.
+        Returns its id, or 0 when the file isn't audio that's there. */
+    int addSamplerChannel (const juce::String& path);
+
     /** Every installed instrument by category, each calling `chosen` with its path. */
     static juce::PopupMenu createInstrumentMenu (std::function<void (const juce::String&)> chosen, const juce::String& ticked = {});
 

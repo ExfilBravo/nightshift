@@ -1209,7 +1209,27 @@ int ChannelRack::addSound (const juce::String& description)
     if (auto desc = sound.startsWith ("plugin:") ? audio.getKnownPlugins().getTypeForIdentifierString (name) : nullptr)
         return addPluginChannel (*desc);
 
+    // A sample from the sidebar's Samples: a sampler channel playing it
+    if (sound.startsWith ("sample:"))
+        return addSamplerChannel (name);
+
     return 0;
+}
+
+int ChannelRack::addSamplerChannel (const juce::String& path)
+{
+    const juce::File file (path);
+
+    if (! juce::File::isAbsolutePath (path) || ! file.existsAsFile() || ! isAudioFile (path))
+        return 0;
+
+    song.checkpoint();
+    auto& c = song.addChannel (file.getFileNameWithoutExtension(), InstrumentType::sampler);
+    c.sample = file.getFullPathName();
+    song.selectedChannelId = c.id;
+    const int id = c.id;
+    song.notify (Song::Change::channels);
+    return id;
 }
 
 juce::String ChannelRack::soundName (const juce::String& description) const
@@ -1220,6 +1240,7 @@ juce::String ChannelRack::soundName (const juce::String& description) const
     if (sound.startsWith ("drumkit:"))     return drumkits::displayName (name);
     if (sound.startsWith ("instrument:"))  return instruments::displayName (name).upToFirstOccurrenceOf (",", false, false);
     if (sound.startsWith ("effect:"))      return audio.findEffectType (name) != nullptr ? audio.findEffectType (name)->name : juce::String();
+    if (sound.startsWith ("sample:"))      return juce::File (name).getFileNameWithoutExtension();
 
     if (sound.startsWith ("plugin:"))
         if (auto desc = audio.getKnownPlugins().getTypeForIdentifierString (name))

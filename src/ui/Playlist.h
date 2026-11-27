@@ -76,7 +76,10 @@ public:
 
     /** Where a drop at `position` would go and what it would do there, as itemDropped does it.
         A pattern (patternDragPrefix) lands as a clip at `tick` on the track under it (`clip`),
-        or on a new track (`newTrack`) under the last one or under an audio track. */
+        or on a new track (`newTrack`) under the last one or under an audio track. A sample from
+        the sidebar's Samples (soundDragPrefix "sample:" and its path) lands as an audio clip at
+        `tick`: on the audio track under it (`clip`), an empty track (`assign`), or a new audio
+        track (`newTrack`) under the last one or under any other track. */
     struct DropTarget
     {
         enum class Kind { none, newTrack, replace, assign, effect, clip };
@@ -220,6 +223,8 @@ private:
     DropTarget drop;                 // what a drag hovering over Arrange would do
     juce::String dropLabel;
     int dropPatternId = 0;           // the pattern it is, when it's one (drawn where it would land)
+    juce::String dropSample;         // the sample it is, when it's one (drawn where it would land, as long as it plays)
+    double dropSampleSeconds = 0.0;
     juce::Rectangle<int> rulerArea, headerArea, gridArea;
 
     juce::Rectangle<int> masterArea, masterHeaderArea;     // the master's automation, along the bottom

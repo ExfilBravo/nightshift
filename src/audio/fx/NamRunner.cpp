@@ -16,6 +16,7 @@
 #include <cmath>
 #include "NAM/dsp.h"
 #include "NAM/get_dsp.h"
+#include "NAM/slimmable.h"
 
 // The two things the resampler takes from iPlug2, which NightShift doesn't build
 namespace iplug
@@ -35,6 +36,12 @@ struct NamRunner::Impl
     std::unique_ptr<nam::DSP> dsp;
     std::unique_ptr<::dsp::ResamplingContainer<float, 1, 12>> resampler;
     double trained = 48000.0;
+
+    // A slimmable model (a container of models of several sizes, or a WaveNet that can drop channels):
+    // where NAM's size control (0 to 1) moves from one size to the next, and the size picked
+    nam::SlimmableModel* slimmable = nullptr;
+    std::vector<double> breakpoints;
+    int size = 0;
 };
 
 NamRunner::NamRunner() : impl (std::make_unique<Impl>()) {}
@@ -72,6 +79,12 @@ std::unique_ptr<NamRunner> NamRunner::load (const std::filesystem::path& path, s
     }
 
     runner->impl->trained = dsp->GetExpectedSampleRate() > 0.0 ? dsp->GetExpectedSampleRate() : 48000.0;
+
+    // It loads whole (NAM's models start at their full size)
+    if ((runner->impl->slimmable = dynamic_cast<nam::SlimmableModel*> (dsp.get())) != nullptr)
+        runner->impl->breakpoints = runner->impl->slimmable->GetSlimmableSizeBreakpoints();
+
+    runner->impl->size = runner->numSizes() - 1;
     return runner;
 }
 
@@ -111,5 +124,32 @@ double NamRunner::trainedRate() const       { return impl->trained; }
 bool NamRunner::hasLoudness() const         { return impl->dsp->HasLoudness(); }
 double NamRunner::loudnessDb() const        { return impl->dsp->GetLoudness(); }
 int NamRunner::latencySamples() const       { return impl->resampler != nullptr ? impl->resampler->GetLatency() : 0; }
+
+// NAM keeps these as metadata: the trainer writes what the reamp's level was, in dBu RMS for a sine at 0 dBFS
+bool NamRunner::hasInputLevel() const       { return impl->dsp->HasInputLevel(); }
+double NamRunner::inputLevelDbu() const     { return impl->dsp->HasInputLevel() ? impl->dsp->GetInputLevel() : 0.0; }
+
+int NamRunner::numSizes() const
+{
+    return impl->slimmable != nullptr ? (int) impl->breakpoints.size() + 1 : 1;
+}
+
+int NamRunner::getSize() const              { return impl->size; }
+
+void NamRunner::setSize (int index)
+{
+    const int n = numSizes();
+    index = std::clamp (index, 0, n - 1);
+
+    if (impl->slimmable == nullptr || index == impl->size)
+        return;
+
+    // NAM's control runs 0 to 1, a size between each pair of breakpoints: the middle of a size's own
+    // stretch, so rounding can't land it on a neighbour, and 1 (all of it) for the whole model
+    const double from = index == 0 ? 0.0 : impl->breakpoints[(size_t) index - 1];
+    const double to = index == n - 1 ? 1.0 : impl->breakpoints[(size_t) index];
+    impl->slimmable->SetSlimmableSize (index == n - 1 ? 1.0 : 0.5 * (from + to));
+    impl->size = index;
+}
 
 } // namespace nightshift

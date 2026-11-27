@@ -120,7 +120,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   passes on the keys the plugin doesn't use; clicking anywhere outside a text field gives the keys back to
   the studio. The keyboard button lights up while notes are held.
 - **Sounds** – in groups (Drum kits, Instruments, NightShift kit, Synth presets, Plugin instruments,
-  Effects, Plugin effects), all shut when NightShift opens; click a group's name to open it. Plugin
+  Effects, Plugin effects, Samples), all shut when NightShift opens; click a group's name to open it. Plugin
   instruments and Plugin effects are by developer (A to Z, one that doesn't say last; "Valhalla DSP, LLC" is
   Valhalla DSP, and a developer's tooltip gives its whole name), every developer shut too until clicked (one
   that makes both opens in each group apart); Add channel's and Add track's Plugin instrument, and + Add
@@ -129,6 +129,20 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   double-click a sound, or drag it into Steps (the editor switches to Steps when a drag starts) or onto
   Arrange. **Patterns** above them: click one to edit it, drag it onto a track in Arrange to put it in the
   song there, double-click to rename, right-click for Clone and Delete.
+- **Samples** (the sample browser, last of the sounds) – the audio files on this computer (WAV, AIFF, FLAC, Ogg,
+  MP3): your **Downloads** and **Music** (where Windows has them, or a Mac's ~/Downloads and ~/Music), then folders
+  you add (**Add a folder...**, kept with NightShift as nsSampleFolders; right-click one for **Remove from Samples**,
+  the folder staying where it is). Each opens in place, folders in folders, all shut at first, folders first, then
+  their sounds, A to Z (2 before 10), each with how many sounds it holds; only folders with sounds in them show, and
+  a Mac's "._" leftovers, hidden folders, apps and plugins are left out. The folders are looked through on a thread of
+  their own, and only once Samples is opened or searched (a folder opened again after a few seconds is looked through
+  again, for a download since). The sound search finds samples by name in every folder (60 at most under each, with
+  how many more), each saying the folder it's in. **Click a sample to hear it** through the studio's output, after the
+  master as the metronome is (whether or not the song plays; the master's meter and exports never hear it); click it
+  again to stop, or another to hear that one. **Drag it onto Arrange** for an audio clip of it where you let go
+  (snapped): on the audio track under it, on an empty track, or on a new audio track named after it (under the last
+  track, or under any other), its length shown before you let go; **drag it into Steps** (or double-click it) for a
+  sampler channel playing it. Right-click a sample for Play, Add to Steps and Show in Explorer (Finder on a Mac).
 - **Inspector** (as in Logic) – down the right: the selected channel's strip beside the master's. A channel
   strip shows its name and type, its instrument (click: a plugin's window, or the sample / preset menu) or an
   audio track's input, arm and MON, every effect in its chain, its sends and output, pan, a fader with its
@@ -167,6 +181,14 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   resamplers (and tells the engine their delay); a standard WaveNet takes about a tenth of a core. Its panel says which
   amp it is (name, gear, kind of tone, who captured it); the files' paths are kept in the song, and a missing one is
   named. Put it on an audio track with a guitar or bass plugged in (monitoring on) to play through it.
+  **Match input level** (input calibration, as NAM's plugin has it; on for a new amp): a model that says how loud its
+  amp was played when it was captured (its input level, in dBu) is played as loud from your audio interface, the input
+  gaining the interface's level less the model's (from an interface at 12 dBu, a model captured at 18.3 goes in 6.3 dB
+  softer); the panel says how much. **Your interface**, beside it, is that level (the interface manual's maximum input
+  level; 12 if you don't know it), one setting for every amp, kept with NightShift (nsInterfaceInputDbu). An amp in a
+  song saved before keeps the sound it had (matching off). A model that comes in sizes (NAM's "slimmable" models, as
+  its A2) shows **Size**: a smaller one takes less of the computer (A2's small size runs about 3 times faster than its
+  whole one) and sounds a little less like the amp; a new model starts whole, and the size is kept with the song.
 - **Effects** – stock or any VST3 (the Nightshift Lofi four included) goes in a channel's chain, after its
   instrument (or straight off an audio track's input), a bus's, or the master's before the limiter.
   Double-click one in the sidebar's Effects or Plugin effects to put it on the selected channel, drag it onto
@@ -829,7 +851,7 @@ Nightshift.exe --mididevices
 Nightshift.exe --tempotest
 Nightshift.exe --texttest
 Nightshift.exe --namtest
-Nightshift.exe --snapshot ui.png --effectpanel nightshiftAmp [--nammodel example|<file.nam>] [--namcabinet <file.wav>]
+Nightshift.exe --snapshot ui.png --effectpanel nightshiftAmp [--nammodel example|a2|<file.nam>] [--namsize <0 for the smallest>] [--namcabinet <file.wav>]
 Nightshift.exe --snapshot ui.png [--about [screen height]] [--settings] [--midilight <keyboard>] [--tempodemo] [--textaudit [--alltext]]
 Nightshift.exe --trackstest
 Nightshift.exe --closetest
@@ -842,6 +864,8 @@ Nightshift.exe --menupreview menu.png
 Nightshift.exe --snapshot ui.png [--emptysong] [--moretracks] [--dragover x,y [--dragsound nightshift-sound:... | "pattern:Beat 2"]]
 Nightshift.exe --stepstest
 Nightshift.exe --sidebartest
+Nightshift.exe --samplestest
+Nightshift.exe --snapshot ui.png --sampledemo [--opensounds "Samples;Downloads;Drum Pack;Kicks;Kick 10"] [--search tone] [--dragover x,y --dragsound "sample:Loop 120 bpm"]
 Nightshift.exe --fxtest
 Nightshift.exe --savetest
 Nightshift.exe --fxstoptest
@@ -930,6 +954,13 @@ writes whose sound is known exactly (half the level, to 1e-5), what a model's fi
 output gain, evening out loudness, a 44.1 kHz song with a 48 kHz model (between the resamplers, the same level), the
 gate, a cabinet impulse response it writes (two taps, 100 samples apart), its state opened again, a missing model and
 a file that isn't one, its panel's words, and that NAM's standard WaveNet runs at least 4 times faster than real time.
+Input calibration is measured on a model it writes that says it was captured at 18 dBu (6.00 dB softer from an
+interface at 12, 6.00 louder at 24, as it comes with matching off) and on NAM's A2 (the same as Input at -2.76 dB, to
+the sample); the interface's level comes from the studio's option, an amp saved before calibration keeps its sound and
+a new one starts matched. A slimmable model plays at each size: a container it writes of a quarter, half and the whole
+level (each heard exactly), NAM's container, its slimmable WaveNet (each size its own sound, the whole one as it
+loads) and A2 (its small size faster than its whole); the size is kept in the song, a new model starts whole, and the
+panel shows the size control only for a model in sizes (clicked smaller and back).
 `--genretest` checks what the band knows of genres and artists: every genre and artist played as a style it has,
 each of their names finding them (and "about death", "more ride", "ghost notes" naming nobody), an accent typed or
 not; "make a sleep token style song" read (alternative metal, quiet verses, heavy half-time choruses, drop C, piano,
@@ -1017,6 +1048,18 @@ then clicks and right-clicks Find new instruments (not while it's looking; its l
 "VST") and checks what it says afterwards.
 It leaves out fetched sampled instruments, so the orchestra's Harp can't come before Hat.
 `--snapshot ... --search <text>` shows the sidebar mid-search.
+`--samplestest` checks the sample browser on sounds it writes (a Downloads with a drum pack, tones at 48 and 44.1
+kHz, a FLAC in Music, a WAV and an AIFF in a folder to add, and a text file, a Mac's "._" leftover, an empty and a
+hidden folder that aren't sounds): Samples last and shut, nothing read until it's opened; what it lists (folders first,
+A to Z, 2 before 10; none of the non-sounds), folders opening and shutting in place; a folder added (after Music, kept
+in the options, there when NightShift opens again) and taken away; the search (any case, under the folder they're in,
+Enter adding the first); a click playing a sample through the studio's output, measured (-9.03 dB as made, 440 Hz,
+both sides; a 44.1 kHz file at its own pitch), the next click stopping it, another taking over, the end stopping it;
+dropped on Steps, a sampler channel (double-clicked too); dropped on Arrange, a new audio track at bar 3, a clip on the
+audio track it's dropped on, an empty track taking it, one undo, a missing file refused, and the song rendered with the
+tone from bar 3. Command-line runs never read the real Downloads and Music: Samples lists two empty folders in their
+place. `--snapshot ... --sampledemo` shows Samples with the suite's sounds in it (and a folder added); a sample named in
+`--opensounds` is clicked, so it shows playing.
 `--fxtest` loads the Nightshift Lofi VST3s from where they're installed and checks where effects sit in each
 chain, that Crush changes a kick, bypass, order, removal, and that a setting survives saving and reloading.
 `--snapshot ... --lofi` shows them in the sidebar, with two on Kick and Vinyl on the master.
