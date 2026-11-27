@@ -20,7 +20,9 @@
 #include "audio/Machines.h"
 #include "audio/DrumSynth.h"
 #include "audio/Instruments.h"
+#include "audio/Samples.h"
 #include "audio/Sfz.h"
+#include "audio/MidiFiles.h"
 #include "ui/Donate.h"
 #include "ai/Drummer.h"
 #include "ai/Genres.h"
@@ -66,6 +68,51 @@ namespace
         while (juce::Time::getMillisecondCounter() - start < (juce::uint32) ms
                || (! *delivered && juce::Time::getMillisecondCounter() - start < 10000))
             mm->runDispatchLoopUntil (5);
+    }
+
+    // Sounds made here for the sample browser's suite and snapshots, in `into`: a Downloads (a drum pack with its kicks
+    // in a folder of their own, a snare and a loop; a steady 440 Hz tone, half full scale, at 48 kHz and one at 44.1; a
+    // text file, a Mac's "._" leftover, an empty folder and a hidden one, none of them sounds), a Music (a song idea, as
+    // FLAC) and a folder to add (My sounds: a WAV and an AIFF). Returns Downloads, Music and My sounds
+    juce::Array<juce::File> writeSampleFolders (const juce::File& into)
+    {
+        into.deleteRecursively();
+        const auto downloads = into.getChildFile ("Downloads"), music = into.getChildFile ("Music"), mine = into.getChildFile ("My sounds");
+
+        // A sine (decaying to silence over the sound when `decay`), mono
+        auto write = [] (const juce::File& f, double seconds, double freq, float level, bool decay, double rate = 48000.0)
+        {
+            f.getParentDirectory().createDirectory();
+            juce::AudioBuffer<float> b (1, (int) (seconds * rate));
+
+            for (int i = 0; i < b.getNumSamples(); ++i)
+                b.setSample (0, i, level * (float) std::sin (juce::MathConstants<double>::twoPi * freq * i / rate)
+                                     * (decay ? (float) std::exp (-5.0 * i / b.getNumSamples()) : 1.0f));
+
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+            std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (f);
+
+            if (auto* format = formats.findFormatForFileExtension (f.getFileExtension()))
+                if (auto writer = format->createWriterFor (stream, juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (1).withBitsPerSample (24)))
+                    writer->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+        };
+
+        write (downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav"), 0.4, 55.0, 0.8f, true);
+        write (downloads.getChildFile ("Drum Pack/Kicks/Kick 10.wav"), 0.4, 50.0, 0.8f, true);
+        write (downloads.getChildFile ("Drum Pack/Snare 01.wav"), 0.3, 190.0, 0.6f, true);
+        write (downloads.getChildFile ("Drum Pack/Loop 120 bpm.wav"), 2.0, 110.0, 0.4f, false);
+        write (downloads.getChildFile ("Tone 440.wav"), 1.0, 440.0, 0.5f, false);
+        write (downloads.getChildFile ("Tone 440 at 44.1 kHz.wav"), 1.0, 440.0, 0.5f, false, 44100.0);
+        write (music.getChildFile ("Song idea.flac"), 2.0, 220.0, 0.3f, false);
+        write (mine.getChildFile ("Vocal chop.wav"), 0.5, 330.0, 0.5f, true);
+        write (mine.getChildFile ("Riser.aiff"), 1.5, 660.0, 0.3f, false);
+
+        downloads.getChildFile ("readme.txt").replaceWithText ("Not a sound");
+        downloads.getChildFile ("._Tone 440.wav").replaceWithText ("A Mac's leftover, not a sound");
+        downloads.getChildFile ("Empty folder").createDirectory();
+        write (downloads.getChildFile (".hidden/Secret.wav"), 0.2, 440.0, 0.5f, false);
+        return { downloads, music, mine };
     }
 
     struct Args
@@ -126,6 +173,29 @@ namespace
             for (int row = 0; row < song.numTracks(); ++row)
                 if (song.tracks[(size_t) row].channelId == surge)
                     song.playlist.push_back ({ p.id, row, 4 * song.ticksPerBar() });
+        }
+
+        // Synths plugged in: --midiouts "Synth module,Drum machine" seem plugged in (their messages are
+        // caught), and --midioutchannel adds a channel playing the first, a clip of it in Arrange, selected
+        if (auto outputs = args.valueAfter ("--midiouts"); outputs.isNotEmpty())
+            MidiOutHub::testOutputs = juce::StringArray::fromTokens (outputs, ",", {});
+
+        if (args.has ("--midioutchannel") && ! MidiOutHub::testOutputs.isEmpty())
+        {
+            const auto output = MidiOutHub::testOutputs[0];
+            auto& c = song.addChannel (output, InstrumentType::midiOut);
+            c.midiOutDevice = output;
+            c.midiOutChannel = 2;
+            c.midiProgram = 4;
+            const int id = c.id;
+
+            Track t;
+            t.channelId = id;
+            const int row = song.insertTrack (t);
+            auto& p = song.addPatternFor (id);
+            p.notesFor (id) = { { 0, 192, 60, 100 }, { 192, 192, 64, 90 }, { 384, 384, 67, 80 } };
+            song.playlist.push_back ({ p.id, row, 0 });
+            song.selectedChannelId = id;
         }
 
         if (auto patternName = args.valueAfter ("--pattern"); patternName.isNotEmpty())
@@ -245,12 +315,14 @@ namespace
           --writekit <folder>                   write the built-in kit WAVs
           --render <file.wav>                   render the demo song (or --project <file>)
           --snapshot <file.png> [--show playlist,rack,piano] [--raise playlist] [--toggle rack] [--size 1600x940]
-                     [--arm <channel names>] [--search <text>] [--opensounds "Plugin effects;Nightshift"] [--lofi] [--settings] [--live]
-                     [--midilight <keyboard>]
+                     [--arm <channel names>] [--search <text>] [--opensounds "Plugin effects;Nightshift"] [--sampledemo] [--lofi] [--settings] [--live]
+                     [--midilight <keyboard>] [--midiouts "Synth,Drum machine" [--midioutchannel]] [--exportmidi]
+          --midiouttest / --midifiletest        synths plugged in (MIDI out), caught with their timing; .mid files out and in
           --rectest <folder> [--countin] [--monitor]   record from a virtual input and check the take's timing
           --comptest <folder> [--countin] [--monitor]  loop-record takes, comp them, check takes and joins
           --pianotest                           check which channel the piano roll edits, and its picker
           --arrangetest / --stepstest / --sidebartest  click and type through those parts of the window
+          --samplestest                         the sample browser: listing, search, a sample heard, samples dropped on Steps and Arrange
           --genretest                           the genres and artists the band knows, Sleep Token played by all five, each new style by the band
           --feeltest                            the drum feel learned from real drummers (Groove MIDI Dataset): the table, who plays it, render
           --vibetest                            the vibe listener: made-up songs, the band's own (rendered), the words it writes, read back
@@ -266,6 +338,16 @@ namespace
     {
         // Whatever it opens, a command-line run reads the studio's settings and never writes them
         AudioEngine::keepStudioSettings = true;
+
+        // ...and never reads the user's Downloads and Music: the sidebar's Samples lists two empty folders in their
+        // place (--samplestest and a snapshot's --sampledemo make sounds of their own)
+        {
+            const auto none = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift no samples");
+            samples::standardFoldersOverride = { none.getChildFile ("Downloads"), none.getChildFile ("Music") };
+
+            for (auto& f : samples::standardFoldersOverride)
+                f.createDirectory();
+        }
 
         if (args.has ("--writekit"))
             return kit::writeTo (juce::File (args.valueAfter ("--writekit"))) ? 0 : 1;
@@ -2215,7 +2297,8 @@ namespace
             };
 
             // Every group shut at the start: only their names showing
-            const juce::StringArray groups { "NightShift kit", "Synth presets", "Plugin instruments", "Effects", "Plugin effects", "Drum kits", "Instruments" };
+            const juce::StringArray groups { "NightShift kit", "Synth presets", "Plugin instruments", "Effects", "Plugin effects", "Drum kits", "Instruments",
+                                             "Samples" };
             auto onlyGroups = [&sidebar, &groups]
             {
                 const auto shown = sidebar.getShownSounds();
@@ -2352,7 +2435,7 @@ namespace
                     return true;
                 };
 
-                // What's under Plugin effects, to the end of the list (it's the last group)
+                // What's under Plugin effects, to the next group (Samples, the last)
                 auto underEffects = [&groups] (Sidebar& on)
                 {
                     const auto shown = on.getShownSounds();
@@ -2593,6 +2676,379 @@ namespace
                        "afterwards it says what's new (\"" + both + "\"), or that nothing is when you asked (\"" + nothing + "\"), and nothing at startup");
             }
 
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--samplestest"))
+        {
+            // The sample browser, the sidebar's Samples, on folders made here in Downloads' and Music's place (see
+            // writeSampleFolders): what it lists and what it leaves out, a folder added and taken away again, the
+            // search, a sample heard through the studio's output (its level and pitch measured, a 44.1 kHz one's too)
+            // and stopped by the next click, and samples dropped on Steps (a sampler channel) and on Arrange (an audio
+            // track, heard in the song where it was let go)
+            const auto made = writeSampleFolders (juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift samples test"));
+            const auto downloads = made[0], music = made[1], mine = made[2];
+            samples::standardFoldersOverride = { downloads, music };
+
+            Song song;
+            song.loadBlank();
+            AudioEngine audio (song, false);
+            audio.syncNow();
+            Sidebar sidebar (song, audio);
+            sidebar.setSize (252, 900);
+            sidebar.setVisible (true);
+            ChannelRack rack (song, audio);
+            rack.setSize (1300, 600);
+
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto settle = [] { settleMessages (30); };
+            auto& library = sidebar.getSampleLibrary();
+            auto lookedThrough = [&library, &settle] { const bool done = library.waitUntilDone (10000); settle(); return done; };
+
+            // A click (or a right-click, or a double-click) on a row in Samples
+            auto click = [] (Sidebar& on, const juce::String& name, int clicks = 1)
+            {
+                const auto area = on.showSoundRow (name, "Samples");
+
+                if (area.isEmpty())
+                    return false;
+
+                const auto at = area.getCentre().toFloat();
+                const auto now = juce::Time::getCurrentTime();
+                const juce::MouseEvent e (juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier),
+                                          1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &on, &on, now, at, now, clicks, false);
+                on.mouseDown (e);
+
+                if (clicks == 2)
+                    on.mouseDoubleClick (e);
+
+                return true;
+            };
+
+            // What Samples shows, from its own row to the end (it's the last group)
+            auto shownSamples = [] (const Sidebar& on)
+            {
+                const auto shown = on.getShownSounds();
+                juce::StringArray rows;
+
+                for (int i = shown.indexOf ("Samples"); i >= 0 && i < shown.size(); ++i)
+                    rows.add (shown[i]);
+
+                return rows;
+            };
+
+            // The listing: last among the sounds, shut, and nothing read until it's opened
+            {
+                const auto shown = sidebar.getShownSounds();
+                check (shown[shown.size() - 1] == "Samples" && library.get (downloads) == nullptr && ! library.isLooking (downloads),
+                       "Samples is the last of the sounds, shut, and nothing in Downloads or Music is read before it's opened");
+            }
+
+            // (each action first, then what it shows: a check's words are worked out before or after its test, as the
+            // compiler likes)
+            const bool samplesOpened = click (sidebar, "Samples") && lookedThrough();
+            const auto opened = shownSamples (sidebar);
+            check (samplesOpened && opened == juce::StringArray { "Samples", "Downloads", "Music", "Add a folder..." }
+                       && library.get (downloads) != nullptr && library.get (downloads)->count == 6 && library.get (music) != nullptr
+                       && library.get (music)->count == 1,
+                   "opened, it lists Downloads and Music (looked through on a thread of its own: 6 sounds and 1), then Add a folder... ("
+                       + opened.joinIntoString (", ") + ")");
+
+            const bool downloadsOpened = click (sidebar, "Downloads");
+            const auto inDownloads = shownSamples (sidebar);
+            check (downloadsOpened && inDownloads == juce::StringArray { "Samples", "Downloads", "Drum Pack", "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder..." },
+                   "Downloads opens in place: its folder with sounds in it, then its sounds; no text file, Mac leftover, empty or hidden folder ("
+                       + inDownloads.joinIntoString (", ") + ")");
+
+            const bool packOpened = click (sidebar, "Drum Pack") && click (sidebar, "Kicks");
+            const auto pack = shownSamples (sidebar);
+            check (packOpened && pack == juce::StringArray { "Samples", "Downloads", "Drum Pack", "Kicks", "Kick 2", "Kick 10", "Loop 120 bpm", "Snare 01",
+                                                             "Tone 440", "Tone 440 at 44.1 kHz", "Music", "Add a folder..." },
+                   "folders in folders open in place, each A to Z, numbers in order (Kick 2 before Kick 10): " + pack.joinIntoString (", "));
+
+            check (click (sidebar, "Drum Pack") && ! sidebar.getShownSounds().contains ("Kicks") && ! sidebar.getShownSounds().contains ("Snare 01"),
+                   "clicked again, a folder shuts");
+
+            // A folder of one's own, kept with NightShift; and taken away again
+            {
+                sidebar.addSampleFolder (mine);
+                lookedThrough();
+                const auto rows = shownSamples (sidebar);
+                const int at = rows.indexOf ("My sounds");
+                Sidebar again (song, audio);
+                again.setSize (252, 900);
+                click (again, "Samples");
+                const auto reopened = shownSamples (again);
+                check (audio.getOptions().sampleFolders == juce::StringArray { mine.getFullPathName() } && at == rows.indexOf ("Music") + 1
+                           && rows[at + 1] == "Riser" && rows[at + 2] == "Vocal chop" && rows.getReference (rows.size() - 1) == "Add a folder..."
+                           && reopened.indexOf ("My sounds") == reopened.indexOf ("Music") + 1,
+                       "a folder added comes after Music, open (its AIFF and WAV, A to Z), kept with NightShift: opened again it's there ("
+                           + rows.joinIntoString (", ") + ")");
+
+                sidebar.removeSampleFolder (mine);
+                check (audio.getOptions().sampleFolders.isEmpty() && ! sidebar.getShownSounds().contains ("My sounds") && mine.isDirectory(),
+                       "taken out of Samples, it's gone from the list and the options, and the folder is still there");
+            }
+
+            // The search finds sounds by name in every folder, under the folder it's in
+            {
+                juce::String added;
+                sidebar.onAddSample = [&added] (const juce::String& path) { added = path; };
+                sidebar.setSearchText ("kick");
+                settle();
+                const auto kicks = shownSamples (sidebar);
+                sidebar.setSearchText ("SONG");
+                settle();
+                const auto song2 = shownSamples (sidebar);
+                sidebar.setSearchText ("nothing called this");
+                settle();
+                const bool none = ! sidebar.getShownSounds().contains ("Samples");
+
+                juce::TextEditor* box = nullptr;
+
+                for (auto* child : sidebar.getChildren())
+                    if (auto* editor = dynamic_cast<juce::TextEditor*> (child))
+                        box = editor;
+
+                sidebar.setSearchText ("kick 1");
+                settle();
+
+                if (box != nullptr)
+                    box->keyPressed (juce::KeyPress (juce::KeyPress::returnKey));
+
+                settle();
+                sidebar.setSearchText ({});
+                settle();
+
+                check (kicks == juce::StringArray { "Samples", "Downloads", "Kick 2", "Kick 10" } && song2 == juce::StringArray { "Samples", "Music", "Song idea" }
+                           && none && added == downloads.getChildFile ("Drum Pack/Kicks/Kick 10.wav").getFullPathName(),
+                       "searching \"kick\" finds both kicks under Downloads, any case \"SONG\" the FLAC in Music, nothing nowhere; \"kick 1\" and Enter "
+                       "adds Kick 10 (" + kicks.joinIntoString (", ") + " / " + song2.joinIntoString (", ") + ")");
+            }
+
+            // Heard through the studio's output, the song stopped: a click plays it, the next stops it
+            {
+                auto listen = [&audio] (double seconds)
+                {
+                    const int block = 512;
+                    juce::AudioBuffer<float> out (2, (int) (seconds * 48000.0) / block * block), buffer (2, block);
+
+                    for (int b = 0; b < out.getNumSamples() / block; ++b)
+                    {
+                        buffer.clear();
+                        audio.processHostedBlock (buffer);
+
+                        for (int ch = 0; ch < 2; ++ch)
+                            out.copyFrom (ch, b * block, buffer, ch, 0, block);
+
+                        if (b % 4 == 0)
+                            juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                    }
+
+                    return out;
+                };
+
+                auto rms = [] (const juce::AudioBuffer<float>& b, int ch, double from, double to)
+                {
+                    return juce::Decibels::gainToDecibels (b.getRMSLevel (ch, (int) (from * 48000.0), (int) ((to - from) * 48000.0)), -200.0f);
+                };
+
+                // Its pitch from the times it crosses zero going up
+                auto pitch = [] (const juce::AudioBuffer<float>& b, double from, double to)
+                {
+                    int crossings = 0;
+
+                    for (int i = (int) (from * 48000.0) + 1; i < (int) (to * 48000.0); ++i)
+                        crossings += b.getSample (0, i - 1) <= 0.0f && b.getSample (0, i) > 0.0f ? 1 : 0;
+
+                    return crossings / (to - from);
+                };
+
+                const auto tone = downloads.getChildFile ("Tone 440.wav"), tone44 = downloads.getChildFile ("Tone 440 at 44.1 kHz.wav");
+                const auto kick = downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav");
+                click (sidebar, "Drum Pack");
+                const bool clicked = click (sidebar, "Tone 440");
+                const auto playing = audio.getPreviewing();
+                const auto heard = listen (0.6);
+                const float left = rms (heard, 0, 0.15, 0.55), right = rms (heard, 1, 0.15, 0.55);
+                const double hz = pitch (heard, 0.15, 0.55);
+                check (clicked && playing == tone && std::abs (left - (-9.03f)) < 0.3f && std::abs (right - left) < 0.05f && std::abs (hz - 440.0) < 5.0,
+                       "a click on Tone 440 plays it through the studio's output: " + juce::String (left, 2) + " dB left, " + juce::String (right, 2)
+                           + " right (made at -9.03), " + juce::String (hz, 1) + " Hz");
+
+                click (sidebar, "Tone 440");
+                const auto stopped = audio.getPreviewing();
+                const auto after = listen (0.3);
+                int lastSound = -1;
+
+                for (int i = 0; i < after.getNumSamples(); ++i)
+                    if (std::abs (after.getSample (0, i)) > 1.0e-4f)
+                        lastSound = i;
+
+                check (stopped == juce::File() && lastSound < 2048,
+                       "the next click on it stops it: nothing comes out after the output's next block or so (the last sound "
+                           + juce::String (lastSound + 1) + " samples on)");
+
+                click (sidebar, "Tone 440 at 44.1 kHz");
+                const auto heard44 = listen (0.6);
+                const double hz44 = pitch (heard44, 0.15, 0.55);
+                const float level44 = rms (heard44, 0, 0.15, 0.55);
+                check (audio.getPreviewing() == tone44 && std::abs (hz44 - 440.0) < 5.0 && std::abs (level44 - (-9.03f)) < 0.5f,
+                       "a 44.1 kHz file plays at its own pitch at the output's 48 kHz: " + juce::String (hz44, 1) + " Hz, " + juce::String (level44, 2) + " dB");
+
+                // (Kicks is still open from before, in Drum Pack)
+                click (sidebar, "Kick 2");
+                const auto switched = audio.getPreviewing();
+                listen (0.8);
+                settle();
+                check (switched == kick && audio.getPreviewing() == juce::File(),
+                       "clicking another while one plays plays that one instead, and it stops at its end (Kick 2, 0.4 s)");
+
+                // The engine's own call, as the sidebar's right-click menu uses it
+                check (audio.previewSample (tone) && audio.getPreviewing() == tone && ! audio.previewSample (downloads.getChildFile ("readme.txt")),
+                       "asked to play a sound it plays it; a file that isn't a sound it can't");
+                audio.stopPreview();
+            }
+
+            // Dropped on Steps: a sampler channel playing it
+            {
+                const auto kick = downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav").getFullPathName();
+                const auto count = song.channels.size();
+                const juce::String drag = juce::String (soundDragPrefix) + "sample:" + kick;
+                rack.itemDropped ({ drag, nullptr, { 400, 200 } });
+                const auto& c = song.channels.back();
+                check (rack.isInterestedInDragSource ({ drag, nullptr, {} }) && song.channels.size() == count + 1 && c.type == InstrumentType::sampler
+                           && c.sample == kick && c.name == "Kick 2" && song.selectedChannelId == c.id && rack.soundName (drag) == "Kick 2"
+                           && ! rack.addDraggedSound (juce::String (soundDragPrefix) + "sample:" + downloads.getChildFile ("gone.wav").getFullPathName()),
+                       "dropped on Steps, a sample is a sampler channel playing it, named after it and selected; a file that's gone adds nothing");
+
+                // Double-clicked: the same, as onAddSample has it in the studio
+                juce::String added;
+                sidebar.onAddSample = [&added] (const juce::String& path) { added = path; };
+                check (click (sidebar, "Kick 2", 2) && added == kick, "double-clicked, it's added the same way");
+            }
+
+            // Dropped on Arrange: an audio track (or the audio track it's dropped on), the clip where it was let go
+            {
+                Playlist playlist (song, audio);
+                playlist.setSize (1600, 1400);
+                playlist.setSnap (ticksPerBar);
+                playlist.onAddSound = [&rack] (const juce::String& d) { return rack.addSound (d); };
+                playlist.nameOfSound = [&rack] (const juce::String& d) { return rack.soundName (d); };
+
+                auto rowY = [] (int row) { return (int) (Playlist::rulerHeight + (row + 0.5f) * Playlist::rowHeight); };
+                const auto barX = [] (int b) { return Playlist::headerWidth + 72 * b + 10; };   // a bar is 72 px here
+                auto drag = [] (const juce::File& f) { return juce::String (soundDragPrefix) + "sample:" + f.getFullPathName(); };
+                using Kind = Playlist::DropTarget::Kind;
+
+                const auto tone = downloads.getChildFile ("Tone 440.wav"), kick = downloads.getChildFile ("Drum Pack/Kicks/Kick 2.wav");
+                const auto snare = downloads.getChildFile ("Drum Pack/Snare 01.wav");
+                const int tracks = song.numTracks(), channels = (int) song.channels.size();
+
+                // Under the last track, at bar 3: a new audio track named after it
+                const auto under = playlist.dropTargetAt ({ barX (2), rowY (tracks) }, drag (tone));
+                playlist.itemDropped ({ drag (tone), nullptr, { barX (2), rowY (tracks) } });
+                const int toneTrack = tracks;
+                const auto* toneChannel = song.findChannel (song.trackChannel (toneTrack));
+                const int toneId = toneChannel != nullptr ? toneChannel->id : -1;
+                const bool newTrack = under.kind == Kind::newTrack && under.tick == 2 * ticksPerBar && song.numTracks() == tracks + 1
+                                      && toneChannel != nullptr && toneChannel->type == InstrumentType::audio && toneChannel->name == "Tone 440" && ! toneChannel->armed
+                                      && ! song.audioClips.empty() && song.audioClips.back().start == 2 * ticksPerBar && song.audioClips.back().track == toneTrack
+                                      && std::abs (song.audioClips.back().length - 1.0) < 1.0e-6 && song.audioClips.back().takes.size() == 1
+                                      && song.audioClips.back().takes[0].file == tone.getFullPathName();
+                check (newTrack, "dropped under the last track at bar 3, a sample is a new audio track named after it (not armed), its clip at bar 3, "
+                                 "1 second long, playing the file");
+
+                // On that audio track at bar 5: a second clip there, no new channel
+                const auto onAudio = playlist.dropTargetAt ({ barX (4), rowY (toneTrack) }, drag (kick));
+                playlist.itemDropped ({ drag (kick), nullptr, { barX (4), rowY (toneTrack) } });
+                check (onAudio.kind == Kind::clip && onAudio.row == toneTrack && song.numTracks() == tracks + 1 && (int) song.channels.size() == channels + 1
+                           && song.audioClips.back().channelId == toneId && song.audioClips.back().start == 4 * ticksPerBar,
+                       "dropped on that audio track at bar 5, it's a clip there, on its channel (no new track)");
+
+                // On the empty track: that track plays it
+                const auto onEmpty = playlist.dropTargetAt ({ barX (0), rowY (0) }, drag (snare));
+                playlist.itemDropped ({ drag (snare), nullptr, { barX (0), rowY (0) } });
+                const auto* snareChannel = song.findChannel (song.trackChannel (0));
+                check (onEmpty.kind == Kind::assign && snareChannel != nullptr && snareChannel->name == "Snare 01" && song.numTracks() == tracks + 1,
+                       "dropped on an empty track, it goes on that track");
+
+                song.undo();
+                check (song.trackChannel (0) == 0 && (int) song.channels.size() == channels + 1 && song.audioClips.size() == 2,
+                       "one undo takes that drop away (its channel and clip)");
+
+                check (playlist.dropTargetAt ({ barX (1), rowY (0) }, drag (downloads.getChildFile ("gone.wav"))).kind == Kind::none,
+                       "a file that's gone can't be dropped");
+
+                // Compressed files too: Music's FLAC at bar 7 (12 s), an Ogg written here at bar 9 (16 s), and an MP3 given
+                // with --mp3 <file> at bar 11 (20 s), each on a new audio track
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+                const auto ogg = downloads.getParentDirectory().getChildFile ("Elsewhere/Hum.ogg");
+                {
+                    ogg.getParentDirectory().createDirectory();
+                    juce::AudioBuffer<float> hum (1, 96000);
+
+                    for (int i = 0; i < hum.getNumSamples(); ++i)
+                        hum.setSample (0, i, 0.3f * (float) std::sin (juce::MathConstants<double>::twoPi * 330.0 * i / 48000.0));
+
+                    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (ogg);
+
+                    if (auto* format = formats.findFormatForFileExtension ("ogg"))
+                        if (auto writer = format->createWriterFor (stream, juce::AudioFormatWriterOptions{}.withSampleRate (48000.0).withNumChannels (1)
+                                                                                                           .withQualityOptionIndex (5)))
+                            writer->writeFromAudioSampleBuffer (hum, 0, hum.getNumSamples());
+                }
+
+                const juce::File mp3 (args.valueAfter ("--mp3"));
+                const bool withMp3 = juce::File::isAbsolutePath (args.valueAfter ("--mp3")) && mp3.existsAsFile();
+                playlist.itemDropped ({ drag (music.getChildFile ("Song idea.flac")), nullptr, { barX (6), rowY (song.numTracks()) } });
+                playlist.itemDropped ({ drag (ogg), nullptr, { barX (8), rowY (song.numTracks()) } });
+
+                if (withMp3)
+                    playlist.itemDropped ({ drag (mp3), nullptr, { barX (10), rowY (song.numTracks()) } });
+
+                // Heard in the song where each was let go: the tone from bar 3 (4 s at 120), for its second, and the rest
+                const auto rendered = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift samples test render.wav");
+                audio.syncNow();
+                const bool renderedOk = audio.renderToFile (rendered, 0.5);
+                std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (rendered));
+                float before = 1.0f, during = -200.0f, flac = -200.0f, vorbis = -200.0f, mp3Level = -200.0f;
+
+                if (reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b (2, (int) reader->lengthInSamples);
+                    reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+                    auto level = [&b] (double from, double to)
+                    {
+                        const int start = (int) (from * 48000.0), length = std::min ((int) ((to - from) * 48000.0), b.getNumSamples() - start);
+                        return length > 0 ? juce::Decibels::gainToDecibels (b.getRMSLevel (0, start, length), -200.0f) : -200.0f;
+                    };
+
+                    before = b.getMagnitude (0, 48000, 48000 * 3 - 48000);                              // 1 to 3 s
+                    during = level (4.2, 4.8);
+                    flac = level (12.2, 13.8);
+                    vorbis = level (16.2, 17.8);
+                    mp3Level = level (20.0, 20.0 + std::max (0.1, samples::lengthInSeconds (mp3)));
+                }
+
+                rendered.deleteFile();
+                check (renderedOk && reader != nullptr && before < 1.0e-4f && during > -18.0f && during < -6.0f,
+                       "rendered, the song is silent before bar 3 and has the tone from there: " + juce::String (during, 1) + " dB (the file is -9.0)");
+                check (flac > -20.0f && flac < -8.0f && vorbis > -20.0f && vorbis < -8.0f && (! withMp3 || mp3Level > -60.0f),
+                       "a FLAC and an Ogg dropped on Arrange play in the song too: " + juce::String (flac, 1) + " and " + juce::String (vorbis, 1)
+                           + " dB (made at -13.5)" + (withMp3 ? ", and the MP3 given: " + juce::String (mp3Level, 1) + " dB" : juce::String()));
+            }
+
+            samples::standardFoldersOverride.clear();
+            downloads.getParentDirectory().deleteRecursively();
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
             return failures == 0 ? 0 : 1;
         }
@@ -11031,13 +11487,913 @@ namespace
             return failures == 0 ? 0 : 1;
         }
 
+        // The automation suites' song: a steady 440 Hz tone (half full scale) of `seconds` on an audio track,
+        // "Guitar", the only track, at 120 bpm in Song mode. Returns the channel's id; the tone's file is `take`
+        auto toneSong = [] (Song& song, const juce::File& take, double seconds)
+        {
+            song.loadBlank();
+            song.bpm = 120.0;
+            song.mode = PlayMode::song;
+            take.deleteFile();
+            {
+                juce::AudioBuffer<float> tone (1, (int) (48000 * seconds));
+
+                for (int i = 0; i < tone.getNumSamples(); ++i)
+                    tone.setSample (0, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 440.0 * i / 48000.0));
+
+                std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (take);
+                auto writer = juce::WavAudioFormat().createWriterFor (stream, juce::AudioFormatWriterOptions{}
+                                                                                  .withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (24));
+
+                if (writer != nullptr)
+                    writer->writeFromAudioSampleBuffer (tone, 0, tone.getNumSamples());
+            }
+
+            const int guitar = song.addChannel ("Guitar", InstrumentType::audio).id;
+            AudioClip c;
+            c.channelId = guitar;
+            c.length = seconds;
+            c.takes = { { take.getFullPathName(), 0.0, 0.0, seconds } };
+            c.comp = { { 0.0, seconds, 0 } };
+            song.audioClips.push_back (c);
+            song.tracks[0].channelId = guitar;
+            return guitar;
+        };
+
+        // Renders the song (its automation brought up to date first) and reads it back
+        auto renderSong = [] (Song& song, AudioEngine& audio, const juce::String& name)
+        {
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+            const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile (name + ".wav");
+            song.notify (Song::Change::automation);
+            audio.syncNow();
+            audio.renderToFile (file, 0.2);
+            juce::AudioBuffer<float> b;
+
+            if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file)); reader != nullptr)
+            {
+                b.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
+                reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+            }
+
+            file.deleteFile();
+            return b;
+        };
+
+        // A tenth of a second's level from `seconds` in, on one side (48 kHz)
+        auto levelAt = [] (const juce::AudioBuffer<float>& b, int channel, double seconds)
+        {
+            const int from = juce::jlimit (0, std::max (0, b.getNumSamples() - 4800), (int) (seconds * 48000.0));
+            return b.getNumSamples() > 0 ? b.getRMSLevel (juce::jmin (channel, b.getNumChannels() - 1), from, 4800) : 0.0f;
+        };
+
+        // Mouse events for a component, as automationtest makes them: a press, drags in six steps, a release
+        auto mouseOn = [] (juce::Component& c, juce::Point<float> from, juce::Point<float> to, int mods = juce::ModifierKeys::leftButtonModifier)
+        {
+            const auto now = juce::Time::getCurrentTime();
+            auto event = [&] (juce::Point<float> p, bool dragged)
+            {
+                return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), p, juce::ModifierKeys (mods), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                         &c, &c, now, from, now, 1, dragged);
+            };
+
+            c.mouseDown (event (from, false));
+
+            if (from != to)
+                for (int i = 1; i <= 6; ++i)
+                    c.mouseDrag (event (from + (to - from) * (i / 6.0f), true));
+
+            c.mouseUp (event (to, from != to));
+        };
+
+        if (args.has ("--automationcurvetest"))
+        {
+            // Bent automation lines (FL's curves): the shape eased in and out (its middle where the bend says, its
+            // ends staying put, never turning back); a bent lane's values; saved as a third number (a straight point
+            // as two, as before, and an old song's points straight); what Song mode plays, as short straight lines
+            // on the parameter matching the lane; renders of a volume fade straight and bent each way, measured
+            // against the lane; then Arrange with real mouse events: a rising line's middle handle dragged down
+            // eases it in and up eases it out (its middle where it was let go), a point moved keeps its bend,
+            // double-click and right-click straighten it, undo, and a line too short has no handle
+            Song song;
+            const auto take = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-curve-tone.wav");
+            const int guitar = toneSong (song, take, 4.0);
+            const int bar = song.ticksPerBar();     // two seconds at 120
+            song.notify (Song::Change::everything);
+            AudioEngine audio (song, false);
+            audio.syncNow();
+
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto dbOf = [] (float level) { return juce::Decibels::gainToDecibels (level, -120.0f); };
+
+            // The shape
+            {
+                bool ends = true, middles = true, onwards = true;
+
+                for (float c : { -0.95f, -0.6f, -0.2f, 0.0f, 0.3f, 0.7f, 0.95f })
+                {
+                    ends = ends && std::abs (automationcurve::shape (0.0f, c)) < 1.0e-6f && std::abs (automationcurve::shape (1.0f, c) - 1.0f) < 1.0e-6f;
+                    middles = middles && std::abs (automationcurve::shape (0.5f, c) - automationcurve::middleOf (c)) < 1.0e-4f
+                                      && std::abs (automationcurve::fromMiddle (automationcurve::middleOf (c)) - c) < 1.0e-4f;
+                    float last = 0.0f;
+
+                    for (int i = 1; i <= 200; ++i)
+                    {
+                        const float v = automationcurve::shape ((float) i / 200.0f, c);
+                        onwards = onwards && v >= last - 1.0e-6f;
+                        last = v;
+                    }
+                }
+
+                check (ends && middles && onwards && std::abs (automationcurve::middleOf (0.5f) - 0.25f) < 1.0e-6f,
+                       "a bend puts a line's middle where it says (a quarter of the way for 0.5, three quarters for -0.5), its ends stay put, "
+                       "and it never turns back");
+            }
+
+            // A bent lane's values: eased in (slowly, then quickly) and out
+            {
+                AutomationLane in, out;
+                in.points = { { 0, 0.0f, 0.5f }, { bar, 1.0f } };
+                out.points = { { 0, 0.0f, -0.5f }, { bar, 1.0f } };
+                check (std::abs (in.valueAt (bar / 2) - 0.25f) < 1.0e-4f && std::abs (in.valueAt (bar / 4) - 0.0625f) < 1.0e-4f
+                           && std::abs (out.valueAt (bar / 2) - 0.75f) < 1.0e-4f && std::abs (out.valueAt (bar / 4) - 0.4375f) < 1.0e-4f
+                           && in.valueAt (2 * bar) == 1.0f && in.valueAt (-5) == 0.0f,
+                       "a lane eased in is a quarter of the way at its middle (1/16 at a quarter), eased out three quarters (7/16 at a quarter)");
+            }
+
+            // Saved and opened again: the bend as a third number, a straight point as two; an old song's points straight
+            {
+                song.laneFor (guitar, "pan", "Pan").points = { { 0, -1.0f, 0.7f }, { bar, 1.0f } };
+                const auto saved = song.toVar();
+                juce::var points;
+
+                if (auto* lanes = saved.getProperty ("automation", {}).getArray())
+                    for (auto& l : *lanes)
+                        if (l.getProperty ("param", {}).toString() == "pan")
+                            points = l.getProperty ("points", {});
+
+                Song opened;
+                opened.fromVar (saved);
+                const auto* again = opened.findLane (guitar, "pan");
+                const bool numbers = points.size() == 2 && points[0].size() == 3 && points[1].size() == 2;
+                const bool same = again != nullptr && again->points == song.findLane (guitar, "pan")->points;
+
+                if (auto* first = points.size() > 0 ? points[0].getArray() : nullptr)
+                    first->removeLast();        // as an older NightShift saved it: two numbers
+
+                Song old;
+                old.fromVar (saved);
+                const auto* straight = old.findLane (guitar, "pan");
+                check (numbers && same && straight != nullptr && straight->points.size() == 2 && straight->points[0].curve == 0.0f,
+                       "a bend is saved as a third number (a straight point as two) and opened again; an older song's points open straight");
+                std::erase_if (song.automation, [] (auto& l) { return l.param == "pan"; });
+            }
+
+            // What Song mode plays: the guitar's volume from 0 dB down to -30 dB over the first bar, straight and bent
+            // each way, its level at three moments against what the lane says there
+            const float base = levelAt (renderSong (song, audio, "nightshift-curvetest"), 0, 0.5);
+            const float top = te::decibelsToVolumeFaderPosition (0.0f), low = te::decibelsToVolumeFaderPosition (-30.0f);
+            song.laneFor (guitar, "volume", "Volume");
+
+            auto fade = [&] (float curve, juce::String& said)
+            {
+                song.findLane (guitar, "volume")->points = { { 0, top, curve }, { bar, low } };
+                const auto heard = renderSong (song, audio, "nightshift-curvetest");
+                const auto* lane = song.findLane (guitar, "volume");
+                float worst = 0.0f;
+
+                for (double at : { 0.5, 1.0, 1.5 })
+                {
+                    const float expected = te::volumeFaderPositionToDB (lane->valueAt (song.tickAt (at + 0.05)));
+                    const float got = dbOf (levelAt (heard, 0, at)) - dbOf (base);
+                    worst = std::max (worst, std::abs (got - expected));
+                    said << juce::String (got, 1) << " dB at " << juce::String (at, 1) << " s (the lane: " << juce::String (expected, 1) << ")  ";
+                }
+
+                return std::make_pair (worst, dbOf (levelAt (heard, 0, 1.0)));
+            };
+
+            juce::String straightSaid, inSaid, outSaid;
+            const auto [straightOff, straightMiddle] = fade (0.0f, straightSaid);
+            const auto [inOff, inMiddle] = fade (0.8f, inSaid);
+            {
+                auto p = audio.findAutomationParameter (guitar, "volume");
+                const auto* lane = song.findLane (guitar, "volume");
+                const int written = p != nullptr ? p->getCurve().getNumPoints() : 0;
+                float apart = 1.0f;
+
+                if (p != nullptr)
+                {
+                    apart = 0.0f;
+
+                    for (double s : { 0.3, 0.7, 1.1, 1.6, 1.95 })
+                        apart = std::max (apart, std::abs (p->getCurve().getValueAt (te::TimePosition::fromSeconds (s), 0.0f) - lane->valueAt (song.tickAt (s))));
+                }
+
+                check (written > 20 && apart < 0.002f, "a bent line goes onto the volume's curve as " + juce::String (written)
+                                                         + " points of short straight lines, within " + juce::String (apart, 4) + " of the lane all along");
+            }
+            const auto [outOff, outMiddle] = fade (-0.8f, outSaid);
+
+            check (straightOff < 1.0f && inOff < 1.0f && outOff < 1.0f,
+                   "renders follow the lane within 1 dB: straight " + straightSaid + "| eased in " + inSaid + "| eased out " + outSaid);
+            check (inMiddle > straightMiddle + 3.0f && straightMiddle > outMiddle + 3.0f,
+                   "a second in, eased in is louder than straight, and straight louder than eased out (" + juce::String (inMiddle, 1) + ", "
+                     + juce::String (straightMiddle, 1) + ", " + juce::String (outMiddle, 1) + " dB)");
+
+            // Arrange: the lane rising over two bars, a handle at its middle
+            song.findLane (guitar, "volume")->points = { { 0, low }, { 2 * bar, top } };
+            song.showAutomation = true;
+            song.notify (Song::Change::automation);
+            Playlist playlist (song, audio);
+            playlist.setSize (1600, 800);
+
+            auto laneOf = [&playlist] (int owner, const juce::String& param)
+            {
+                for (auto& l : playlist.visibleLanes())
+                    if (l.owner == owner && l.param == param)
+                        return l;
+
+                return Playlist::LaneView { -1 };
+            };
+
+            auto click = [&playlist] (juce::Point<float> at, int mods, int clicks)
+            {
+                const auto now = juce::Time::getCurrentTime();
+                const juce::MouseEvent e (juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys (mods), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                          &playlist, &playlist, now, at, now, clicks, false);
+                playlist.mouseDown (e);
+
+                if (clicks == 2)
+                    playlist.mouseDoubleClick (e);
+
+                playlist.mouseUp (e);
+            };
+
+            const float pxPerTick = 72.0f / bar;
+            auto xOf = [&] (int tick) { return (float) Playlist::headerWidth + tick * pxPerTick; };
+            const auto lane = laneOf (guitar, "volume");
+            const auto handle = playlist.bendHandle (lane, 0);
+            const auto bendOf = [&] { return song.findLane (guitar, "volume")->points[0].curve; };
+            check (lane.owner == guitar && handle.has_value() && std::abs (handle->x - xOf (bar)) < 0.5f, "a line has a handle at its middle, for bending it");
+
+            if (handle.has_value())
+            {
+                // (The line rises some 17 px: 4 px down puts its middle about a quarter of the way)
+                mouseOn (playlist, *handle, *handle + juce::Point<float> (0.0f, 4.0f));
+                const auto bent = playlist.bendHandle (lane, 0);
+                check (bendOf() > 0.2f && bendOf() < 0.9f && bent.has_value() && std::abs (bent->y - (handle->y + 4.0f)) < 0.75f,
+                       "dragging a rising line's handle down 4 px eases it in (a bend of " + juce::String (bendOf(), 2) + "), its middle where it was let go ("
+                         + juce::String (bent.has_value() ? bent->y - handle->y : 0.0f, 2) + " px down)");
+
+                const float easedIn = bendOf();
+                mouseOn (playlist, *bent, *bent - juce::Point<float> (0.0f, 8.0f));
+                check (bendOf() < -0.2f, "dragging it up 8 px eases it out (" + juce::String (bendOf(), 2) + ")");
+
+                song.undo();
+                check (std::abs (bendOf() - easedIn) < 1.0e-6f, "undo bends it back (" + juce::String (bendOf(), 2) + ")");
+
+                // A point moved keeps the bend of the line it starts
+                const float top6 = lane.area.getY() + 6.0f;
+                mouseOn (playlist, { xOf (2 * bar), top6 + (lane.area.getHeight() - 12.0f) * (1.0f - top) },
+                         { xOf (3 * bar), top6 + (lane.area.getHeight() - 12.0f) * (1.0f - top) });
+                const auto* moved = song.findLane (guitar, "volume");
+                check (moved->points.size() == 2 && moved->points[1].tick == 3 * bar && std::abs (bendOf() - easedIn) < 1.0e-6f,
+                       "moving the line's end to bar 4 keeps its bend");
+
+                // Double-click its handle: straight; bent again, right-click: straight
+                const auto again = playlist.bendHandle (lane, 0);
+
+                if (again.has_value())
+                    click (*again, juce::ModifierKeys::leftButtonModifier, 2);
+
+                const bool doubleClicked = bendOf() == 0.0f;
+                song.undo();
+                const bool backAgain = bendOf() != 0.0f;
+
+                if (const auto h = playlist.bendHandle (lane, 0))
+                    click (*h, juce::ModifierKeys::rightButtonModifier, 1);
+
+                check (doubleClicked && backAgain && bendOf() == 0.0f && moved->points.size() == 2,
+                       "double-clicking the handle straightens the line (undo bends it again), and so does right-clicking it");
+            }
+
+            song.findLane (guitar, "volume")->points = { { 0, low }, { 8, top } };
+            song.notify (Song::Change::automation);
+            check (! playlist.bendHandle (laneOf (guitar, "volume"), 0).has_value(), "a line too short to see bending has no handle");
+
+            take.deleteFile();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--busautomationtest"))
+        {
+            // Buses' automation: a bus's volume, pan and effects as automation targets, their lanes' keys and names;
+            // renders of a tone played through a bus, faded by the bus's volume lane, swept by its pan, closed on by
+            // its filter's cutoff; Pattern mode and an emptied lane giving the bus's fader back; a MIDI controller's
+            // knob learned for a bus; saving; the bus's lanes along the bottom of Arrange above the master's, clicked
+            // into, scrolled through with the wheel when there are more than fit; Automate on a bus strip's fader;
+            // and a bus taken away with its lanes, links, and the channels' send lanes to it
+            Song song;
+            const auto take = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-bus-tone.wav");
+            const int guitar = toneSong (song, take, 4.0);
+            const int bar = song.ticksPerBar();
+            const int busId = song.addBus ("Reverb bus").id;
+            song.findChannel (guitar)->output = busId;
+
+            Effect filter;
+            filter.id = song.createId();
+            filter.pluginId = stockfx::descriptions()[5].createIdentifierString();
+            filter.name = "Nightshift Filter";
+            song.findBus (busId)->effects.push_back (filter);
+            song.notify (Song::Change::everything);
+            AudioEngine audio (song, false);
+            audio.syncNow();
+
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto db = [] (float level) { return juce::String (juce::Decibels::gainToDecibels (level, -120.0f), 1) + " dB"; };
+            const auto cutoffKey = "fx:" + juce::String (filter.id) + ":cutoff";
+
+            // What a bus offers, and which lane a bus's parameter is
+            {
+                const auto targets = audio.automationTargets (busId);
+                auto offered = [&targets] (const juce::String& param) { return std::any_of (targets.begin(), targets.end(), [&] (auto& t) { return t.param == param; }); };
+                const bool noSends = std::none_of (targets.begin(), targets.end(), [] (auto& t) { return t.param.startsWith ("send:"); });
+                check (offered ("volume") && offered ("pan") && offered (cutoffKey) && noSends && audio.automationName (busId, cutoffKey) == "Nightshift Filter: Cutoff",
+                       "a bus offers its volume, pan and its effects' knobs for automation (" + juce::String ((int) targets.size()) + " of them; \""
+                         + audio.automationName (busId, cutoffKey) + "\")");
+
+                auto* volume = audio.findAutomationParameter (busId, "volume");
+                auto* pan = audio.findAutomationParameter (busId, "pan");
+                auto* cutoff = audio.findAutomationParameter (busId, cutoffKey);
+                const auto a = volume != nullptr ? audio.automationKeyFor (*volume) : std::nullopt;
+                const auto b = pan != nullptr ? audio.automationKeyFor (*pan) : std::nullopt;
+                const auto c = cutoff != nullptr ? audio.automationKeyFor (*cutoff) : std::nullopt;
+                check (a && a->first == busId && a->second == "volume" && b && b->second == "pan" && c && c->first == busId && c->second == cutoffKey,
+                       "a bus's fader, pan and filter knob each find their lane (right-click Automate on them works)");
+            }
+
+            // Renders through the bus
+            const float base = levelAt (renderSong (song, audio, "nightshift-bustest"), 0, 0.5);
+            check (base > 0.1f, "the tone plays through the bus (" + db (base) + ")");
+
+            song.laneFor (busId, "volume", "Volume").points = { { 0, te::decibelsToVolumeFaderPosition (0.0f) }, { bar, 0.0f } };
+            {
+                const auto faded = renderSong (song, audio, "nightshift-bustest");
+                auto* p = audio.findAutomationParameter (busId, "volume");
+                check (p != nullptr && p->getCurve().getNumPoints() == 2 && levelAt (faded, 0, 0.0) > 0.8f * base && levelAt (faded, 0, 1.0) < 0.6f * base
+                           && levelAt (faded, 0, 2.5) < 0.01f * base,
+                       "the bus's volume lane fades it out: " + db (levelAt (faded, 0, 0.0)) + " at the start, " + db (levelAt (faded, 0, 1.0)) + " at 1 s, "
+                         + db (levelAt (faded, 0, 2.5)) + " at 2.5 s");
+            }
+
+            song.mode = PlayMode::pattern;
+            song.notify (Song::Change::transport);
+            audio.syncNow();
+            {
+                auto* p = audio.findAutomationParameter (busId, "volume");
+                check (p != nullptr && p->getCurve().getNumPoints() == 0
+                           && std::abs (p->getCurrentValue() - te::decibelsToVolumeFaderPosition (channelVolumeToDb (song.findBus (busId)->volume))) < 0.01f,
+                       "Pattern mode takes the bus's curve off and puts its fader's own value back");
+            }
+            song.mode = PlayMode::song;
+            song.notify (Song::Change::transport);
+
+            song.findLane (busId, "volume")->points.clear();
+            {
+                const auto restored = renderSong (song, audio, "nightshift-bustest");
+                check (audio.findAutomationParameter (busId, "volume")->getCurve().getNumPoints() == 0 && levelAt (restored, 0, 2.5) > 0.9f * base,
+                       "an emptied bus lane leaves the tone steady again (" + db (levelAt (restored, 0, 2.5)) + " at 2.5 s)");
+            }
+
+            song.laneFor (busId, "pan", "Pan").points = { { 0, -1.0f }, { 2 * bar, 1.0f } };
+            {
+                const auto swept = renderSong (song, audio, "nightshift-bustest");
+                check (levelAt (swept, 0, 0.05) > 3.0f * levelAt (swept, 1, 0.05) && levelAt (swept, 1, 3.85) > 3.0f * levelAt (swept, 0, 3.85),
+                       "the bus's pan lane sweeps it from the left (" + db (levelAt (swept, 0, 0.05)) + " L, " + db (levelAt (swept, 1, 0.05))
+                         + " R) to the right (" + db (levelAt (swept, 0, 3.85)) + " L, " + db (levelAt (swept, 1, 3.85)) + " R)");
+            }
+            std::erase_if (song.automation, [busId] (auto& l) { return l.owner == busId && l.param == "pan"; });
+
+            song.laneFor (busId, cutoffKey, "Nightshift Filter: Cutoff").points = { { 0, 20000.0f }, { bar, 100.0f } };
+            {
+                const auto closed = renderSong (song, audio, "nightshift-bustest");
+                check (levelAt (closed, 0, 0.0) > 0.8f * base && levelAt (closed, 0, 2.5) < 0.3f * base,
+                       "the bus filter's cutoff lane closes on it: " + db (levelAt (closed, 0, 0.0)) + " at the start, " + db (levelAt (closed, 0, 2.5)) + " at 2.5 s");
+            }
+            std::erase_if (song.automation, [&] (auto& l) { return l.param == cutoffKey; });
+
+            // A MIDI controller's knob linked to the bus's volume, and one learned for its pan
+            song.controllerLinks.push_back ({ "", 1, 7, busId, "volume" });
+            audio.handleMidiInput ("Test controller", juce::MidiMessage::controllerEvent (1, 7, 64));
+            const bool followed = std::abs (song.findBus (busId)->volume - 64.0f / 127.0f) < 1.0e-4f;
+            juce::String learned;
+            audio.learnMidiController (busId, "pan", [&learned] (const juce::String& what) { learned = what; });
+            audio.handleMidiInput ("Test controller", juce::MidiMessage::controllerEvent (1, 8, 127));
+            check (followed && learned.isNotEmpty() && song.findControllerLink (busId, "pan") != nullptr && std::abs (song.findBus (busId)->pan - 1.0f) < 1.0e-4f,
+                   "a MIDI knob linked to the bus's volume moves it, and one learned for its pan (" + learned + ") turns it");
+
+            // Saved and opened again: the bus's lanes and links; a lane for something that isn't there isn't kept
+            song.laneFor (busId, "volume", "Volume").points = { { 0, 0.5f }, { bar, 0.7f, 0.4f } };
+            {
+                auto saved = song.toVar();
+                saved.getProperty ("automation", {}).getArray()->add (juce::JSON::parse ("{\"owner\": 9999, \"param\": \"volume\", \"name\": \"Volume\", \"points\": [[0, 0.5]]}"));
+                Song opened;
+                opened.fromVar (saved);
+                const auto* lane = opened.findLane (busId, "volume");
+                check (lane != nullptr && lane->points == song.findLane (busId, "volume")->points && opened.findControllerLink (busId, "volume") != nullptr
+                           && opened.findControllerLink (busId, "pan") != nullptr && opened.findLane (9999, "volume") == nullptr,
+                       "a bus's lanes (a bend too) and MIDI links are saved and opened again; a lane for a bus that isn't there isn't kept");
+            }
+
+            // Arrange: the bus's lanes along the bottom, above the master's
+            song.showAutomation = true;
+            song.notify (Song::Change::automation);
+            Playlist playlist (song, audio);
+            playlist.setSize (1600, 800);
+
+            auto laneOf = [&playlist] (int owner, const juce::String& param)
+            {
+                for (auto& l : playlist.visibleLanes())
+                    if (l.owner == owner && l.param == param)
+                        return l;
+
+                return Playlist::LaneView { -1 };
+            };
+
+            const auto busLane = laneOf (busId, "volume");
+            const auto masterLane = laneOf (0, "volume");
+            check (busLane.owner == busId && busLane.inStrip && masterLane.inStrip && busLane.area.getBottom() <= masterLane.area.getY() + 0.5f
+                       && laneOf (busId, "pan").owner == -1,
+                   "the bus's volume lane is along the bottom, above the master's (and no lane it hasn't got)");
+
+            {
+                const float pxPerTick = 72.0f / bar;
+                const auto at = juce::Point<float> ((float) Playlist::headerWidth + 2 * bar * pxPerTick, busLane.area.getCentreY());
+                mouseOn (playlist, at, at);
+                const auto* lane = song.findLane (busId, "volume");
+                check (lane != nullptr && lane->points.size() == 3 && lane->points[2].tick == 2 * bar, "clicking the bus's lane at bar 3 adds a point there");
+            }
+
+            // More lanes than fit: the wheel goes through them, a lane a notch, down to the master's
+            for (auto& t : audio.automationTargets (busId))
+                song.laneFor (busId, t.param, audio.automationName (busId, t.param));
+
+            song.notify (Song::Change::automation);
+            playlist.setSize (1600, 500);
+            {
+                const auto all = playlist.stripLanes();
+                auto shownInStrip = [&playlist]
+                {
+                    std::vector<Playlist::LaneView> shown;
+
+                    for (auto& l : playlist.visibleLanes())
+                        if (l.inStrip)
+                            shown.push_back (l);
+
+                    return shown;
+                };
+
+                const auto first = shownInStrip();
+                const auto now = juce::Time::getCurrentTime();
+                const auto at = first.empty() ? juce::Point<float>() : first.front().area.getCentre();
+                const juce::MouseEvent e (juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys(), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                          &playlist, &playlist, now, at, now, 0, false);
+
+                for (int i = 0; i < (int) all.size(); ++i)
+                    playlist.mouseWheelMove (e, juce::MouseWheelDetails { 0.0f, -0.25f, false, false, false });
+
+                const auto last = shownInStrip();
+                check (all.size() > first.size() && ! first.empty() && first.front().owner == busId && first.front().param == all.front().second
+                           && ! last.empty() && last.back().owner == 0 && last.back().param == "volume" && last.front().param != first.front().param,
+                       juce::String ((int) all.size()) + " lanes along the bottom, " + juce::String ((int) first.size())
+                         + " showing: the wheel goes through them to the master's");
+
+                playlist.revealLane (busId, all.front().second);
+                const auto revealed = shownInStrip();
+                check (! revealed.empty() && revealed.front().owner == busId && revealed.front().param == all.front().second,
+                       "a lane opened by Automate (or being recorded) is scrolled into view along the bottom");
+            }
+
+            // A bus strip's fader and pan bar: Automate (and MIDI learn) on the right-click
+            {
+                ChannelRack rack (song, audio);
+                ChannelStrip strip (song, audio, rack, ChannelStrip::Kind::bus);
+                strip.setTarget (busId);
+                strip.setSize (150, 700);
+                std::vector<std::pair<int, juce::String>> asked;
+                automation::showMenu = [&asked] (int owner, const juce::String& param, const juce::String&) { asked.emplace_back (owner, param); };
+                auto& fader = strip.getFader();
+                const auto mid = fader.getLocalBounds().getCentre().toFloat();
+                mouseOn (fader, mid, mid, juce::ModifierKeys::rightButtonModifier);
+                automation::showMenu = nullptr;
+                check (asked.size() == 1 && asked[0].first == busId && asked[0].second == "volume",
+                       "right-clicking a bus strip's fader offers to automate the bus's volume");
+            }
+
+            // A bus taken away: its lanes and links go, and a channel's lane for its send to it
+            const int delayBus = song.addBus ("Delay bus").id;
+            song.findChannel (guitar)->sends.push_back ({ delayBus, 0.78f, false });
+            song.laneFor (guitar, "send:" + juce::String (delayBus), "Send to Delay bus").points = { { 0, 0.5f } };
+            song.laneFor (delayBus, "pan", "Pan").points = { { 0, 0.0f } };
+            song.notify (Song::Change::channels);
+            audio.syncNow();
+            const bool sendLaneThere = audio.findAutomationParameter (guitar, "send:" + juce::String (delayBus)) != nullptr;
+            song.removeBus (delayBus);
+            song.removeBus (busId);
+            check (sendLaneThere && song.lanesOf (busId).empty() && song.lanesOf (delayBus).empty() && song.findLane (guitar, "send:" + juce::String (delayBus)) == nullptr
+                       && song.findControllerLink (busId, "volume") == nullptr && song.findControllerLink (busId, "pan") == nullptr,
+                   "taking a bus away takes its lanes and MIDI links, and the channel's lane for its send to it");
+
+            take.deleteFile();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--automationrecordtest"))
+        {
+            // Recording automation by moving controls while the song plays (Logic's touch, FL's automation recording),
+            // the song played block by block in real time: the switch, writing nothing while stopped; a fader grabbed,
+            // moved down in twenty steps along a straight line, held and let go: its lane written as it goes (on show
+            // at once), thinned to a few points, what the lane had between the grab and the letting go replaced, the
+            // rest kept (back to it over a sixteenth), one undo step, a render that follows it; a MIDI controller's
+            // knob (linked by MIDI learn) turned through its steps: one smooth line, let go once it's left alone; a
+            // knob on NightShift's filter, and a control moved in a plugin's own window (Tracktion's gestures); held
+            // round the loop: written to its end and again from its start; nothing in Pattern mode; the Inspector's
+            // fader following its lane while the song plays; the top bar's switch
+            Song song;
+            const auto take = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-record-tone.wav");
+            const int guitar = toneSong (song, take, 6.0);
+            const int beat = ticksPerBeat;          // half a second at 120
+            const int bar = song.ticksPerBar();
+            song.notify (Song::Change::everything);
+            AudioEngine audio (song, false);
+            audio.syncNow();
+
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            auto dbOf = [] (float level) { return juce::Decibels::gainToDecibels (level, -120.0f); };
+            auto levelFor = [] (float faderPosition) { return 0.78f * std::pow (10.0f, te::volumeFaderPositionToDB (faderPosition) / 40.0f); };
+
+            // Plays on for `seconds`, a block at a time as a device would, each block's time going by for real (so the
+            // recorder's clock and the song's agree)
+            juce::AudioBuffer<float> buffer (2, 512);
+            auto play = [&] (double seconds)
+            {
+                const int blocks = juce::jmax (1, juce::roundToInt (seconds * 48000.0 / 512.0));
+
+                for (int i = 0; i < blocks; ++i)
+                {
+                    const double due = juce::Time::getMillisecondCounterHiRes() + 512.0 / 48.0;
+                    buffer.clear();
+                    audio.processHostedBlock (buffer);
+
+                    do
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                    while (juce::Time::getMillisecondCounterHiRes() < due);
+                }
+            };
+
+            const float base = levelAt (renderSong (song, audio, "nightshift-recordtest"), 0, 0.5);
+
+            // The lane before: 0 dB at the start, -6 dB at 1 s, 0 dB from 3 s
+            const float zero = te::decibelsToVolumeFaderPosition (0.0f);
+            song.laneFor (guitar, "volume", "Volume").points = { { 0, zero }, { 2 * beat, te::decibelsToVolumeFaderPosition (-6.0f) },
+                                                                 { 6 * beat, zero }, { 7 * beat, zero } };
+            song.notify (Song::Change::automation);
+            audio.syncNow();
+            const auto before = song.findLane (guitar, "volume")->points;
+            const AutomationLane was { guitar, "volume", {}, before };
+
+            audio.setAutomationRecording (true);
+            check (audio.isAutomationRecording() && ! audio.isWritingAutomation(), "switched on, it writes nothing while the song is stopped");
+
+            audio.setPlayheadTicks (0.0);
+            audio.togglePlay();
+            play (0.5);
+            check (audio.isWritingAutomation(), "the song playing in Song mode, it writes");
+
+            // The guitar's fader grabbed at half a second (as the Mixer's is: an undo step, then the grab)
+            auto* channel = song.findChannel (guitar);
+            song.checkpoint();
+            const int grabbed = juce::roundToInt (audio.getHeardTicks());
+            audio.touchControl (guitar, "volume", true);
+            const float from = te::decibelsToVolumeFaderPosition (channelVolumeToDb (channel->volume));
+            const float to = te::decibelsToVolumeFaderPosition (-24.0f);
+            check (audio.isWritingLane (guitar, "volume") && std::abs (from - was.valueAt (grabbed)) < 0.02f,
+                   "grabbed at tick " + juce::String (grabbed) + ", the fader takes over where its lane had it (" + juce::String (from, 3) + ", the lane "
+                     + juce::String (was.valueAt (grabbed), 3) + ")");
+
+            // Down to -24 dB in twenty steps a twentieth of a second apart, along a straight line
+            bool showsMidway = false;
+
+            for (int i = 1; i <= 20; ++i)
+            {
+                channel->volume = levelFor (from + (to - from) * (float) i / 20.0f);
+                song.notify (Song::Change::mixer);
+                play (0.05);
+
+                if (i == 10)
+                    for (auto& p : song.findLane (guitar, "volume")->points)
+                        showsMidway = showsMidway || (p.tick > grabbed + beat / 2 && std::abs (p.value - (from + to) * 0.5f) < 0.04f);
+            }
+
+            check (showsMidway, "half way down, the lane already shows it (written as it goes)");
+
+            play (0.5);                             // held still
+            const int letGo = juce::roundToInt (audio.getHeardTicks());
+            audio.touchControl (guitar, "volume", false);
+            const bool stillWriting = audio.isWritingLane (guitar, "volume");
+            play (0.3);
+            audio.stop();
+
+            const auto after = song.findLane (guitar, "volume")->points;
+            const AutomationLane written { guitar, "volume", {}, after };
+            int recorded = 0;
+
+            for (auto& p : after)
+                recorded += p.tick >= grabbed - 12 && p.tick <= letGo + 12 ? 1 : 0;
+
+            juce::String pointList;
+
+            for (auto& p : after)
+                pointList << p.tick << ":" << juce::String (p.value, 3) << " ";
+
+            check (! stillWriting && recorded >= 2 && recorded <= 6,
+                   "let go, twenty steps along a line and a hold come out as " + juce::String (recorded) + " points (" + pointList.trim() + ")");
+            check (std::abs (written.valueAt (grabbed + beat) - (from + to) * 0.5f) < 0.03f && std::abs (written.valueAt (grabbed + 2 * beat + 24) - to) < 0.01f
+                       && std::abs (written.valueAt (letGo - 8) - to) < 0.01f,
+                   "the lane follows the hand: half way down at half a second in (" + juce::String (written.valueAt (grabbed + beat), 3)
+                     + "), at -24 dB from where it stopped to where it was let go (" + juce::String (written.valueAt (letGo - 8), 3) + ")");
+
+            {
+                auto has = [&after] (int tick, float value)
+                {
+                    return std::any_of (after.begin(), after.end(), [&] (auto& p) { return p.tick == tick && std::abs (p.value - value) < 1.0e-6f; });
+                };
+
+                const bool oldGone = ! has (2 * beat, te::decibelsToVolumeFaderPosition (-6.0f));
+                const bool restKept = has (0, zero) && has (6 * beat, zero) && has (7 * beat, zero);
+                const int landing = letGo + ticksPerStep;  // (a sixteenth on)
+                const bool back = std::any_of (after.begin(), after.end(), [&] (auto& p)
+                {
+                    return std::abs (p.tick - landing) <= 12 && std::abs (p.value - was.valueAt (p.tick)) < 1.0e-4f;
+                });
+
+                check (oldGone && restKept && back,
+                       "what the lane had between the grab and the letting go is gone (the point at 1 s), the rest is kept, and a sixteenth after "
+                       "letting go it's back on the old line");
+            }
+
+            song.undo();
+            const bool undone = song.findLane (guitar, "volume") != nullptr && song.findLane (guitar, "volume")->points == before;
+            song.redo();
+            check (undone && song.findLane (guitar, "volume")->points == after, "one undo takes the whole grab back (and redo puts it back)");
+
+            {
+                const auto heard = renderSong (song, audio, "nightshift-recordtest");
+                float worst = 0.0f;
+                juce::String said;
+
+                for (double at : { 0.25, 1.75, 3.25 })
+                {
+                    const float expected = te::volumeFaderPositionToDB (written.valueAt (song.tickAt (at + 0.05)));
+                    const float got = dbOf (levelAt (heard, 0, at)) - dbOf (base);
+                    worst = std::max (worst, std::abs (got - expected));
+                    said << juce::String (got, 1) << " dB at " << juce::String (at, 2) << " s (the lane: " << juce::String (expected, 1) << ")  ";
+                }
+
+                check (worst < 1.0f, "a render follows what was recorded: " + said.trim());
+            }
+
+            // A MIDI controller's knob linked to the guitar's pan, turned through its steps (two at a time) in two
+            // thirds of a second, then left alone
+            song.controllerLinks.push_back ({ "", 1, 21, guitar, "pan" });
+            audio.setPlayheadTicks (0.0);
+            audio.togglePlay();
+            play (0.3);
+            const int turnedFrom = juce::roundToInt (audio.getHeardTicks());
+
+            for (int v = 0; v <= 127; v += 2)
+            {
+                audio.handleMidiInput ("Test controller", juce::MidiMessage::controllerEvent (1, 21, v));
+                play (0.0107);
+            }
+
+            const int turnedTo = juce::roundToInt (audio.getHeardTicks());
+            const bool writingWhileTurned = audio.isWritingLane (guitar, "pan");
+            play (1.0);
+            const bool letGoByItself = ! audio.isWritingLane (guitar, "pan");
+            audio.stop();
+            {
+                const auto* pan = song.findLane (guitar, "pan");
+                const float middle = pan != nullptr ? pan->valueAt ((turnedFrom + turnedTo) / 2) : 99.0f;
+                const float end = pan != nullptr ? pan->valueAt (turnedTo + 20) : 99.0f;
+                juce::String panPoints;
+
+                if (pan != nullptr)
+                    for (auto& p : pan->points)
+                        panPoints << p.tick << ":" << juce::String (p.value, 3) << " ";
+
+                check (writingWhileTurned && letGoByItself && pan != nullptr && pan->points.size() <= 5 && std::abs (middle) < 0.08f
+                           && std::abs (end - (126.0f / 127.0f * 2.0f - 1.0f)) < 0.01f,
+                       "a MIDI knob linked to the pan, turned through 64 steps from tick " + juce::String (turnedFrom) + " to " + juce::String (turnedTo)
+                         + ", writes one smooth line (" + panPoints.trim() + "; centre half way: " + juce::String (middle, 3) + "), let go once it's left alone");
+            }
+
+            // A knob on NightShift's filter, grabbed and turned (as its window's knob does)
+            Effect filter;
+            filter.id = song.createId();
+            filter.pluginId = stockfx::descriptions()[5].createIdentifierString();
+            filter.name = "Nightshift Filter";
+            song.findChannel (guitar)->effects.push_back (filter);
+            song.notify (Song::Change::mixer);
+            audio.syncNow();
+            const auto cutoffKey = "fx:" + juce::String (filter.id) + ":cutoff";
+            juce::String otherKey;
+
+            for (auto& t : audio.automationTargets (guitar))
+                if (t.param.startsWith ("fx:" + juce::String (filter.id) + ":") && t.param != cutoffKey && otherKey.isEmpty())
+                    otherKey = t.param;
+
+            if (auto* cutoff = audio.findAutomationParameter (guitar, cutoffKey))
+            {
+                audio.setPlayheadTicks (0.0);
+                audio.togglePlay();
+                play (0.6);
+                const float startedAt = cutoff->getCurrentValue();
+                audio.touchParameter (*cutoff, true);
+
+                for (int i = 1; i <= 10; ++i)
+                {
+                    cutoff->setParameter (20000.0f - 1900.0f * (float) i, juce::sendNotification);
+                    play (0.05);
+                }
+
+                audio.touchParameter (*cutoff, false);
+                play (0.2);
+                audio.stop();
+                const auto* lane = song.findLane (guitar, cutoffKey);
+                juce::String cutoffPoints;
+
+                if (lane != nullptr)
+                    for (auto& p : lane->points)
+                        cutoffPoints << p.tick << ":" << juce::String (p.value, 0) << " ";
+
+                check (lane != nullptr && lane->points.size() >= 3 && std::abs (lane->points.back().value - 1000.0f) < 1.0f
+                           && std::abs (lane->points.front().value - startedAt) < 1.0f && lane->points[1].value > 15000.0f,
+                       "a knob on NightShift's filter, grabbed where it was (" + juce::String (startedAt, 0) + " Hz) and turned from 18 kHz down to 1 kHz, "
+                         "writes its lane (" + cutoffPoints.trim() + ")");
+            }
+            else
+            {
+                check (false, "the filter's cutoff is there to turn");
+            }
+
+            // A control moved in a plugin's own window: Tracktion's gestures, as a plugin's editor sends them
+            if (auto* other = otherKey.isNotEmpty() ? audio.findAutomationParameter (guitar, otherKey) : nullptr)
+            {
+                audio.setPlayheadTicks (0.0);
+                audio.togglePlay();
+                play (0.6);
+                other->parameterChangeGestureBegin();
+
+                for (int i = 1; i <= 10; ++i)
+                {
+                    other->setParameter (other->valueRange.convertFrom0to1 ((float) i / 10.0f), juce::sendNotification);
+                    play (0.05);
+                }
+
+                other->parameterChangeGestureEnd();
+                play (0.2);
+                audio.stop();
+                const auto* lane = song.findLane (guitar, otherKey);
+                check (lane != nullptr && lane->points.size() >= 2 && std::abs (lane->points.back().value - other->valueRange.end) < 1.0e-3f,
+                       "a control moved in a plugin's own window (\"" + audio.automationName (guitar, otherKey) + "\", by Tracktion's gestures) writes its lane");
+            }
+            else
+            {
+                check (false, "the filter has another control to move");
+            }
+
+            // Round the loop (the first bar): the master's volume held from 1.5 s, through the turn at 2 s, to 2.5 s
+            song.loopOn = true;
+            song.loopStart = 0;
+            song.loopEnd = bar;
+            song.notify (Song::Change::transport);
+            audio.togglePlay();
+            play (1.5);
+            song.checkpoint();
+            audio.touchControl (0, "volume", true);
+            song.masterVolume = 0.5f;
+            song.notify (Song::Change::mixer);
+            play (0.2);
+            song.masterVolume = 0.4f;
+            song.notify (Song::Change::mixer);
+            play (0.8);
+            audio.touchControl (0, "volume", false);
+            audio.stop();
+            song.loopOn = false;
+            song.notify (Song::Change::transport);
+            {
+                const auto* master = song.findLane (0, "volume");
+                const float late = master != nullptr ? master->valueAt (bar - 10) : 0.0f, early = master != nullptr ? master->valueAt (beat / 2) : 0.0f;
+                check (std::abs (late - 0.4f) < 0.01f && std::abs (early - 0.4f) < 0.01f,
+                       "held round the loop, the master's lane is written to the loop's end (" + juce::String (late, 2) + ") and again from its start ("
+                         + juce::String (early, 2) + ")");
+            }
+
+            // Pattern mode writes nothing
+            song.mode = PlayMode::pattern;
+            song.notify (Song::Change::transport);
+            audio.togglePlay();
+            play (0.3);
+            const auto untouched = song.findLane (guitar, "volume")->points;
+            audio.touchControl (guitar, "volume", true);
+            const bool writingInPatternMode = audio.isWritingAutomation();
+            channel->volume = 0.3f;
+            song.notify (Song::Change::mixer);
+            play (0.2);
+            audio.touchControl (guitar, "volume", false);
+            audio.stop();
+            check (! writingInPatternMode && song.findLane (guitar, "volume")->points == untouched, "in Pattern mode nothing is written");
+            song.mode = PlayMode::song;
+            song.notify (Song::Change::transport);
+
+            // The Inspector's fader follows the lane while the song plays: at 1.75 s, in the hold at -24 dB
+            {
+                ChannelRack rack (song, audio);
+                Inspector inspector (song, audio, rack);
+                inspector.setSize (Inspector::width, 760);
+                song.selectedChannelId = guitar;
+                song.notify (Song::Change::selection);
+                audio.setPlayheadTicks (0.0);
+                audio.togglePlay();
+                play (1.75);
+                inspector.refreshMeters();
+                const auto automated = audio.getAutomatedControl (guitar, "volume");
+                const double shown = inspector.getChannelStrip().getFader().getValue();
+                audio.stop();
+                play (0.05);
+                inspector.refreshMeters();
+                const double stopped = inspector.getChannelStrip().getFader().getValue();
+                check (automated.has_value() && std::abs (shown - *automated) < 1.0e-4 && std::abs (*automated - levelFor (to)) < 0.02f
+                           && std::abs (stopped - channel->volume) < 1.0e-4,
+                       "while the song plays the Inspector's fader shows where its lane has it (" + juce::String (shown, 3) + " for -24 dB), and the song's own "
+                         + juce::String (channel->volume, 3) + " once it stops");
+            }
+
+            // The top bar's switch
+            {
+                nightshift::Toolbar toolbar (song, audio);
+                toolbar.setSize (1600, nightshift::Toolbar::height);
+                juce::Button* button = nullptr;
+
+                for (auto* c : toolbar.getChildren())
+                    if (auto* b = dynamic_cast<juce::Button*> (c); b != nullptr && b->getName() == "Record automation")
+                        button = b;
+
+                toolbar.refresh();
+                const bool litWhenOn = button != nullptr && button->getToggleState();
+                audio.setAutomationRecording (false);
+                toolbar.refresh();
+                check (litWhenOn && button != nullptr && ! button->getToggleState(), "the top bar's record automation switch is lit while it's on, and not once it's off");
+            }
+
+            take.deleteFile();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--namtest"))
         {
             // The NAM Amp (Neural Amp Modeler), straight through applyToBuffer: NAM's own example models (a WaveNet,
             // an LSTM, a standard-size WaveNet) and ones made here whose sound is known exactly (Linear models: half
             // the level). What a model says about itself; its sound at the song's rate and at another (between NAM's
             // resamplers); input, output, the gate and evening out loudness; a cabinet; its state kept and opened
-            // again; a missing file and one that isn't a model; its panel; and what a standard WaveNet costs
+            // again; a missing file and one that isn't a model; input calibration (a model's input_level_dbu against
+            // the interface's level) measured; a slimmable model at each size (one made here, NAM's container, its
+            // slimmable WaveNet and its A2), what a size saves, and the size kept; its panel; and what a standard
+            // WaveNet costs
             Song song;
             song.loadEmpty();
             AudioEngine audio (song, false);
@@ -11312,6 +12668,180 @@ namespace
             const auto why = tried->loadModel (junk);
             check (why.contains ("isn't an amp model NightShift can open") && ! tried->hasModel(), "a file that isn't a model says so: " + why);
 
+            // Input calibration (NAM's input_level_dbu, as its plugin has it): a model that says how loud its amp was
+            // played is played as loud from the interface, whose level is every amp's. A Linear model made here, so
+            // the gain measured is exact: captured at 18 dBu, from an interface at 12 it's 6 dB softer
+            auto gainDb = [&rmsDb, &reference] (const juce::AudioBuffer<float>& b) { return rmsDb (b, 0, b.getNumSamples()) - rmsDb (reference, 0, reference.getNumSamples()); };
+            auto through = [&run, &reference] (NightAmp& a) { auto b = reference; run (a, b, 48000.0, 512); return b; };
+            const auto halfDb = juce::Decibels::gainToDecibels (0.5f);
+
+            NightAmp::setInterfaceLevel (12.0);
+            auto* calibrated = make (48000.0, 512);
+            calibrated->loadModel (linear ("captured at 18 dBu", 48000.0, ", \"metadata\": {\"input_level_dbu\": 18.0}"));
+            const auto at12 = through (*calibrated);
+            NightAmp::setInterfaceLevel (24.0);
+            const auto at24 = through (*calibrated);
+            set (*calibrated, "calibrate", 0.0f);
+            const auto unmatched = through (*calibrated);
+            set (*calibrated, "calibrate", 1.0f);
+            NightAmp::setInterfaceLevel (12.0);
+            const float db12 = gainDb (at12) - halfDb, db24 = gainDb (at24) - halfDb, dbOff = gainDb (unmatched) - halfDb;
+            check (calibrated->describeModel().hasInputLevel && calibrated->describeModel().inputLevelDbu == 18.0
+                       && worst (at12, reference, 0.5f * juce::Decibels::decibelsToGain (-6.0f)) < 1.0e-5f
+                       && worst (at24, reference, 0.5f * juce::Decibels::decibelsToGain (6.0f)) < 1.0e-5f && worst (unmatched, reference, 0.5f) < 1.0e-5f,
+                   "input calibration: a model captured at 18 dBu, from an interface at 12, goes in " + juce::String (db12, 2) + " dB; at 24, "
+                       + juce::String (db24, 2) + " dB; Match input level off, " + juce::String (dbOff, 2) + " dB (measured)");
+
+            auto* unknown = make (48000.0, 512);
+            unknown->loadModel (half);
+            const auto asItCame = through (*unknown);
+            check (! unknown->describeModel().hasInputLevel && unknown->calibrationDb() == 0.0f && worst (asItCame, reference, 0.5f) < 1.0e-5f,
+                   "a model that doesn't say its level goes in as it comes, Match input level on or not");
+
+            // NAM's own A2 (it says 14.76 dBu): matched from 12 is Input at -2.76 dB, to the sample
+            const auto a2 = examples.getChildFile ("A2.nam");
+            auto* matchedA2 = make (48000.0, 512);
+            auto* byHandA2 = make (48000.0, 512);
+            matchedA2->loadModel (a2);
+            byHandA2->loadModel (a2);
+            set (*byHandA2, "calibrate", 0.0f);
+            set (*byHandA2, "input", matchedA2->calibrationDb());
+            auto a2Matched = sine (220.0, 0.25f, 24000, 48000.0), a2ByHand = a2Matched;
+            run (*matchedA2, a2Matched, 48000.0, 512);
+            run (*byHandA2, a2ByHand, 48000.0, 512);
+            check (matchedA2->describeModel().hasInputLevel && std::abs (matchedA2->calibrationDb() + 2.76f) < 1.0e-4f && finite (a2Matched)
+                       && rmsDb (a2Matched, 12000, 24000) > -60.0f && worst (a2Matched, a2ByHand, 1.0f) < 1.0e-6f,
+                   "NAM's A2 says it was captured at 14.76 dBu: matched from an interface at 12 it plays as with Input at "
+                       + juce::String (matchedA2->calibrationDb(), 2) + " dB (the same to " + juce::String (worst (a2Matched, a2ByHand, 1.0f), 7) + ")");
+
+            // The studio's option sets every amp's interface level; an amp saved with a model before calibration came in
+            // keeps the sound it was saved with, and a new one starts matched
+            auto options = audio.getOptions();
+            options.interfaceInputDbu = 9.5;
+            audio.setOptions (options);
+            const double fromOptions = NightAmp::getInterfaceLevel();
+            options.interfaceInputDbu = NightAmp::defaultInterfaceLevel;
+            audio.setOptions (options);
+
+            auto before = calibrated->state.createCopy();
+            before.removeProperty ("calibrate", nullptr);
+            auto* older = reopen (before);
+            set (*calibrated, "calibrate", 0.0f);
+            auto* keptOff = reopen (calibrated->state.createCopy());
+            set (*calibrated, "calibrate", 1.0f);
+            auto* keptOn = reopen (calibrated->state.createCopy());
+            auto* added = make (48000.0, 512);
+            check (fromOptions == 9.5 && older != nullptr && older->hasModel() && older->calibrationDb() == 0.0f && keptOff != nullptr && keptOff->calibrationDb() == 0.0f
+                       && keptOn != nullptr && std::abs (keptOn->calibrationDb() + 6.0f) < 1.0e-4f && added->state.hasProperty ("calibrate")
+                       && added->findParam ("calibrate")->get() >= 0.5f,
+                   "the interface's level is the studio's option (9.5 dBu set there, " + juce::String (fromOptions, 1) + " heard); an amp saved before "
+                       "calibration keeps its sound (off), one saved since opens as it was, a new one starts matched");
+
+            // A slimmable model at each of its sizes. Made here, a container of three Linear models (a quarter, half and
+            // the whole level), so what's heard says which size played
+            auto sizes = folder.getChildFile ("three sizes.nam");
+            {
+                auto part = [] (double maxValue, double weight)
+                {
+                    return "{\"max_value\": " + juce::String (maxValue, 2) + ", \"model\": {\"version\": \"0.5.4\", \"architecture\": \"Linear\", "
+                           "\"config\": {\"receptive_field\": 1, \"bias\": false}, \"weights\": [" + juce::String (weight, 2) + "], \"sample_rate\": 48000}}";
+                };
+
+                sizes.replaceWithText ("{\"version\": \"0.7.0\", \"architecture\": \"SlimmableContainer\", \"config\": {\"submodels\": ["
+                                       + part (0.3, 0.25) + ", " + part (0.6, 0.5) + ", " + part (1.0, 1.0) + "]}, \"weights\": [], \"sample_rate\": 48000}");
+            }
+
+            auto* sized = make (48000.0, 512);
+            sized->loadModel (sizes);
+            juce::StringArray heard;
+            bool eachRight = sized->numSizes() == 3 && sized->getSize() == 2;
+
+            for (int size : { 0, 1, 2, 1, 0 })
+            {
+                sized->setSize (size);
+                const auto b = through (*sized);
+                const float wanted = size == 0 ? 0.25f : size == 1 ? 0.5f : 1.0f;
+                eachRight = eachRight && sized->getSize() == size && worst (b, reference, wanted) < 1.0e-5f;
+                heard.add (juce::String (gainDb (b), 1));
+            }
+
+            check (eachRight, "a slimmable model made here comes in 3 sizes, starts whole, and plays each size picked: "
+                              + heard.joinIntoString (", ") + " dB at sizes 1, 2, 3, 2, 1 (a quarter, half, the whole)");
+
+            // NAM's own: a container (an LSTM and two WaveNets) and a WaveNet that drops to 1 or 2 of its 3 channels,
+            // each size its own sound, the whole one as the model loads
+            for (auto name : { "slimmable_container.nam", "slimmable_wavenet.nam" })
+            {
+                auto* model = make (48000.0, 512);
+                auto* whole = make (48000.0, 512);
+                const auto loadedOk = model->loadModel (examples.getChildFile (name)).isEmpty() && whole->loadModel (examples.getChildFile (name)).isEmpty();
+                set (*model, "evenOut", 0.0f);
+                set (*whole, "evenOut", 0.0f);
+                std::vector<juce::AudioBuffer<float>> outs;
+                juce::StringArray levels;
+
+                for (int size = 0; loadedOk && size < model->numSizes(); ++size)
+                {
+                    model->setSize (size);
+                    auto b = sine (220.0, 0.25f, 12000, 48000.0);
+                    run (*model, b, 48000.0, 512);
+                    levels.add (juce::String (rmsDb (b, 6000, 12000), 1));
+                    outs.push_back (b);
+                }
+
+                auto asLoaded = sine (220.0, 0.25f, 12000, 48000.0);
+                run (*whole, asLoaded, 48000.0, 512);
+                bool distinct = outs.size() == 3, allFinite = true;
+
+                for (size_t i = 0; i < outs.size(); ++i)
+                {
+                    allFinite = allFinite && finite (outs[i]) && rmsDb (outs[i], 6000, 12000) > -80.0f;
+
+                    for (size_t j = i + 1; j < outs.size(); ++j)
+                        distinct = distinct && worst (outs[i], outs[j], 1.0f) > 1.0e-3f;
+                }
+
+                // (the whole size after the smaller ones is built afresh: it starts from silence, as the one loaded did)
+                const float sameAsLoaded = outs.empty() ? 1.0f : worst (outs.back(), asLoaded, 1.0f);
+                check (loadedOk && model->numSizes() == 3 && distinct && allFinite && sameAsLoaded < 1.0e-4f,
+                       juce::String ("NAM's ") + name + " in " + juce::String (model->numSizes()) + " sizes, each heard on its own: " + levels.joinIntoString (", ")
+                           + " dB out; the whole one as it loads (to " + juce::String (sameAsLoaded, 6) + ")");
+            }
+
+            // What a size saves: NAM's A2, a WaveNet of 3 channels and one of 8, ten seconds through each (best of three)
+            {
+                auto* timed = make (48000.0, 256);
+                timed->loadModel (a2);
+                double took[2] { 1.0e9, 1.0e9 };
+
+                for (int round = 0; round < 3; ++round)
+                    for (int size : { 0, 1 })
+                    {
+                        timed->setSize (size);
+                        auto b = sine (110.0, 0.3f, 480000, 48000.0);
+                        const double t0 = juce::Time::getMillisecondCounterHiRes();
+                        run (*timed, b, 48000.0, 256);
+                        took[size] = std::min (took[size], juce::Time::getMillisecondCounterHiRes() - t0);
+                    }
+
+                check (timed->numSizes() == 2 && took[0] < took[1],
+                       "NAM's A2 in its 2 sizes: the small one runs " + juce::String (10000.0 / took[0], 1) + " times faster than real time, the whole one "
+                           + juce::String (10000.0 / took[1], 1) + " times");
+            }
+
+            // Kept in the song: the size it was set to, and a new model starts whole
+            sized->setSize (0);
+            auto* reopenedSize = reopen (sized->state.createCopy());
+
+            if (reopenedSize != nullptr)
+                reopenedSize->initialise ({ te::TimePosition(), 48000.0, 512 });
+
+            const auto smallAgain = reopenedSize != nullptr ? through (*reopenedSize) : reference;
+            sized->loadModel (a2);
+            check (reopenedSize != nullptr && reopenedSize->getSize() == 0 && worst (smallAgain, reference, 0.25f) < 1.0e-5f
+                       && sized->getSize() == sized->numSizes() - 1 && ! sized->state.hasProperty ("size"),
+                   "kept in the song: opened again it plays at the size it was set to; another model loaded starts whole");
+
             // Its panel: which amp, and every word readable
             if (auto panel = createStockPanel (*amp, song, audio))
             {
@@ -11319,10 +12849,48 @@ namespace
                 const bool named = std::any_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.text == "Test Model"; });
                 const bool readable = std::all_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.fine(); });
                 check (named && readable, "its panel says which amp it is (Test Model), and every word on it is readable");
+
+                // NAM's example WaveNet comes in one size: no size control; it says it was captured at 18.3 dBu
+                const auto* sizeControl = panel->findChildWithID ("size");
+                const bool matchedLine = std::any_of (runs.begin(), runs.end(), [] (const textaudit::Run& r)
+                                                      { return r.text == "Input matched to the amp: -6.3 dB (it was captured at 18.3 dBu)"; });
+                check (sizeControl != nullptr && ! sizeControl->isVisible() && matchedLine && panel->findChildWithID ("calibrate") != nullptr
+                           && panel->findChildWithID ("interfaceLevel") != nullptr,
+                       "its panel has Match input level and your interface's level, says how much matching adds (-6.3 dB for the example WaveNet), "
+                       "and no size control for a model that comes in one size");
             }
             else
             {
                 check (false, "it has a panel");
+            }
+
+            // A slimmable model's panel: its size, clicked smaller and back
+            if (auto panel = createStockPanel (*sized, song, audio))
+            {
+                auto* sizeControl = panel->findChildWithID ("size");
+                bool clicked = false;
+
+                if (sizeControl != nullptr && sizeControl->isVisible())
+                {
+                    auto clickAt = [sizeControl] (float x)
+                    {
+                        const auto at = juce::Point<float> (x, sizeControl->getHeight() * 0.5f);
+                        const auto now = juce::Time::getCurrentTime();
+                        sizeControl->mouseDown (juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), at,
+                                                                  juce::ModifierKeys (juce::ModifierKeys::leftButtonModifier), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                                                  sizeControl, sizeControl, now, at, now, 1, false));
+                    };
+
+                    clickAt (50.0f);
+                    const bool smallest = sized->getSize() == 0;
+                    clickAt ((float) sizeControl->getWidth() - 104.0f);
+                    clicked = smallest && sized->getSize() == sized->numSizes() - 1;
+                }
+
+                const auto runs = textaudit::collect (*panel);
+                const bool readable = std::all_of (runs.begin(), runs.end(), [] (const textaudit::Run& r) { return r.fine(); });
+                check (clicked && readable, "a slimmable model's panel shows its size; clicked at the left it's the smallest, at the right the whole "
+                                            "model again, and every word is readable");
             }
 
             // What a standard-size WaveNet costs: ten seconds through it
@@ -11375,19 +12943,27 @@ namespace
                 { "Master: Loudness", "--masterpage 0" }, { "Master: Tone, punch & width", "--masterpage 1 --shapeexample" },
                 { "the start screen", "--startscreen --recent \"Demo song,Late night beat\"" },
                 { "the start screen after the first time", "--startscreen --asked --recent \"Demo song,Late night beat\"" }, { "Audio settings", "--settings" },
+                { "Audio settings with synths plugged in", "--settings --midiouts \"Synth module,Drum machine,USB MIDI Interface\"" },
                 { "the metronome", "--metronome" }, { "the EQ", "--effectpanel nightshiftEQ" },
                 { "the compressor", "--effectpanel nightshiftCompressor" }, { "the filter", "--effectpanel nightshiftFilter" },
                 { "the reverb", "--effectpanel nightshiftReverb" }, { "the delay", "--effectpanel nightshiftDelay" },
                 { "the chorus", "--effectpanel nightshiftChorus" }, { "the NAM amp, empty", "--effectpanel nightshiftAmp" },
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
-                { "Save changes?", "--closedialog" }, { "About", "--about 900" },
+                { "the NAM amp, a model in two sizes, the smaller", "--effectpanel nightshiftAmp --nammodel a2 --namsize 0" },
+                { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
-                { "automation lanes", "--automationdemo" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
+                { "automation lanes", "--automationdemo" }, { "a bus's automation lanes", "--buses --automationdemo --busautomation" },
+                { "recording automation", "--automationdemo --recordautomation" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
                 { "a plugin's Inspector", "--moretracks --select \"Surge XT\"" },
                 { "an instrument's Inspector", "--moretracks --select \"Violin Section\"" },
-                { "a sound search", "--search piano" }, { "no drum kits yet", "--nokits --raise drummer" },
+                { "a synth plugged in's Inspector", "--midiouts \"Synth module\" --midioutchannel --select \"Synth module\"" },
+                { "a sound search", "--search piano" },
+                { "Samples, folders open and a sample playing", "--sampledemo --opensounds \"Samples;Downloads;Drum Pack;Kicks;Kick 10\"" },
+                { "Samples, searched", "--sampledemo --search tone" },
+                { "a sample dragged over Arrange", "--sampledemo --dragover 900,330 --dragsound \"sample:Loop 120 bpm\"" },
+                { "no drum kits yet", "--nokits --raise drummer" },
                 { "a MIDI keyboard playing", "--midilight \"Keystation 49\"" }, { "the Lofi effects", "--lofi --select Kick" },
                 { "armed to record", "--moretracks --armrecord" }
             };
@@ -11915,6 +13491,22 @@ namespace
             for (auto& d : juce::MidiOutput::getAvailableDevices())
                 std::cout << "JUCE out: " << d.name << "  [" << d.identifier << "]" << std::endl;
 
+            // Synths plugged in: NightShift's own sender (as the studio's) opens each output and sends it
+            // "all notes off" on channel 16, which nothing hears. (Before the engine below opens Tracktion's.)
+            {
+                MidiOutHub hub (false);
+
+                for (auto& name : hub.getOutputNames())
+                {
+                    hub.sendNow (name, juce::MidiMessage::allNotesOff (16));
+
+                    for (int i = 0; i < 20; ++i)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+                    std::cout << "NightShift's MIDI out: " << name << (hub.isOpen (name) ? ": opened, sent" : ": couldn't open it") << std::endl;
+                }
+            }
+
             AudioEngine::headlessMidiDevices = true;
             Song song;
             song.loadBlank();
@@ -12366,6 +13958,907 @@ namespace
 
             out.reset();
             AudioEngine::headlessMidiDevices = false;
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--midiouttest"))
+        {
+            // Synths plugged in (MIDI out), with two made-up outputs whose messages are caught with
+            // their times: a channel's pattern out on its MIDI channel, each note heard where the song
+            // has it (the graph's latency after the block that plays it); timing earlier (looking
+            // ahead, round the loop) and later; the clock, start and stop; what a keyboard plays,
+            // straight out; a mute, a program, a stop letting go, an edit while playing, Song mode
+            // through a tempo change and from bar 2; saving; and nothing left held
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            const double sr = 48000.0;
+            const int block = 512;
+            MidiOutHub::testOutputs = { "Test synth", "Drum machine" };
+            AudioEngine::routeHostedMidi = true;
+
+            Song song;
+            song.loadBlank();
+            song.bpm = 120.0;
+            auto& keysChannel = song.addChannel ("Keys", InstrumentType::midiOut);
+            keysChannel.midiOutDevice = "Test synth";
+            keysChannel.midiOutChannel = 2;
+            const int keys = keysChannel.id;
+            const int lead = song.addChannel ("Lead", InstrumentType::synth).id;
+            song.selectedChannelId = keys;
+
+            // One bar: beat 1 for an eighth, beat 2 for a quarter, the and of 3 for a 16th; Lead plays too
+            auto& pattern = song.currentPattern();
+            pattern.notesFor (keys) = { { 0, 48, 60, 100 }, { 96, 96, 64, 90 }, { 240, 24, 67, 80 } };
+            pattern.notesFor (lead) = { { 0, 96, 48, 100 } };
+            song.mode = PlayMode::pattern;
+            song.notify (Song::Change::everything);
+            AudioEngine audio (song, false);
+            audio.syncNow();
+
+            auto o = audio.getOptions();
+            o.metronome = false;
+            o.countInBars = 0;
+            audio.setOptions (o);
+
+            juce::AudioBuffer<float> buffer (2, block);
+            auto run = [&] (double seconds, std::optional<juce::MidiMessage> first = std::nullopt)
+            {
+                for (int b = 0; b < (int) std::ceil (seconds * sr / block); ++b)
+                {
+                    juce::MidiBuffer midi;
+
+                    if (b == 0 && first.has_value())
+                        midi.addEvent (*first, 0);
+
+                    buffer.clear();
+                    audio.processHostedBlock (buffer, midi);
+
+                    if (b % 8 == 0)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                }
+            };
+
+            auto& hub = audio.getMidiOut();
+            using Sent = MidiOutHub::Sent;
+
+            auto take = [&]
+            {
+                hub.flush();
+                return hub.takeSent();
+            };
+
+            auto onlyFrom = [] (const std::vector<Sent>& all, const juce::String& output, std::function<bool (const juce::MidiMessage&)> wanted)
+            {
+                std::vector<Sent> list;
+
+                for (auto& s : all)
+                    if (s.output == output && wanted (s.message))
+                        list.push_back (s);
+
+                return list;
+            };
+
+            auto isOn = [] (const juce::MidiMessage& m) { return m.isNoteOn(); };
+            auto isNote = [] (const juce::MidiMessage& m) { return m.isNoteOnOrOff(); };
+
+            // For a failure: what went out, when it's heard (from the first), and when it was sent
+            auto listOf = [] (const std::vector<Sent>& list, size_t from = 0, size_t count = 12)
+            {
+                juce::StringArray lines;
+                const double origin = list.empty() ? 0.0 : list.front().heardMs;
+
+                for (size_t i = from; i < std::min (list.size(), from + count); ++i)
+                    lines.add (juce::String (list[i].heardMs - origin, 3) + "/" + juce::String (list[i].sentMs - origin, 3) + " "
+                               + list[i].message.getDescription());
+
+                return " [" + lines.joinIntoString ("; ") + "]";
+            };
+
+            // Every note let go by the end: as many offs as ons, key by key
+            auto balanced = [] (const std::vector<Sent>& all)
+            {
+                std::map<juce::String, int> count;
+
+                for (auto& s : all)
+                    if (s.message.isNoteOnOrOff())
+                        count[s.output + ":" + juce::String (s.message.getChannel()) + ":" + juce::String (s.message.getNoteNumber())]
+                            += s.message.isNoteOn() ? 1 : -1;
+
+                return std::all_of (count.begin(), count.end(), [] (auto& c) { return c.second == 0; });
+            };
+
+            const auto names = audio.getMidiOutputNames();
+            check (names == juce::StringArray { "Test synth", "Drum machine" }, "the outputs there are: " + names.joinIntoString (", "));
+
+            // Pattern mode, round and round (a bar at 120 is 2 s)
+            run (0.2);
+            take();
+            audio.togglePlay();
+            run (4.6);
+            audio.stop();
+            run (0.2);
+            auto sent = take();
+            auto notes = onlyFrom (sent, "Test synth", isNote);
+            auto ons = onlyFrom (sent, "Test synth", isOn);
+            const double latency = hub.getLatencyMs();
+
+            {
+                bool channel2 = ! notes.empty();
+
+                for (auto& n : notes)
+                    channel2 = channel2 && n.message.getChannel() == 2;
+
+                check (ons.size() >= 6 && channel2, "Keys' notes go out of Test synth on MIDI channel 2 (" + juce::String ((int) ons.size()) + " notes in 2.3 passes)");
+            }
+
+            if (ons.size() >= 6)
+            {
+                const double t0 = ons[0].heardMs;
+                const bool keysRight = ons[0].message.getNoteNumber() == 60 && ons[1].message.getNoteNumber() == 64 && ons[2].message.getNoteNumber() == 67
+                                    && ons[0].message.getVelocity() == 100 && ons[1].message.getVelocity() == 90 && ons[2].message.getVelocity() == 80;
+                check (keysRight, "C, E and G at velocities 100, 90 and 80");
+                check (std::abs (ons[1].heardMs - t0 - 500.0) < 0.05 && std::abs (ons[2].heardMs - t0 - 1250.0) < 0.05
+                           && std::abs (ons[3].heardMs - t0 - 2000.0) < 0.05 && std::abs (ons[5].heardMs - t0 - 3250.0) < 0.05,
+                       "each heard where the song has it: beat 2 at +500 ms, the and of 3 at +1250, round the loop at +2000 and +3250 ("
+                           + juce::String (ons[1].heardMs - t0, 3) + ", " + juce::String (ons[2].heardMs - t0, 3) + ", "
+                           + juce::String (ons[3].heardMs - t0, 3) + ", " + juce::String (ons[5].heardMs - t0, 3) + ")");
+
+                // The first note's end, an eighth (250 ms) later
+                const auto offs = onlyFrom (sent, "Test synth", [] (const juce::MidiMessage& m) { return m.isNoteOff() && m.getNoteNumber() == 60; });
+                check (! offs.empty() && std::abs (offs[0].heardMs - t0 - 250.0) < 0.05, "and let go an eighth later (+"
+                           + (offs.empty() ? juce::String ("never") : juce::String (offs[0].heardMs - t0, 3)) + " ms)");
+
+                // Sent as it's heard: the block that plays it, plus what the graph holds it back
+                const bool onTime = std::all_of (ons.begin(), ons.end(), [] (const Sent& s) { return std::abs (s.sentMs - s.heardMs) < 0.001; });
+                check (onTime && latency > 0.0, "timing 0: each sent the moment it's heard, the graph's " + juce::String (latency, 2) + " ms after its block");
+            }
+
+            check (balanced (sent), "every note let go by the time it's stopped");
+            check (onlyFrom (sent, "Drum machine", [] (const juce::MidiMessage&) { return true; }).empty(), "nothing to the drum machine, which nothing plays");
+
+            // Lead, a built-in synth, never goes out
+            check (std::none_of (sent.begin(), sent.end(), [] (const Sent& s) { return s.message.isNoteOn() && s.message.getNoteNumber() == 48; }),
+                   "Lead's note (its own synth) goes to no output");
+
+            // Earlier for a slow synth: 30 ms ahead, looking past the loop's end for the next bar's first note
+            audio.setMidiOutSettings ("Test synth", { -30, false });
+            audio.syncNow();
+            audio.setPlayheadTicks (0);
+            take();
+            audio.togglePlay();
+            run (4.6);
+            audio.stop();
+            run (0.2);
+            sent = take();
+            ons = onlyFrom (sent, "Test synth", isOn);
+
+            if (ons.size() >= 6)
+            {
+                bool early = true;
+
+                for (size_t i = 1; i < ons.size(); ++i)
+                    early = early && std::abs (ons[i].sentMs - (ons[i].heardMs - 30.0)) < 0.001;
+
+                // The second bar's downbeat goes out 30 ms before the bar starts, while the first is still playing
+                check (early && ons[3].sentMs < ons[3].heardMs - 29.99,
+                       "30 ms earlier: each note sent 30 ms before it's heard, the next pass's first note before the loop comes round ("
+                           + juce::String (ons[3].heardMs - ons[3].sentMs, 3) + " ms ahead)");
+                check (ons[0].sentMs <= ons[0].heardMs - std::min (30.0, latency) + 0.001,
+                       "the very first, as early as it can go after Play (" + juce::String (ons[0].heardMs - ons[0].sentMs, 2) + " ms ahead)");
+            }
+            else
+            {
+                check (false, "30 ms earlier: only " + juce::String ((int) ons.size()) + " notes sent");
+            }
+
+            check (balanced (sent), "every note let go, sent early too");
+
+            // Later
+            audio.setMidiOutSettings ("Test synth", { 20, false });
+            audio.syncNow();
+            audio.setPlayheadTicks (0);
+            take();
+            audio.togglePlay();
+            run (2.2);
+            audio.stop();
+            run (0.2);
+            ons = onlyFrom (take(), "Test synth", isOn);
+            check (! ons.empty() && std::all_of (ons.begin(), ons.end(), [] (const Sent& s) { return std::abs (s.sentMs - s.heardMs - 20.0) < 0.001; }),
+                   "20 ms later: each sent 20 ms after it's heard");
+            audio.setMidiOutSettings ("Test synth", {});
+            check (audio.getOptions().midiOuts.empty(), "back on time, nothing kept for it");
+
+            // The clock on the drum machine: a song position and start on the downbeat, 24 to the beat,
+            // a start again as the pattern comes round, stop with Stop
+            audio.setMidiOutSettings ("Drum machine", { 0, true });
+            audio.syncNow();
+            audio.setPlayheadTicks (0);
+            take();
+            audio.togglePlay();
+            run (2.6);
+            audio.stop();
+            run (0.2);
+            sent = take();
+            auto clock = onlyFrom (sent, "Drum machine", [] (const juce::MidiMessage&) { return true; });
+
+            {
+                std::vector<double> ticks, starts;
+                bool stopLast = ! clock.empty() && clock.back().message.getRawData()[0] == 0xfc;
+                bool positionFirst = clock.size() > 2 && clock[0].message.isSongPositionPointer()
+                                  && clock[0].message.getSongPositionPointerMidiBeat() == 0 && clock[1].message.isMidiStart();
+
+                for (auto& c : clock)
+                {
+                    if (c.message.isMidiClock())
+                        ticks.push_back (c.heardMs);
+
+                    if (c.message.isMidiStart())
+                        starts.push_back (c.heardMs);
+                }
+
+                bool steady = ticks.size() > 50;
+                size_t odd = 0;
+
+                for (size_t i = 1; i < ticks.size(); ++i)
+                    if (std::abs (ticks[i] - ticks[i - 1] - 500.0 / 24.0) >= 0.01 && odd == 0)
+                        odd = i;
+
+                steady = steady && odd == 0;
+
+                // Where it went wrong, if it did: the messages round the first odd gap
+                size_t at = 0;
+
+                for (size_t i = 0, k = 0; i < clock.size(); ++i)
+                    if (clock[i].message.isMidiClock() && k++ == odd)
+                        at = i;
+
+                check (positionFirst, "the drum machine gets a song position of 0 and start first");
+                check (steady, "then a clock every 20.833 ms, 24 to the beat at 120 (" + juce::String ((int) ticks.size()) + " in 2.6 s)"
+                           + (steady ? juce::String() : listOf (clock, at >= 4 ? at - 4 : 0, 10)));
+                check (starts.size() == 2 && ! ticks.empty() && std::abs (starts[1] - starts[0] - 2000.0) < 0.05 && std::abs (starts[0] - ticks[0]) < 0.001,
+                       "start again as the bar comes round, 2 s on, the first clock with the first start (" + juce::String ((int) starts.size()) + " starts)"
+                           + (starts.size() == 2 ? juce::String() : listOf (clock, 0, 6)));
+                check (stopLast, "and stop when the song stops");
+            }
+
+            // Its notes out with the clock's: the song position before the downbeat's note at the same moment
+            {
+                const auto first = onlyFrom (sent, "Test synth", isOn);
+                check (! first.empty() && ! clock.empty() && std::abs (first[0].heardMs - clock[1].heardMs) < 0.001,
+                       "Keys' first note and the drum machine's start land together");
+            }
+
+            audio.setMidiOutSettings ("Drum machine", {});
+
+            // What a keyboard plays on Keys goes out at once, on Keys' MIDI channel: one plugged in
+            // (the engine's input, routed as a keyboard's) and the computer's
+            {
+                auto hasInput = [&audio]
+                {
+                    for (auto& d : audio.getEdit().engine.getDeviceManager().getMidiInDevices())
+                        if (tracktion::HostedAudioDeviceInterface::isHostedMidiInputDevice (*d))
+                            return true;
+
+                    return false;
+                };
+
+                for (int i = 0; i < 100 && ! hasInput(); ++i)
+                    settleMessages (20);
+
+                settleMessages (50);
+                audio.syncNow();
+                run (0.1);
+                take();
+                const double before = hub.nowMs();
+                run (0.05, juce::MidiMessage::noteOn (1, 72, (juce::uint8) 99));
+                run (0.05, juce::MidiMessage::noteOff (1, 72));
+                auto live = onlyFrom (take(), "Test synth", isNote);
+                check (live.size() == 2 && live[0].live && live[0].message.getChannel() == 2 && live[0].message.getNoteNumber() == 72
+                           && live[0].message.getVelocity() == 99 && live[0].sentMs - before < 12.0 && live[1].message.isNoteOff(),
+                       "a key on a keyboard plugged in goes straight out on channel 2, within a block ("
+                           + (live.empty() ? juce::String ("nothing") : juce::String (live[0].sentMs - before, 1) + " ms") + "), and its release");
+
+                audio.liveNoteOn (keys, 74, 70);
+                run (0.05);
+                audio.liveNoteOff (keys, 74);
+                run (0.05);
+                live = onlyFrom (take(), "Test synth", isNote);
+                check (live.size() == 2 && live[0].message.getNoteNumber() == 74 && live[0].message.getChannel() == 2 && live[1].message.isNoteOff(),
+                       "the computer keyboard's too");
+
+                audio.sendTestNote (keys);
+                run (0.05);
+                settleMessages (450);
+                run (0.05);
+                live = onlyFrom (take(), "Test synth", isNote);
+                check (live.size() == 2 && live[0].message.getNoteNumber() == 60 && live[1].message.isNoteOff(), "a test note: middle C on and off");
+            }
+
+            // A program asked for goes first as playing starts; muted, it plays nothing
+            {
+                auto* c = song.findChannel (keys);
+                c->midiProgram = 5;
+                song.notify (Song::Change::channels);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.6);
+                audio.stop();
+                run (0.1);
+                sent = onlyFrom (take(), "Test synth", [] (const juce::MidiMessage&) { return true; });
+                check (! sent.empty() && sent[0].message.isProgramChange() && sent[0].message.getProgramChangeNumber() == 5
+                           && sent[0].message.getChannel() == 2 && sent.size() > 1 && sent[1].message.isNoteOn(),
+                       "program 5 on channel 2 goes out first, then the notes");
+
+                c->muted = true;
+                song.notify (Song::Change::mixer);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (1.0);
+                audio.liveNoteOn (keys, 76, 70);
+                run (0.05);
+                audio.liveNoteOff (keys, 76);
+                audio.stop();
+                run (0.1);
+                ons = onlyFrom (take(), "Test synth", isOn);
+                check (ons.empty(), "muted, Keys plays nothing, its pattern or a key");
+                c->muted = false;
+                c->midiProgram = -1;
+                song.notify (Song::Change::mixer);
+                audio.syncNow();
+            }
+
+            // Stopping mid-note lets go of it; editing while playing leaves nothing held
+            {
+                pattern.notesFor (keys) = { { 0, 384, 62, 100 } };
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.5);
+                pattern.notesFor (keys) = { { 96, 48, 65, 100 } };
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                run (2.5);
+                audio.stop();
+                run (0.1);
+                sent = take();
+                ons = onlyFrom (sent, "Test synth", isOn);
+                const bool letGo = ons.size() >= 2 && ons[0].message.getNoteNumber() == 62 && ons[1].message.getNoteNumber() == 65 && balanced (sent);
+                check (letGo, "a held note let go when its pattern changes under it, the new one played, nothing left held"
+                                  + (letGo ? juce::String() : listOf (onlyFrom (sent, "Test synth", isNote))));
+
+                pattern.notesFor (keys) = { { 0, 384, 62, 100 } };
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.5);
+                audio.stop();
+                run (0.1);
+                sent = take();
+                const auto offs = onlyFrom (sent, "Test synth", [] (const juce::MidiMessage& m) { return m.isNoteOff(); });
+                check (offs.size() == 1 && balanced (sent), "stopped in the middle of a bar-long note, it's let go");
+            }
+
+            // Song mode: a clip at bar 1 and bar 3, the tempo halving at bar 3; played from bar 2
+            {
+                pattern.notesFor (keys) = { { 0, 48, 60, 100 } };
+                song.mode = PlayMode::song;
+                const int row = song.trackForChannel (keys, 0, 384);
+                song.playlist = { { pattern.id, row, 0 }, { pattern.id, row, 2 * 384 } };
+                song.setTempoAt (2 * 384, 60.0);
+                song.notify (Song::Change::everything);
+                audio.setMidiOutSettings ("Test synth", { 0, true });
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (5.0);
+                audio.stop();
+                run (0.1);
+                sent = onlyFrom (take(), "Test synth", [] (const juce::MidiMessage&) { return true; });
+                ons = onlyFrom (sent, "Test synth", isOn);
+                std::vector<double> ticks;
+
+                for (auto& s : sent)
+                    if (s.message.isMidiClock())
+                        ticks.push_back (s.heardMs);
+
+                check (ons.size() == 2 && std::abs (ons[1].heardMs - ons[0].heardMs - 4000.0) < 0.05,
+                       "Song mode: bar 3's note 4 s after bar 1's (two bars at 120)");
+
+                // The clock's beat is twice as long once the tempo halves
+                bool halved = ticks.size() > 120;
+
+                if (halved)
+                {
+                    const double changeAt = ons[0].heardMs + 4000.0;
+                    double before = 0.0, after = 0.0;
+
+                    for (size_t i = 1; i < ticks.size(); ++i)
+                    {
+                        if (ticks[i] < changeAt - 1.0)
+                            before = ticks[i] - ticks[i - 1];
+                        else if (ticks[i - 1] > changeAt + 1.0)
+                            after = ticks[i] - ticks[i - 1];
+                    }
+
+                    halved = std::abs (before - 500.0 / 24.0) < 0.01 && std::abs (after - 1000.0 / 24.0) < 0.01;
+                    check (halved, "the clock follows the tempo: every " + juce::String (before, 3) + " ms at 120, every " + juce::String (after, 3) + " ms at 60"
+                               + (halved ? juce::String() : listOf (sent, 0, 14)));
+                }
+                else
+                {
+                    check (false, "the clock follows the tempo (only " + juce::String ((int) ticks.size()) + " clocks)");
+                }
+
+                // From bar 2: a song position of 16 sixteenths and continue
+                audio.setPlayheadTicks (384);
+                take();
+                audio.togglePlay();
+                run (0.5);
+                audio.stop();
+                run (0.1);
+                sent = onlyFrom (take(), "Test synth", [] (const juce::MidiMessage&) { return true; });
+                check (sent.size() > 2 && sent[0].message.isSongPositionPointer() && sent[0].message.getSongPositionPointerMidiBeat() == 16
+                           && sent[1].message.isMidiContinue(),
+                       "played from bar 2: song position 16 (16ths) and continue");
+                audio.setMidiOutSettings ("Test synth", {});
+            }
+
+            // Saved with the song; switched to a built-in sound, it goes out no more
+            {
+                Song saved;
+                saved.fromVar (song.toVar());
+                auto* c = saved.findChannel (keys);
+                check (c != nullptr && c->type == InstrumentType::midiOut && c->midiOutDevice == "Test synth" && c->midiOutChannel == 2,
+                       "a synth plugged in is saved with the song: its output and MIDI channel");
+
+                auto* k = song.findChannel (keys);
+                k->type = InstrumentType::synth;
+                k->synthPreset = "Velvet Keys";
+                song.notify (Song::Change::channels);
+                audio.syncNow();
+                audio.setPlayheadTicks (0);
+                take();
+                audio.togglePlay();
+                run (0.6);
+                audio.stop();
+                run (0.1);
+                check (onlyFrom (take(), "Test synth", isOn).empty() && audio.getTrack (keys) != nullptr && ! audio.getTrack (keys)->getClips().isEmpty(),
+                       "made a NightShift synth again, Keys plays its clips itself and nothing goes out");
+            }
+
+            // In the studio: Add channel's Synth plugged in, each new one on a MIDI channel of its own
+            // there; a drum kit switched over to one goes on 10
+            {
+                Song studio;
+                studio.loadBlank();
+                AudioEngine studioAudio (studio, false);
+                MainComponent main (studio, studioAudio);
+                auto& rack = main.getRack();
+                const int first = rack.addMidiOutChannel ("Test synth");
+                const int second = rack.addMidiOutChannel ("Test synth");
+                const auto* a = studio.findChannel (first);
+                const auto* b = studio.findChannel (second);
+                check (a != nullptr && b != nullptr && a->type == InstrumentType::midiOut && a->name == "Test synth" && a->midiOutChannel == 1
+                           && b->midiOutChannel == 2 && studio.selectedChannelId == second,
+                       "Add channel > Synth plugged in: Test synth on MIDI channel 1, another on 2, selected");
+
+                auto& padChannel = studio.addChannel ("Night Pad", InstrumentType::synth);
+                padChannel.synthPreset = "Night Pad";
+                const int pad = padChannel.id;
+                studio.notify (Song::Change::channels);
+                rack.playOnMidiOut (pad, "Test synth");
+                const auto* p = studio.findChannel (pad);
+                check (p != nullptr && p->type == InstrumentType::midiOut && p->midiOutChannel == 3 && p->name == "Test synth",
+                       "a NightShift synth's channel played on Test synth instead: on channel 3, the next free there, named after it");
+
+                const int kit = studio.addChannel ("Drums", InstrumentType::kit).id;
+                studio.notify (Song::Change::channels);
+                rack.playOnMidiOut (kit, "Drum machine");
+                const auto* d = studio.findChannel (kit);
+                check (d != nullptr && d->type == InstrumentType::midiOut && d->midiOutDevice == "Drum machine" && d->midiOutChannel == 10
+                           && d->name == "Drum machine",
+                       "a drum kit played on the drum machine instead: on channel 10, named after it");
+                check (studio.undo() && studio.findChannel (kit)->type == InstrumentType::kit, "undone, a kit again");
+            }
+
+            // The AI drummer on a synth plugged in writes General MIDI's drums
+            {
+                Channel drums;
+                drums.type = InstrumentType::midiOut;
+                drums.midiOutChannel = 10;
+                const auto map = drummer::keyMapFor (drums);
+                check (map ("kick") == 36 && map ("snare") == 38 && map ("hat_closed") == 42, "the AI drummer plays a drum machine plugged in on General MIDI's keys");
+            }
+
+            AudioEngine::routeHostedMidi = false;
+            MidiOutHub::testOutputs.clear();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--midifiletest"))
+        {
+            // MIDI files: a song written out and read back note for note (tempo jumps and a glide,
+            // a 7/8 stretch, a split clip, a synth plugged in on its own channel, programs and
+            // names), brought back in as channels; one pattern's; a file of another program's
+            // (480 to the beat, every channel in one track, 3/8, a drum part, a note never let go);
+            // and something that isn't one
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            drumkits::machines::ensure();
+            const auto folder = juce::File::createTempFile ("midifiles");
+            folder.createDirectory();
+
+            Song song;
+            song.loadBlank();
+            song.bpm = 100.0;
+            const int bar = song.ticksPerBar();
+
+            auto& leadChannel = song.addChannel ("Lead", InstrumentType::synth);
+            leadChannel.synthPreset = "Supersaw Lead";
+            leadChannel.midiProgram = 81;
+            const int lead = leadChannel.id;
+            const int bass = song.addChannel ("Bass", InstrumentType::synth).id;
+            auto& outChannel = song.addChannel ("Synth out", InstrumentType::midiOut);
+            outChannel.midiOutDevice = "Test synth";
+            outChannel.midiOutChannel = 3;
+            outChannel.midiProgram = 5;
+            const int out = outChannel.id;
+
+            auto& riff = song.addPattern ("Riff");
+            riff.notesFor (lead) = { { 0, 48, 72, 100 }, { 48, 24, 74, 64 }, { 96, 200, 76, 127 }, { 300, 84, 79, 1 } };
+            riff.notesFor (bass) = { { 0, 96, 36, 110 }, { 192, 96, 43, 90 } };
+            const int riffId = riff.id;
+            auto& verse = song.addPattern ("Verse");
+            verse.notesFor (out) = { { 0, 384, 60, 80 }, { 0, 384, 64, 80 }, { 384, 192, 67, 70 }, { 576, 1, 69, 70 } };
+            const int verseId = verse.id;
+
+            // Bar 1 and (split: its second half only) bar 3; the verse from bar 5, into the 7/8
+            const int row = song.trackForChannel (lead, 0, bar);
+            song.playlist = { { riffId, row, 0 }, { riffId, row, 2 * bar + 144, 144, 240 }, { verseId, song.trackForChannel (out, 4 * bar, 6 * bar), 4 * bar } };
+            song.setTempoAt (2 * bar, 132.0);
+            song.setTempoAt (6 * bar, 90.0, true);
+            song.setMeterAt (4 * bar, 7, 8);
+            song.setMeterAt (song.barStart (8), 4, 4);
+            song.mode = PlayMode::song;
+
+            const auto played = midifile::notesAsPlayed (song, 0, true);
+            const auto file = folder.getChildFile ("song.mid");
+            const bool saved = midifile::save (song, file);
+            check (saved && file.getSize() > 100, "the song saves as a MIDI file (" + juce::String (file.getSize()) + " bytes)");
+
+            juce::String error;
+            const auto read = midifile::read (file, error);
+            check (read.has_value(), "and reads back" + (error.isNotEmpty() ? " (" + error + ")" : juce::String()));
+
+            if (read.has_value())
+            {
+                const auto& parts = read->parts;
+                check (parts.size() == 3 && parts[0].name == "Lead" && parts[1].name == "Bass" && parts[2].name == "Synth out",
+                       "a part for each channel with notes, named after it (" + juce::String ((int) parts.size()) + ")");
+
+                if (parts.size() == 3)
+                {
+                    check (parts[2].midiChannel == 3 && parts[0].midiChannel != 10 && parts[1].midiChannel != 10 && parts[0].midiChannel != parts[1].midiChannel
+                               && parts[0].midiChannel != 3 && parts[1].midiChannel != 3,
+                           "the synth plugged in on its own channel 3, the others each on one of their own (" + juce::String (parts[0].midiChannel)
+                               + ", " + juce::String (parts[1].midiChannel) + ")");
+                    check (parts[0].program == 81 && parts[1].program == -1 && parts[2].program == 5, "Lead's program 81 and the synth's 5 come back; Bass has none");
+
+                    // Note for note: each channel's notes as the song plays them
+                    bool same = true;
+                    int count = 0;
+                    const int ids[] = { lead, bass, out };
+
+                    for (int p = 0; p < 3; ++p)
+                    {
+                        std::vector<Note> expected;
+
+                        for (auto& n : played)
+                            if (n.channelId == ids[p])
+                                expected.push_back ({ (int) n.start, (int) (n.end - n.start), n.key, n.velocity });
+
+                        same = same && expected == parts[(size_t) p].notes;
+                        count += (int) expected.size();
+                    }
+
+                    check (same && count == 12, "every note back where it was, as long, on its key and as hard (" + juce::String (count)
+                               + " notes, the split clip's second half only, cut at its end)");
+                }
+
+                check (std::abs (read->bpm - 100.0) < 1.0e-6 && read->meterBeats == 4 && read->meterUnit == 4, "100 to the minute in 4/4 at the start");
+
+                const bool meters = read->meterChanges.size() == 2 && read->meterChanges[0] == MeterChange { 4 * bar, 7, 8 }
+                                 && read->meterChanges[1] == MeterChange { song.barStart (8), 4, 4 };
+                check (meters, "7/8 from bar 5 and 4/4 again from bar 9, where they were");
+
+                // The tempo: the jump exact, the glide a 16th at a time, in time with it all the way
+                Song back;
+                back.loadBlank();
+                back.bpm = read->bpm;
+                back.meterBeats = read->meterBeats;
+                back.meterUnit = read->meterUnit;
+                back.tempoChanges = read->tempoChanges;
+                back.meterChanges = read->meterChanges;
+                back.tidyTimeline();
+                double worst = 0.0;
+
+                for (int t = 0; t <= 10 * bar; t += ticksPerStep)
+                    worst = std::max (worst, std::abs (back.secondsAt (t) - song.secondsAt (t)));
+
+                const bool jump = std::any_of (read->tempoChanges.begin(), read->tempoChanges.end(),
+                                               [bar] (const TempoChange& t) { return t.tick == 2 * bar && std::abs (t.bpm - 132.0) < 1.0e-6; });
+                check (jump && worst < 0.0005, "the tempo jump to 132 at bar 3 exact, the glide to 90 kept in time (worst "
+                           + juce::String (worst * 1000.0, 3) + " ms over ten bars)");
+                check (read->warnings.isEmpty(), "nothing it had to change" + (read->warnings.isEmpty() ? juce::String() : ": " + read->warnings.joinIntoString ("; ")));
+
+                // Brought in as channels: the same notes play, the same tempo and time signatures
+                Song in;
+                in.loadBlank();
+                const auto added = midifile::addToSong (in, *read, true);
+                const auto again = midifile::notesAsPlayed (in, 0, true);
+                bool same = added.size() == 3 && again.size() == played.size();
+
+                for (size_t i = 0; same && i < again.size(); ++i)
+                {
+                    const auto& a = again[i];
+                    const auto& b = played[i];
+                    const int index = (int) (std::find (added.begin(), added.end(), a.channelId) - added.begin());
+                    const int originalId = index == 0 ? lead : index == 1 ? bass : out;
+                    same = a.start == b.start && a.end == b.end && a.key == b.key && a.velocity == b.velocity && b.channelId == originalId;
+                }
+
+                check (same, "brought in, its three channels play the same " + juce::String ((int) again.size()) + " notes");
+                check (in.bpm == 100.0 && in.tempoChanges == back.tempoChanges && in.meterChanges == back.meterChanges && in.mode == PlayMode::song,
+                       "with the file's tempo and time signatures, in Song mode");
+
+                auto* c = added.size() == 3 ? in.findChannel (added[0]) : nullptr;
+                check (c != nullptr && c->name == "Lead" && c->midiProgram == 81 && c->type == InstrumentType::synth && c->synthPreset == "Supersaw Lead",
+                       "Lead comes in on Supersaw Lead (General MIDI's 82, a saw lead), its program kept");
+
+                // Each channel's clips on a track of its own, from the bar its part starts
+                std::set<int> rows;
+
+                for (auto& clip : in.playlist)
+                    rows.insert (clip.track);
+
+                const auto* outPart = added.size() == 3 ? in.findChannel (added[2]) : nullptr;
+                const auto clipFor = [&in] (int channelId) -> const PlaylistClip*
+                {
+                    for (auto& clip : in.playlist)
+                        if (auto p = in.findPattern (clip.patternId); p != nullptr && p->findNotes (channelId) != nullptr)
+                            return &clip;
+
+                    return nullptr;
+                };
+
+                check (rows.size() == 3 && in.playlist.size() == 3 && outPart != nullptr && clipFor (outPart->id) != nullptr
+                           && clipFor (outPart->id)->start == 4 * bar,
+                       "a clip each on a track of its own, Synth out's from bar 5, where its notes start");
+            }
+
+            // One pattern's notes, at the start's tempo in its own time signature
+            {
+                const auto patternFile = folder.getChildFile ("riff.mid");
+                midifile::save (song, patternFile, riffId);
+                juce::String patternError;
+                const auto one = midifile::read (patternFile, patternError);
+                bool same = one.has_value() && one->parts.size() == 2 && one->tempoChanges.empty() && one->meterChanges.empty()
+                         && std::abs (one->bpm - 100.0) < 1.0e-6;
+
+                if (same)
+                {
+                    const auto expected = midifile::notesAsPlayed (song, riffId, true);
+                    std::vector<Note> leadNotes;
+
+                    for (auto& n : expected)
+                        if (n.channelId == lead)
+                            leadNotes.push_back ({ (int) n.start, (int) (n.end - n.start), n.key, n.velocity });
+
+                    same = leadNotes == one->parts[0].notes && leadNotes.size() == 4;
+                }
+
+                check (same, "one pattern exported: its two channels' notes, at 100 with no changes");
+            }
+
+            // Another program's file: 480 to the beat, all of it in one track, 90 to the minute in 3/8
+            {
+                juce::MidiMessageSequence track;
+                auto add = [&track] (juce::MidiMessage m, double tick) { m.setTimeStamp (tick); track.addEvent (m); };
+                add (juce::MidiMessage::textMetaEvent (3, "Song"), 0);
+                add (juce::MidiMessage::tempoMetaEvent (666667), 0);
+                add (juce::MidiMessage::timeSignatureMetaEvent (3, 8), 0);
+                add (juce::MidiMessage::programChange (1, 33), 0);
+                add (juce::MidiMessage::noteOn (1, 40, (juce::uint8) 100), 0);
+                add (juce::MidiMessage::noteOn (1, 40, (juce::uint8) 0), 240);        // a note-on at 0 is a release
+                add (juce::MidiMessage::noteOn (1, 43, (juce::uint8) 90), 480);
+                add (juce::MidiMessage::noteOff (1, 43), 960);
+                add (juce::MidiMessage::noteOn (10, 36, (juce::uint8) 120), 0);
+                add (juce::MidiMessage::noteOff (10, 36), 60);
+                add (juce::MidiMessage::noteOn (10, 38, (juce::uint8) 110), 480);
+                add (juce::MidiMessage::noteOff (10, 38), 540);
+                add (juce::MidiMessage::noteOn (2, 60, (juce::uint8) 70), 120);       // never let go: it lasts to the end
+                add (juce::MidiMessage::endOfTrack(), 1440);
+
+                juce::MidiFile written;
+                written.setTicksPerQuarterNote (480);
+                written.addTrack (track);
+                const auto otherFile = folder.getChildFile ("other.mid");
+
+                {
+                    juce::FileOutputStream stream (otherFile);
+                    written.writeTo (stream, 0);
+                }
+
+                juce::String otherError;
+                const auto other = midifile::read (otherFile, otherError);
+                check (other.has_value() && other->parts.size() == 3, "another program's file (480 to the beat, every channel in one track) reads as 3 parts");
+
+                if (other.has_value() && other->parts.size() == 3)
+                {
+                    const auto& bassPart = other->parts[0];
+                    const auto& padPart = other->parts[1];
+                    const auto& drumPart = other->parts[2];
+                    check (bassPart.midiChannel == 1 && bassPart.program == 33 && bassPart.name == "Song - Electric Bass (finger)"
+                               && drumPart.isDrums() && drumPart.name == "Song - Drums" && padPart.midiChannel == 2,
+                           "split by channel and named for the track and what each plays (\"" + bassPart.name + "\", \"" + drumPart.name + "\")");
+                    check (bassPart.notes == std::vector<Note> { { 0, 48, 40, 100 }, { 96, 96, 43, 90 } }, "the bass's notes in NightShift's ticks, a release by a silent note-on");
+                    check (padPart.notes.size() == 1 && padPart.notes[0].start == 24 && padPart.notes[0].end() == 288, "a note never let go lasts to the track's end");
+                    check (std::abs (other->bpm - 90.0) < 0.001 && other->meterBeats == 6 && other->meterUnit == 8
+                               && other->warnings.contains ("3/8 plays as 6/8"),
+                           "90 to the minute; 3/8, which NightShift hasn't, as 6/8 and said so (" + other->warnings.joinIntoString ("; ") + ")");
+
+                    // Brought into a song with its own tempo: the bass on a bass sound, the drums on a kit
+                    Song in;
+                    in.loadBlank();
+                    in.bpm = 140.0;
+                    const auto added = midifile::addToSong (in, *other, false, 4 * in.ticksPerBar());
+                    auto* bassChannel = added.size() == 3 ? in.findChannel (added[0]) : nullptr;
+                    auto* drumChannel = added.size() == 3 ? in.findChannel (added[2]) : nullptr;
+                    check (in.bpm == 140.0 && in.tempoChanges.empty() && in.meterBeats == 4, "dropped into a song, the song keeps its tempo and time signature");
+                    juce::StringArray what;
+
+                    for (auto id : added)
+                        if (auto* c = in.findChannel (id))
+                            what.add (c->name + ": type " + juce::String ((int) c->type) + " " + c->synthPreset + c->kit + c->instrument);
+
+                    const bool onBass = bassChannel != nullptr && bassChannel->type == InstrumentType::synth && bassChannel->synthPreset == "Finger Bass";
+                    check (onBass, "the bass on Finger Bass" + (onBass ? juce::String() : " (" + what.joinIntoString ("; ") + ")"));
+
+                    bool kitKeys = drumChannel != nullptr && drumChannel->type == InstrumentType::kit && drumChannel->kit.isNotEmpty();
+
+                    if (kitKeys)
+                    {
+                        auto kit = drumkits::load (drumChannel->kit);
+                        const Pattern* drumPattern = nullptr;
+
+                        for (auto& p : in.patterns)
+                            if (p.findNotes (drumChannel->id) != nullptr)
+                                drumPattern = &p;
+
+                        kitKeys = kit != nullptr && drumPattern != nullptr && drumPattern->findNotes (drumChannel->id)->size() == 2
+                               && (*drumPattern->findNotes (drumChannel->id))[0].key == drumkits::keyForVoice (*kit, "kick")
+                               && (*drumPattern->findNotes (drumChannel->id))[1].key == drumkits::keyForVoice (*kit, "snare");
+                    }
+
+                    check (kitKeys, "the drums on a drum kit" + (drumChannel != nullptr ? " (" + drumkits::displayName (drumChannel->kit) + ")" : juce::String())
+                               + ", General MIDI's kick and snare on the kit's own");
+
+                    const PlaylistClip* first = nullptr;
+
+                    for (auto& clip : in.playlist)
+                        if (first == nullptr || clip.start < first->start)
+                            first = &clip;
+
+                    check (first != nullptr && first->start == 4 * in.ticksPerBar(), "placed from bar 5, where it was dropped");
+                }
+            }
+
+            // Not a MIDI file
+            {
+                const auto notMidi = folder.getChildFile ("not.mid");
+                notMidi.replaceWithText ("hello");
+                juce::String notError;
+                const bool refused = ! midifile::read (notMidi, notError).has_value();
+                check (refused && notError.isNotEmpty(), "a file that isn't one says so: \"" + notError + "\"");
+            }
+
+            // In the studio: Open makes a new project of a .mid, one dropped comes into the song at the
+            // bar it lands on (and Ctrl+Z takes it out), and Export MIDI file asks what, then writes it
+            {
+                Song studio;
+                studio.loadDemo();
+                AudioEngine audio (studio, false);
+                MainComponent main (studio, audio);
+                main.setSize (1600, 940);
+                auto pump = [] { for (int i = 0; i < 10; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (5); };
+                // Every dialog up dismissed (as Escape would), a few goes at most
+                auto closeDialogs = [&pump]
+                {
+                    pump();
+
+                    for (int tries = 0; tries < 20; ++tries)
+                    {
+                        auto* modal = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+
+                        if (modal == nullptr)
+                            return;
+
+                        modal->exitModalState (0);
+                        pump();
+                    }
+
+                    std::cout << "(a dialog that wouldn't close)" << std::endl;
+                };
+
+                pump();
+                main.openMidiFile (file);
+                pump();
+                check (studio.channels.size() == 3 && studio.bpm == 100.0 && studio.meterChanges.size() == 2 && studio.mode == PlayMode::song
+                           && studio.hasUnsavedChanges(),
+                       "Open on song.mid: a new project of its three tracks, at 100 with its 7/8, not saved yet ("
+                           + juce::String ((int) studio.channels.size()) + " channels)");
+
+                const auto before = studio.channels.size();
+                const auto otherFile = folder.getChildFile ("other.mid");
+                main.addMidiFile (otherFile, 4 * studio.ticksPerBar());
+                pump();
+                check (studio.channels.size() == before + 3 && studio.bpm == 100.0, "another dropped on bar 5: its three tracks come in, the song keeps its tempo");
+                check (studio.undo() && studio.channels.size() == before, "and Ctrl+Z takes them out again");
+
+                main.exportMidi();
+                pump();
+                auto* dialog = dynamic_cast<juce::AlertWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (0));
+                auto* what = dialog != nullptr ? dialog->getComboBoxComponent ("what") : nullptr;
+                check (what != nullptr && what->getNumItems() == 4 && what->getItemText (0) == "The whole song, as Arrange plays it"
+                           && what->getSelectedItemIndex() == 0,
+                       "Export MIDI file asks what it should hold: the whole song (chosen, in Song mode) or one of its patterns"
+                           + (what != nullptr ? " (" + juce::String (what->getNumItems()) + " choices)" : juce::String()));
+                closeDialogs();
+
+                // What Choose where to save... does once there's a file (its message box aside: shown
+                // with no callback, it would wait for a click)
+                const auto exported = folder.getChildFile ("exported.mid");
+                const auto [saved, said] = main.saveMidiFile (exported, 0);
+                const auto notesInSong = midifile::notesAsPlayed (studio, 0, true).size();
+                juce::String exportError;
+                const auto back = midifile::read (exported, exportError);
+                check (saved && back.has_value() && back->parts.size() == 3 && back->meterChanges.size() == 2
+                           && [&]
+                              {
+                                  size_t count = 0;
+
+                                  for (auto& part : back->parts)
+                                      count += part.notes.size();
+
+                                  return count == notesInSong;
+                              }()
+                           && said.contains (juce::String ((int) notesInSong) + " notes on 3 tracks, the whole song"),
+                       "and writes the song's notes, every one, with its time signatures, and says so: \""
+                           + said.fromFirstOccurrenceOf ("\n", false, false) + "\"");
+            }
+
+            folder.deleteRecursively();
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
             return failures == 0 ? 0 : 1;
         }
@@ -14586,6 +17079,19 @@ namespace
                 song.notify (Song::Change::selection);
             }
 
+            // Samples with sounds in them (--sampledemo): the sounds the samples suite makes, in Downloads' and Music's
+            // place, and its folder of one's own added; looked through before anything's opened or searched. A sample
+            // named in --opensounds is clicked, so it shows playing
+            if (args.has ("--sampledemo"))
+            {
+                const auto made = writeSampleFolders (juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift sample demo"));
+                samples::standardFoldersOverride = { made[0], made[1] };
+                auto options = audio.getOptions();
+                options.sampleFolders = { made[2].getFullPathName() };
+                audio.setOptions (options);
+                main.getSidebar().lookThroughSamples (10000);
+            }
+
             // Text in the sound search, as if typed after Ctrl+K
             if (auto text = args.valueAfter ("--search"); text.isNotEmpty())
                 main.getSidebar().setSearchText (text);
@@ -14640,8 +17146,9 @@ namespace
                 main.repaint();
             }
 
-            // Automation as it looks: lanes shown, the first track's channel's volume drawn and its
-            // pan swept, and the master fading out over the last two bars
+            // Automation as it looks: lanes shown, the first track's channel's volume drawn (easing out
+            // down, easing in back up) and its pan swept, and the master fading out over the last two
+            // bars, eased out
             if (args.has ("--automationdemo"))
             {
                 const int bar = song.ticksPerBar();
@@ -14652,12 +17159,12 @@ namespace
 
                 if (first != 0)
                 {
-                    song.laneFor (first, "volume", "Volume").points = { { 0, 0.55f }, { 4 * bar, 0.35f }, { 6 * bar, 0.72f }, { 8 * bar, 0.72f } };
+                    song.laneFor (first, "volume", "Volume").points = { { 0, 0.55f, -0.6f }, { 4 * bar, 0.35f, 0.6f }, { 6 * bar, 0.72f }, { 8 * bar, 0.72f } };
                     song.laneFor (first, "pan", "Pan").points = { { 0, -0.6f }, { 8 * bar, 0.6f } };
                 }
 
                 const int end = std::max (4 * bar, song.songLengthInTicks());
-                song.laneFor (0, "volume", "Volume").points = { { end - 2 * bar, 0.8f }, { end, 0.0f } };
+                song.laneFor (0, "volume", "Volume").points = { { end - 2 * bar, 0.8f, -0.5f }, { end, 0.0f } };
                 song.showAutomation = true;
                 song.notify (Song::Change::automation);
                 audio.syncNow();
@@ -14720,6 +17227,17 @@ namespace
                     for (auto& p : song.patterns)
                         if (p.name == sound.fromFirstOccurrenceOf ("pattern:", false, false))
                             sound = juce::String (patternDragPrefix) + juce::String (p.id);
+                }
+
+                // A sample by its name, in Samples' folders (with --sampledemo: "sample:Loop 120 bpm")
+                if (sound.startsWith ("sample:"))
+                {
+                    const auto name = sound.fromFirstOccurrenceOf ("sample:", false, false);
+
+                    for (auto& folder : samples::standardFolders())
+                        for (auto& f : folder.findChildFiles (juce::File::findFiles, true, name + ".*"))
+                            if (samples::isAudioFile (f))
+                                sound = juce::String (soundDragPrefix) + "sample:" + f.getFullPathName();
                 }
 
                 if (sound.isEmpty())
@@ -14786,6 +17304,20 @@ namespace
                 }
 
                 song.notify (Song::Change::channels);
+
+                // Buses' automation (with --automationdemo): the Reverb bus swelling up into the chorus and
+                // panned across, along the bottom above the master's
+                if (args.has ("--busautomation"))
+                {
+                    const int bar = song.ticksPerBar();
+                    audio.syncNow();
+                    song.laneFor (verbId, "volume", audio.automationName (verbId, "volume")).points
+                        = { { 0, 0.45f }, { 4 * bar, 0.45f, 0.55f }, { 6 * bar, 0.8f }, { 8 * bar, 0.6f } };
+                    song.laneFor (verbId, "pan", audio.automationName (verbId, "pan")).points = { { 0, 0.5f }, { 8 * bar, -0.5f } };
+                    song.showAutomation = true;
+                    song.notify (Song::Change::automation);
+                    audio.syncNow();
+                }
             }
 
             // A drum kit channel with an AI drummer conversation already had (written here, nothing
@@ -14915,11 +17447,20 @@ namespace
                 }
             }
 
-            // The Audio settings window (F10) on its own
+            // The Audio settings window (F10) on its own; with --midiouts, the first output 12 ms early
+            // and the second sent the tempo
             std::unique_ptr<AudioSettings> settings;
 
             if (args.has ("--settings"))
+            {
+                if (MidiOutHub::testOutputs.size() >= 2)
+                {
+                    audio.setMidiOutSettings (MidiOutHub::testOutputs[0], { -12, false });
+                    audio.setMidiOutSettings (MidiOutHub::testOutputs[1], { 0, true });
+                }
+
                 settings = std::make_unique<AudioSettings> (audio);
+            }
 
             // The metronome's panel on its own (--metronome odd: 7/8 as 2+2+3, triplets, beat 6 off);
             // --armrecord arms Record
@@ -14949,6 +17490,48 @@ namespace
             if (args.has ("--armrecord"))
                 audio.setRecordArmed (true);
 
+            // Recording automation as it looks while it writes: the switch on, Song mode playing from bar 3,
+            // and the first track's channel's fader grabbed there (its lane red, what it's written so far
+            // drawn as a fade down over the bar before)
+            if (args.has ("--recordautomation"))
+            {
+                const int bar = song.ticksPerBar();
+                int first = 0;
+
+                for (int row = 0; row < song.numTracks() && first == 0; ++row)
+                    first = song.trackChannel (row);
+
+                song.mode = PlayMode::song;
+                song.showAutomation = true;
+                song.notify (Song::Change::transport);
+                audio.syncNow();
+
+                if (first != 0)
+                {
+                    const float zero = te::decibelsToVolumeFaderPosition (0.0f);
+                    song.laneFor (first, "volume", "Volume").points = { { 0, zero }, { bar, zero }, { bar + bar / 4, 0.62f }, { 2 * bar - bar / 8, 0.48f },
+                                                                         { 2 * bar, 0.48f } };
+                }
+
+                song.notify (Song::Change::automation);
+                audio.setAutomationRecording (true);
+                audio.setPlayheadTicks (2 * bar);
+                audio.togglePlay();
+
+                // (a block played, so the fader's parameter is where its lane has it when it's grabbed)
+                if (! args.has ("--live"))
+                {
+                    juce::AudioBuffer<float> block (2, 512);
+                    block.clear();
+                    audio.processHostedBlock (block);
+                }
+
+                if (first != 0)
+                    audio.touchControl (first, "volume", true);
+
+                main.repaint();
+            }
+
             // Paint once so lazily loaded things (waveforms) start, then let them and any
             // async layout settle before capturing
             (void) main.createComponentSnapshot (main.getLocalBounds(), true, 1.0f);
@@ -14968,12 +17551,16 @@ namespace
                 {
                     fx->initialise ({ te::TimePosition(), 48000.0, 512 });
 
-                    // The NAM amp with a model in it (--nammodel <file.nam>, or "example": NAM's own wavenet) and a
-                    // cabinet (--namcabinet <file.wav>)
+                    // The NAM amp with a model in it (--nammodel <file.nam>, "example": NAM's own wavenet, or "a2": its
+                    // A2, which comes in two sizes) and a cabinet (--namcabinet <file.wav>); --namsize 0 picks a size
                     if (auto amp = dynamic_cast<NightAmp*> (fx))
                     {
                         if (auto model = args.valueAfter ("--nammodel"); model.isNotEmpty())
-                            amp->loadModel (model == "example" ? juce::File (NIGHTSHIFT_NAM_EXAMPLES).getChildFile ("wavenet.nam") : juce::File (model));
+                            amp->loadModel (model == "example" ? juce::File (NIGHTSHIFT_NAM_EXAMPLES).getChildFile ("wavenet.nam")
+                                            : model == "a2" ? juce::File (NIGHTSHIFT_NAM_EXAMPLES).getChildFile ("A2.nam") : juce::File (model));
+
+                        if (auto size = args.valueAfter ("--namsize"); size.isNotEmpty())
+                            amp->setSize (size.getIntValue());
 
                         if (auto cab = args.valueAfter ("--namcabinet"); cab.isNotEmpty())
                             amp->loadCabinet (juce::File (cab));
@@ -14993,6 +17580,13 @@ namespace
             {
                 song.notify (Song::Change::transport);      // a change, so there's something unsaved
                 main.confirmDiscard ([] {});
+                closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+            }
+
+            // Export MIDI file's question: the whole song or a pattern (as it looks; nothing is saved)
+            if (args.has ("--exportmidi"))
+            {
+                main.exportMidi();
                 closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
             }
 
@@ -15227,7 +17821,7 @@ public:
             window->main->openProjectFile (file);
     }
 
-    /** The .nsproj a launch (or an Explorer double-click) asked for, if any. A relative path
+    /** The .nsproj (or .mid) a launch (or an Explorer double-click) asked for, if any. A relative path
         is resolved against this process's working directory; a hand-over from a second
         instance can't know that directory, so it passes false and takes absolute paths only. */
     static juce::File projectFileFrom (const juce::String& commandLine, bool resolveRelative)
@@ -15236,7 +17830,8 @@ public:
         {
             const auto path = token.unquoted();
 
-            if (! path.endsWithIgnoreCase (".nsproj"))
+            // A project, or a MIDI file to make one of
+            if (! (path.endsWithIgnoreCase (".nsproj") || path.endsWithIgnoreCase (".mid") || path.endsWithIgnoreCase (".midi")))
                 continue;
 
             juce::File file;

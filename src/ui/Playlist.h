@@ -77,7 +77,10 @@ public:
 
     /** Where a drop at `position` would go and what it would do there, as itemDropped does it.
         A pattern (patternDragPrefix) lands as a clip at `tick` on the track under it (`clip`),
-        or on a new track (`newTrack`) under the last one or under an audio track. */
+        or on a new track (`newTrack`) under the last one or under an audio track. A sample from
+        the sidebar's Samples (soundDragPrefix "sample:" and its path) lands as an audio clip at
+        `tick`: on the audio track under it (`clip`), an empty track (`assign`), or a new audio
+        track (`newTrack`) under the last one or under any other track. */
     struct DropTarget
     {
         enum class Kind { none, newTrack, replace, assign, effect, clip };
@@ -102,6 +105,9 @@ public:
 
     /** Puts audio files into the song as a drop at `position` does; returns how many went in. */
     int dropAudioFiles (const juce::StringArray& files, juce::Point<int> position);
+
+    /** The start of the bar under a point, or -1 off the tracks: where a MIDI file dropped there goes. */
+    int barStartAt (juce::Point<int> position) const;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -169,25 +175,41 @@ public:
     static constexpr int automationLaneHeight = 44;
 
     /** An automation lane on show (Song::showAutomation): under its channel's first track, or
-        along the bottom for the master's. A channel with no lanes shows its volume's, which
-        becomes the song's when a point is added. */
+        along the bottom for a bus's and the master's. A channel (or the master) with no lanes
+        shows its volume's, which becomes the song's when a point is added; a bus shows the lanes
+        it has. */
     struct LaneView
     {
         int owner = 0;
         juce::String param;
         juce::Rectangle<float> area, header;    // in the grid, and in the header column
+        bool inStrip = false;                   // along the bottom (a bus's or the master's), not under a track
     };
 
     std::vector<LaneView> visibleLanes() const;
 
-    /** The parameters shown as lanes for a channel (or the master): its lanes, else its volume. */
+    /** The parameters shown as lanes for a channel or bus (or the master): its lanes, else (not a
+        bus) its volume. */
     std::vector<juce::String> laneParamsOf (int owner) const;
+
+    /** The lanes along the bottom, top to bottom: each bus's that has lanes, then the master's. When
+        there are more than fit (two fifths of Arrange's height), the wheel scrolls them. */
+    std::vector<std::pair<int, juce::String>> stripLanes() const;
+
+    /** Scrolls the lanes along the bottom so a bus's or the master's lane is in view (Automate, or
+        recording starting to write it). */
+    void revealLane (int owner, const juce::String& param);
+
+    /** The handle in the middle (in time) of the line from a lane's point `index` on to the next,
+        dragged up or down to bend it (FL's curve handles). A line too short or too flat for one has
+        none. */
+    std::optional<juce::Point<float>> bendHandle (const LaneView&, int index) const;
 
     /** The icon's tile at the left of a track's header (click it to pick another). */
     juce::Rectangle<float> iconBounds (int row) const;
 
 private:
-    enum class Drag { none, move, moveAudio, erase, scrub, loop, comp, box, trim, stretch, fade, point, tempo };
+    enum class Drag { none, move, moveAudio, erase, scrub, loop, comp, box, trim, stretch, fade, point, tempo, bend };
 
     /** A point on an automation lane, by its lane (owner and parameter) and place in it. */
     struct PointRef
@@ -250,10 +272,16 @@ private:
     DropTarget drop;                 // what a drag hovering over Arrange would do
     juce::String dropLabel;
     int dropPatternId = 0;           // the pattern it is, when it's one (drawn where it would land)
+    juce::String dropSample;         // the sample it is, when it's one (drawn where it would land, as long as it plays)
+    double dropSampleSeconds = 0.0;
+    double dropSampleBpm = 0.0;      // its tempo, when it's a loop whose tempo is known (it goes in in time with the song)
     juce::Rectangle<int> rulerArea, headerArea, gridArea;
 
-    juce::Rectangle<int> masterArea, masterHeaderArea;     // the master's automation, along the bottom
+    juce::Rectangle<int> masterArea, masterHeaderArea;     // the buses' and the master's automation, along the bottom
+    int stripScroll = 0;                        // lanes of that strip scrolled past
     PointRef chosenPoint, dragPoint;            // the automation point last clicked, and one being dragged
+    PointRef bendPoint;                         // the line being bent, by the point it starts from
+    bool bendCheckpointed = false;
 
     // The tempo lane, along the top while automation shows (Logic's tempo track): the start's
     // tempo and each change as a point, held or gliding to the next
@@ -292,6 +320,7 @@ private:
     juce::String laneText (const LaneView&, float value) const;
     juce::String laneName (const LaneView&) const;
     int pointAt (const LaneView&, juce::Point<float>) const;
+    int bendHandleAt (const LaneView&, juce::Point<float>) const;
     void automationMouseDown (const LaneView&, const juce::MouseEvent&);
     void showAutomationMenu (const LaneView&);
     void paintAutomationLane (juce::Graphics&, const LaneView&);

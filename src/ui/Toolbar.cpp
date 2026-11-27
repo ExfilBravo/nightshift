@@ -23,6 +23,8 @@ Toolbar::Toolbar (Song& s, AudioEngine& a)
     playButton.setTooltip ("Play / stop (Space). With Record armed, Play records");
     recordButton.setTooltip ("Record: arm it, then Play (Space) records what you play on the selected channel and every armed audio track. "
                              "Armed while playing, it punches in. Right-click for the countdown, blend and more");
+    automationRecordButton.setTooltip ("Record automation: while the song plays in Song mode, moving a fader, a knob, a plugin's control or a "
+                                       "linked MIDI knob writes it into its lane in Arrange, from where you grab it to where you let go");
     loopButton.setTooltip ("Loop: play the loop range round and round (drag along the top of the Arrange ruler to set it)");
     metronomeButton.setTooltip (shortcutText ("Metronome on / off (Ctrl+M). Right-click for its sound, accents, rhythm, tap tempo and practise"));
     exportButton.setTooltip (shortcutText ("Export a WAV (Ctrl+R)"));
@@ -34,14 +36,17 @@ Toolbar::Toolbar (Song& s, AudioEngine& a)
     recordButton.setSolidWhenOn (true);
     recordButton.setIconColour (danger);
 
-    for (auto* b : { &loopButton, &metronomeButton, &keyboardButton, &exportButton, &menuButton })
+    for (auto* b : { &automationRecordButton, &loopButton, &metronomeButton, &keyboardButton, &exportButton, &menuButton })
         b->setFilled (false);
 
     exportButton.setFramed (true);
     exportButton.setLabel ("Export");
 
-    for (auto* b : { &stopButton, &playButton, &recordButton, &loopButton, &metronomeButton, &keyboardButton, &exportButton, &menuButton })
+    for (auto* b : { &stopButton, &playButton, &recordButton, &automationRecordButton, &loopButton, &metronomeButton, &keyboardButton,
+                     &exportButton, &menuButton })
         addAndMakeVisible (*b);
+
+    automationRecordButton.onClick = [this] { if (onRecordAutomation != nullptr) onRecordAutomation(); refresh(); };
 
     keyboardButton.onClick = [this] { if (onKeyboard != nullptr) onKeyboard(); };
 
@@ -95,7 +100,19 @@ Toolbar::Toolbar (Song& s, AudioEngine& a)
         const float dbValue = masterVolumeToDb ((float) v);
         return "Master " + (dbValue <= -99.0f ? juce::String ("-inf") : juce::String (dbValue, 1)) + " dB";
     };
-    master.onDragStart = [this] { song.checkpoint(); };
+    // Recording automation: held, its moves write the master's volume lane until it's let go (the
+    // wheel comes as a drag of its own each notch: a change with nothing held)
+    master.onDragStart = [this]
+    {
+        song.checkpoint();
+        masterGrabbed = master.isMouseButtonDown();
+        audio.touchControl (0, "volume", true, masterGrabbed);
+    };
+    master.onDragEnd = [this]
+    {
+        if (std::exchange (masterGrabbed, false))
+            audio.touchControl (0, "volume", false);
+    };
     master.onValueChange = [this]
     {
         song.masterVolume = (float) master.getValue();
@@ -127,7 +144,9 @@ void Toolbar::syncFromSong()
     if (! tempo.isEditing())
         tempo.setValue (tempoNow());
 
-    master.setValue (song.masterVolume, juce::dontSendNotification);
+    if (! master.isMouseButtonDown())
+        master.setValue (audio.getAutomatedControl (0, "volume").value_or (song.masterVolume), juce::dontSendNotification);
+
     loopButton.setToggleState (song.hasLoop(), juce::dontSendNotification);
     repaint();
 }
@@ -225,6 +244,19 @@ void Toolbar::refresh()
     recordButton.setToggleState (audio.isRecordArmed() || recording, juce::dontSendNotification);
     recordButton.setSolidWhenOn ((recording || audio.isWaitingForInput()) && ! blinkOff);
 
+    // Recording automation: switched on, tinted; solid while it writes (the song playing in Song mode)
+    automationRecordButton.setToggleState (audio.isAutomationRecording(), juce::dontSendNotification);
+
+    if (const bool writing = audio.isWritingAutomation(); writing != automationWriting)
+    {
+        automationWriting = writing;
+        automationRecordButton.setSolidWhenOn (writing);
+    }
+
+    // The master volume where its automation has it while that plays (not while it's held)
+    if (! master.isMouseButtonDown())
+        master.setValue (audio.getAutomatedControl (0, "volume").value_or (song.masterVolume), juce::dontSendNotification);
+
     // What you hear lags what you play by the round trip: show it, green when it's low
     const auto info = audio.getLatencyInfo();
     juce::String newLatency;
@@ -302,6 +334,37 @@ void Toolbar::resized()
     showCpu = w >= 1400;
     showSignature = w >= 1260;
 
+    // The latency's milliseconds have room at least: with more beside Record (the MIDI light, the
+    // record automation switch) the same things give way, in the same order, a little sooner. The
+    // readouts take their narrow widths before the time signature goes
+    auto pillWidth = [] (const juce::String& s) { return (int) juce::GlyphArrangement::getStringWidth (font (16.5f, true), s) + 40; };
+    const int midiWidth = midiLight.isVisible() ? 4 + midiLightWidth : 0;
+    const int transportWidth = 4 + 7 * buttonSize + 5 * 4 + 17 + 4 + midiWidth;
+    bool narrowReadouts = ! showSignature;
+
+    auto roomLeft = [&]
+    {
+        int used = 32 + (showProject ? 248 : 140) + 12 + modes.getIdealWidth() + 14 + transportWidth + 14;
+
+        for (int i = 0; i < (showSignature ? 4 : 3); ++i)
+            used += (narrowReadouts ? narrowReadoutWidths : readoutWidths)[i];
+
+        used += 34 + 8 + (w >= 1200 ? 104 : 36) + 16 + (showSignature ? 100 + 14 : 76 + 10) + (showCpu ? 78 + 8 : 0);
+        return w - used;
+    };
+
+    while (roomLeft() < pillWidth (latencyShort) && (showProject || showCpu || showSignature))
+    {
+        if (showProject)
+            showProject = false;
+        else if (showCpu)
+            showCpu = false;
+        else if (! narrowReadouts)
+            narrowReadouts = true;
+        else
+            showSignature = false;
+    }
+
     auto r = getLocalBounds().reduced (16, 0);
     const int cy = r.getCentreY();
     auto centred = [cy] (juce::Rectangle<int> area, int h) { return area.withHeight (h).withY (cy - h / 2); };
@@ -313,11 +376,10 @@ void Toolbar::resized()
     modes.setBounds (centred (r.removeFromLeft (modes.getIdealWidth()), 36));
     r.removeFromLeft (14);
 
-    const int midiWidth = midiLight.isVisible() ? 4 + midiLightWidth : 0;
-    transportArea = centred (r.removeFromLeft (4 + 6 * buttonSize + 4 * 4 + 17 + 4 + midiWidth), groupHeight);
+    transportArea = centred (r.removeFromLeft (transportWidth), groupHeight);
     {
         auto t = transportArea.reduced (4, 5);
-        for (auto* b : { &stopButton, &playButton, &recordButton })
+        for (auto* b : { &stopButton, &playButton, &recordButton, &automationRecordButton })
         {
             b->setBounds (t.removeFromLeft (buttonSize));
             t.removeFromLeft (4);
@@ -341,7 +403,7 @@ void Toolbar::resized()
     r.removeFromLeft (14);
 
     readouts.clear();
-    const auto* widths = showSignature ? readoutWidths : narrowReadoutWidths;
+    const auto* widths = narrowReadouts ? narrowReadoutWidths : readoutWidths;
     int readoutTotal = 0;
 
     for (int i = 0; i < (showSignature ? 4 : 3); ++i)
@@ -377,7 +439,6 @@ void Toolbar::resized()
         r.removeFromRight (8);
 
     // The whole story when there's room, else just the milliseconds
-    auto pillWidth = [] (const juce::String& s) { return (int) juce::GlyphArrangement::getStringWidth (font (16.5f, true), s) + 40; };
     latencyCompact = pillWidth (latencyText) > r.getWidth();
     const int width = std::min (pillWidth (latencyCompact ? latencyShort : latencyText), std::max (0, r.getWidth()));
     latencyArea = centred (r.removeFromRight (width), 32);

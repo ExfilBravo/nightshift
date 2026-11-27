@@ -41,7 +41,16 @@ ChannelStrip::ChannelStrip (Song& s, AudioEngine& a, ChannelRack& r, Kind k)
     {
         return "Volume " + dbText (kind == Kind::master ? masterVolumeToDb ((float) v) : channelVolumeToDb ((float) v)) + " (double-click for 0 dB)";
     };
-    fader.onDragStart = [this] { song.checkpoint(); };
+    // Recording automation: a grab writes the control's lane until it's let go; the wheel and a
+    // double-click change it with nothing held
+    auto touch = [this] (const juce::String& param, bool down, bool held)
+    {
+        if (exists())
+            audio.touchControl (getChannel(), param, down, held);
+    };
+
+    fader.onDragStart = [this, touch] { song.checkpoint(); touch ("volume", true, fader.isHeld()); };
+    fader.onDragEnd = [touch] { touch ("volume", false, true); };
     fader.onValueChange = [this]
     {
         if (auto v = volume())
@@ -62,7 +71,8 @@ ChannelStrip::ChannelStrip (Song& s, AudioEngine& a, ChannelRack& r, Kind k)
         return std::abs (v) < 0.01 ? juce::String ("Pan: centre (double-click)")
                                    : "Pan " + juce::String (juce::roundToInt (std::abs (v) * 100.0)) + (v < 0 ? "% left" : "% right");
     };
-    pan.onDragStart = [this] { song.checkpoint(); };
+    pan.onDragStart = [this, touch] { song.checkpoint(); touch ("pan", true, pan.isHeld()); };
+    pan.onDragEnd = [touch] { touch ("pan", false, true); };
     pan.onValueChange = [this]
     {
         float* p = channel() != nullptr ? &channel()->pan : bus() != nullptr ? &bus()->pan : nullptr;
@@ -76,17 +86,22 @@ ChannelStrip::ChannelStrip (Song& s, AudioEngine& a, ChannelRack& r, Kind k)
     };
     addChildComponent (pan);
 
-    // Right-click: automate it in Arrange, or link it to a MIDI controller's knob (a channel's
-    // volume and pan, the master's volume)
+    // Right-click: automate it in Arrange, or link it to a MIDI controller's knob (a channel's or
+    // bus's volume and pan, the master's volume)
     fader.onRightClick = [this]
     {
-        if ((kind == Kind::master || channel() != nullptr) && automation::showMenu != nullptr)
-            automation::showMenu (getChannel(), "volume", kind == Kind::master ? juce::String ("the master volume") : channel()->name + "'s volume");
+        if (automation::showMenu == nullptr || ! exists())
+            return;
+
+        if (kind == Kind::master)
+            automation::showMenu (0, "volume", "the master volume");
+        else
+            automation::showMenu (targetId, "volume", name() + "'s volume");
     };
     pan.onRightClick = [this]
     {
-        if (auto c = channel(); c != nullptr && automation::showMenu != nullptr)
-            automation::showMenu (c->id, "pan", c->name + "'s pan");
+        if (automation::showMenu != nullptr && (channel() != nullptr || bus() != nullptr))
+            automation::showMenu (targetId, "pan", name() + "'s pan");
     };
 
     for (auto* b : { &pianoButton, &stepsButton })
@@ -192,6 +207,7 @@ juce::String ChannelStrip::instrumentName (const Channel& c) const
         case InstrumentType::audio:   return c.input;
         case InstrumentType::kit:     return drumkits::displayName (c.kit);
         case InstrumentType::instrument: return instruments::displayName (c.instrument);
+        case InstrumentType::midiOut: return c.midiOutDevice.isEmpty() ? juce::String ("Not chosen yet") : c.midiOutDevice;
         case InstrumentType::sampler: break;
     }
 
@@ -228,6 +244,7 @@ juce::String ChannelStrip::typeLine() const
         case InstrumentType::audio:   return "Audio track";
         case InstrumentType::kit:     return c->drummer.turns.empty() ? "Drum kit" : "Drum kit, AI drummer";
         case InstrumentType::instrument: return isGuitar (*c) ? "Nightshift Guitar" : "Sampled instrument";
+        case InstrumentType::midiOut: return "Synth plugged in";
         case InstrumentType::sampler: break;
     }
 
@@ -287,6 +304,7 @@ void ChannelStrip::refresh()
     else if (b != nullptr)
         pan.setValue (b->pan);
 
+    followAutomation();     // (where a lane playing now has them)
     resized();
     repaint();
 }
@@ -661,16 +679,19 @@ void ChannelStrip::paint (juce::Graphics& g)
                 if (send == nullptr || target == nullptr)
                     break;
 
-                // The level as a bar filling the row, in the bus's colour
+                // The level as a bar filling the row, in the bus's colour (where its automation has
+                // it, while that plays and it isn't held)
+                const float level = draggingSend == hit.id ? send->level
+                                                           : audio.getAutomatedControl (targetId, "send:" + juce::String (hit.id)).value_or (send->level);
                 box (hover ? titleBar : panelLight, hairlineStrong);
-                const float fill = juce::jlimit (0.0f, 1.0f, send->level);
+                const float fill = juce::jlimit (0.0f, 1.0f, level);
                 g.setColour (target->colour.withAlpha (0.28f));
                 g.fillRoundedRectangle (bounds.reduced (1.0f).withWidth ((bounds.getWidth() - 2.0f) * fill), 6.0f);
 
                 auto row = hit.bounds.reduced (8, 0);
                 g.setFont (monoFont (15.0f, true));
                 g.setColour (textDim);
-                g.drawText (sendDbText (send->level), row.removeFromRight (40), juce::Justification::centredRight, true);
+                g.drawText (sendDbText (level), row.removeFromRight (40), juce::Justification::centredRight, true);
 
                 if (send->preFader)
                 {
@@ -891,10 +912,11 @@ void ChannelStrip::mouseDown (const juce::MouseEvent& e)
             }
             else if (auto send = c != nullptr ? Song::findSend (*c, hit.id) : nullptr)
             {
-                // Dragged sideways for its level
+                // Dragged sideways for its level (from where its automation has it, while that plays)
                 song.checkpoint();
                 draggingSend = hit.id;
-                sendDragStart = send->level;
+                sendDragStart = audio.getAutomatedControl (targetId, "send:" + juce::String (hit.id)).value_or (send->level);
+                audio.touchControl (targetId, "send:" + juce::String (hit.id), true);
             }
             break;
 
@@ -959,7 +981,36 @@ void ChannelStrip::mouseDrag (const juce::MouseEvent& e)
 
 void ChannelStrip::mouseUp (const juce::MouseEvent&)
 {
-    draggingSend = 0;
+    if (const int busId = std::exchange (draggingSend, 0); busId != 0)
+        audio.touchControl (targetId, "send:" + juce::String (busId), false);
+}
+
+void ChannelStrip::followAutomation()
+{
+    // While Song mode plays their lanes, the fader, the pan bar and the sends show where the lanes
+    // have them (not while they're held), so grabbing one carries on from there
+    if (! exists())
+        return;
+
+    const int owner = getChannel();
+    const double wasShowing = fader.getValue();
+
+    if (auto v = volume(); v != nullptr && ! fader.isHeld())
+        fader.setValue (audio.getAutomatedControl (owner, "volume").value_or (*v));
+
+    if (float* p = channel() != nullptr ? &channel()->pan : bus() != nullptr ? &bus()->pan : nullptr; p != nullptr && ! pan.isHeld())
+        pan.setValue (audio.getAutomatedControl (owner, "pan").value_or (*p));
+
+    if (auto c = channel())
+        for (auto& s : c->sends)
+            if (const auto level = audio.getAutomatedControl (owner, "send:" + juce::String (s.busId)).value_or (s.level); level != shownSends[s.busId])
+            {
+                shownSends[s.busId] = level;
+                repaint (sendsArea);
+            }
+
+    if (fader.getValue() != wasShowing)
+        repaint (readout);
 }
 
 void ChannelStrip::mouseDoubleClick (const juce::MouseEvent& e)
@@ -1256,6 +1307,8 @@ void Inspector::refreshMeters()
 {
     channelStrip.pushLevel (audio.getPeak (channelStrip.getChannel()));
     masterStrip.pushLevel (audio.getLastMasterPeak());
+    channelStrip.followAutomation();
+    masterStrip.followAutomation();
 }
 
 void Inspector::resized()

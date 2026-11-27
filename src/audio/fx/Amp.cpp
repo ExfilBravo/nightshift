@@ -9,9 +9,11 @@ namespace nightshift
 
 const char* NightAmp::xmlTypeName = "nightshiftAmp";
 
+std::atomic<double> NightAmp::interfaceLevel { NightAmp::defaultInterfaceLevel };
+
 namespace
 {
-    const juce::Identifier modelProperty ("model"), cabinetProperty ("cabinet");
+    const juce::Identifier modelProperty ("model"), cabinetProperty ("cabinet"), sizeProperty ("size"), calibrateProperty ("calibrate");
 
     // Where NAM's own plugin evens models' loudness out to
     constexpr double targetLoudnessDb = -18.0;
@@ -46,6 +48,13 @@ NightAmp::NightAmp (tracktion::PluginCreationInfo info)
     output = &addParam ("output", "Output", 0.0f, { -24.0f, 24.0f }, db());
     evenOut = &addParam ("evenOut", "Even out loudness", 1.0f, toggleRange(), onOff());
     cabinetOn = &addParam ("cabinetOn", "Cabinet", 1.0f, toggleRange(), onOff());
+
+    // Input calibration is newer than the amp: one saved with a model before it keeps the sound it was saved
+    // with (calibration off), and one added now has it on, written down so it opens again that way
+    if (! state.hasProperty (calibrateProperty))
+        state.setProperty (calibrateProperty, state.hasProperty (modelProperty) ? 0.0f : 1.0f, nullptr);
+
+    calibrate = &addParam ("calibrate", "Match input level", 1.0f, toggleRange(), onOff());
 
     // A song saved with an amp opens with it
     loadSavedFiles (state);
@@ -124,6 +133,8 @@ juce::String NightAmp::loadModel (const juce::File& file)
     }
 
     m->levelGain = m->net->hasLoudness() ? (float) juce::Decibels::decibelsToGain (targetLoudnessDb - m->net->loudnessDb()) : 1.0f;
+    const bool hasInputLevel = m->net->hasInputLevel();
+    const auto inputLevel = (float) m->net->inputLevelDbu();
 
     if (initialised)
         configure (*m);
@@ -136,9 +147,14 @@ juce::String NightAmp::loadModel (const juce::File& file)
     }
 
     // (the model it replaced goes with m, here, off the audio thread)
+    modelInputLevelDbu = inputLevel;
+    modelHasInputLevel = hasInputLevel;
     description = describe (file);
+    description.hasInputLevel = hasInputLevel;      // as NAM read it (a container of sizes says it at its top)
+    description.inputLevelDbu = inputLevel;
     modelProblem = {};
     state.setProperty (modelProperty, file.getFullPathName(), nullptr);
+    state.removeProperty (sizeProperty, nullptr);   // a new model comes whole
 
     // Running between resamplers delays it a little: the engine lines the track up again
     if (initialised && std::abs (getLatencySeconds() - latencyBefore) > 1.0e-9)
@@ -178,9 +194,52 @@ void NightAmp::clearModel()
         std::swap (model, old);
     }
 
+    modelHasInputLevel = false;
     description = {};
     modelProblem = {};
     state.removeProperty (modelProperty, nullptr);
+    state.removeProperty (sizeProperty, nullptr);
+}
+
+//==============================================================================
+void NightAmp::setInterfaceLevel (double dBu)
+{
+    interfaceLevel = juce::jlimit (-20.0, 40.0, dBu);
+}
+
+double NightAmp::getInterfaceLevel()
+{
+    return interfaceLevel.load();
+}
+
+float NightAmp::calibrationDb() const
+{
+    return calibrate->get() >= 0.5f && modelHasInputLevel.load() ? (float) (interfaceLevel.load() - modelInputLevelDbu.load()) : 0.0f;
+}
+
+int NightAmp::numSizes() const
+{
+    return model != nullptr ? model->net->numSizes() : 1;
+}
+
+int NightAmp::getSize() const
+{
+    return model != nullptr ? model->net->getSize() : 0;
+}
+
+void NightAmp::setSize (int index)
+{
+    // NAM builds a smaller network here (or readies one of its sizes) and swaps it in on the audio thread
+    // at the next block, so the sound goes on meanwhile
+    if (model == nullptr || model->net->numSizes() < 2)
+        return;
+
+    model->net->setSize (index);
+
+    if (model->net->getSize() == model->net->numSizes() - 1)
+        state.removeProperty (sizeProperty, nullptr);
+    else
+        state.setProperty (sizeProperty, model->net->getSize(), nullptr);
 }
 
 void NightAmp::clearCabinet()
@@ -205,17 +264,28 @@ juce::File NightAmp::getCabinetFile() const
 void NightAmp::restorePluginStateFromValueTree (const juce::ValueTree& v)
 {
     StockEffect::restorePluginStateFromValueTree (v);
+
+    // Saved with a model before input calibration came in: as the constructor, it stays off
+    if (v.hasProperty (modelProperty) && ! v.hasProperty (calibrateProperty))
+        calibrate->set (0.0f);
+
     loadSavedFiles (v);
 }
 
 void NightAmp::loadSavedFiles (const juce::ValueTree& v)
 {
+    // (loading a model starts it whole, so the size it was saved at is read first)
+    const auto savedSize = v[sizeProperty];
+
     // A missing file keeps its path (the song still names it, and says it's missing)
     if (const auto path = v[modelProperty].toString(); path.isNotEmpty() && (! hasModel() || juce::File (path) != getModelFile()))
     {
         state.setProperty (modelProperty, path, nullptr);
         loadModel (juce::File (path));
     }
+
+    if (hasModel())
+        setSize (savedSize.isVoid() ? numSizes() - 1 : (int) savedSize);
 
     if (const auto path = v[cabinetProperty].toString(); path.isNotEmpty() && (! hasCabinet() || juce::File (path) != getCabinetFile()))
     {
@@ -241,6 +311,8 @@ NightAmp::Description NightAmp::describe (const juce::File& namFile)
     d.modeledBy = text ("modeled_by");
     d.sampleRate = (double) json.getProperty ("sample_rate", 0.0);
     d.levelled = ! meta.getProperty ("loudness", {}).isVoid();
+    d.hasInputLevel = ! meta.getProperty ("input_level_dbu", {}).isVoid();
+    d.inputLevelDbu = (double) meta.getProperty ("input_level_dbu", 0.0);
     return d;
 }
 
@@ -255,7 +327,8 @@ void NightAmp::applyToBuffer (const tracktion::PluginRenderContext& fc)
 
     juce::ScopedNoDenormals noDenormals;
 
-    const float inGain = juce::Decibels::decibelsToGain (input->get());
+    // Input, and calibration's difference between the interface's level and the amp's (as NAM's plugin adds them)
+    const float inGain = juce::Decibels::decibelsToGain (input->get() + calibrationDb());
     const float outGain = juce::Decibels::decibelsToGain (output->get());
     const float threshold = gate->get();
     const bool gated = threshold > -99.5f;

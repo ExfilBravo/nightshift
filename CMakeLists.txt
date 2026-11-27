@@ -29,7 +29,9 @@ juce_add_gui_app(Nightshift
     DOCUMENT_EXTENSIONS nsproj      # macOS: the bundle claims .nsproj, so Finder opens projects in NightShift
     # macOS: without this the audio interface's inputs are silent (the system asks the first time)
     MICROPHONE_PERMISSION_ENABLED TRUE
-    MICROPHONE_PERMISSION_TEXT "NightShift records your guitar, bass and voice through your audio interface.")
+    MICROPHONE_PERMISSION_TEXT "NightShift records your guitar, bass and voice through your audio interface."
+    # macOS asks before an app reads Downloads: the sidebar's Samples lists it (asked the first time Samples opens)
+    PLIST_TO_MERGE "<plist><dict><key>NSDownloadsFolderUsageDescription</key><string>NightShift lists the sounds in your Downloads in the sidebar's Samples, to hear them and drag them into a song.</string></dict></plist>")
 
 juce_generate_juce_header(Nightshift)
 
