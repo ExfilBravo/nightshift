@@ -202,7 +202,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   lane to add a point, drag points to move them (on the snap; Alt finer), right-click one (or click it and press
   Delete) to delete it; level before the first point and after the last. **Curves** (FL's): each line between two
   points has a dot in its middle; drag it down or up to bend the line, easing in (starting slowly, getting there
-  quickly) or out, as far as you like; double-click or right-click the dot to straighten it. The lane draws each line
+  quickly) or out, almost to a corner; double-click or right-click the dot to straighten it. The lane draws each line
   as it plays (a frequency knob's straight line in Hz curves up the lane as the knob would turn). A lane's name opens
   its menu: **Add a lane for** any of the channel's controls (pan, its sends, the instrument's and every effect's
   knobs, a plugin's parameters too), clear its points, or remove it. Right-click a fader, the pan bar, or a knob on
