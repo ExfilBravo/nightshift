@@ -143,7 +143,7 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
 
     // Recording automation: a knob grabbed and let go; a lane starting to be written goes on show
     automation::touchFor = [this] (tracktion::AutomatableParameter& p, bool down, bool held) { audio.touchParameter (p, down, held); };
-    audio.onAutomationWriting = [this] (int owner, const juce::String&) { showWrittenLane (owner); };
+    audio.onAutomationWriting = [this] (int owner, const juce::String& param) { showWrittenLane (owner, param); };
     toolbar.onRecordAutomation = [this] { toggleAutomationRecording(); };
 
     // A MIDI keyboard plugged in while running
@@ -2219,15 +2219,17 @@ void MainComponent::showAutomationFor (int owner, const juce::String& param)
         resized();
     }
 
+    playlist.revealLane (owner, param);
+
     showToast ((bus != nullptr ? bus->name + ": " : juce::String()) + name
                + (owner == 0 || bus != nullptr ? " is along the bottom of Arrange" : " is under its track in Arrange")
                + ": click its lane to add points. Song mode plays them");
 }
 
-void MainComponent::showWrittenLane (int owner)
+void MainComponent::showWrittenLane (int owner, const juce::String& param)
 {
     // A lane being written is on show as it's written: lanes shown, a channel's under a track of
-    // its own (as Automate does)
+    // its own (as Automate does), a bus's or the master's scrolled into view along the bottom
     if (song.findChannel (owner) != nullptr)
         playlist.addTrackFor (owner);
 
@@ -2236,6 +2238,8 @@ void MainComponent::showWrittenLane (int owner)
         song.showAutomation = true;
         song.notify (Song::Change::automation);
     }
+
+    playlist.revealLane (owner, param);
 }
 
 void MainComponent::toggleAutomationRecording()

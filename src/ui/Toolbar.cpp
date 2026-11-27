@@ -334,6 +334,37 @@ void Toolbar::resized()
     showCpu = w >= 1400;
     showSignature = w >= 1260;
 
+    // The latency's milliseconds have room at least: with more beside Record (the MIDI light, the
+    // record automation switch) the same things give way, in the same order, a little sooner. The
+    // readouts take their narrow widths before the time signature goes
+    auto pillWidth = [] (const juce::String& s) { return (int) juce::GlyphArrangement::getStringWidth (font (16.5f, true), s) + 40; };
+    const int midiWidth = midiLight.isVisible() ? 4 + midiLightWidth : 0;
+    const int transportWidth = 4 + 7 * buttonSize + 5 * 4 + 17 + 4 + midiWidth;
+    bool narrowReadouts = ! showSignature;
+
+    auto roomLeft = [&]
+    {
+        int used = 32 + (showProject ? 248 : 140) + 12 + modes.getIdealWidth() + 14 + transportWidth + 14;
+
+        for (int i = 0; i < (showSignature ? 4 : 3); ++i)
+            used += (narrowReadouts ? narrowReadoutWidths : readoutWidths)[i];
+
+        used += 34 + 8 + (w >= 1200 ? 104 : 36) + 16 + (showSignature ? 100 + 14 : 76 + 10) + (showCpu ? 78 + 8 : 0);
+        return w - used;
+    };
+
+    while (roomLeft() < pillWidth (latencyShort) && (showProject || showCpu || showSignature))
+    {
+        if (showProject)
+            showProject = false;
+        else if (showCpu)
+            showCpu = false;
+        else if (! narrowReadouts)
+            narrowReadouts = true;
+        else
+            showSignature = false;
+    }
+
     auto r = getLocalBounds().reduced (16, 0);
     const int cy = r.getCentreY();
     auto centred = [cy] (juce::Rectangle<int> area, int h) { return area.withHeight (h).withY (cy - h / 2); };
@@ -345,8 +376,7 @@ void Toolbar::resized()
     modes.setBounds (centred (r.removeFromLeft (modes.getIdealWidth()), 36));
     r.removeFromLeft (14);
 
-    const int midiWidth = midiLight.isVisible() ? 4 + midiLightWidth : 0;
-    transportArea = centred (r.removeFromLeft (4 + 7 * buttonSize + 5 * 4 + 17 + 4 + midiWidth), groupHeight);
+    transportArea = centred (r.removeFromLeft (transportWidth), groupHeight);
     {
         auto t = transportArea.reduced (4, 5);
         for (auto* b : { &stopButton, &playButton, &recordButton, &automationRecordButton })
@@ -373,7 +403,7 @@ void Toolbar::resized()
     r.removeFromLeft (14);
 
     readouts.clear();
-    const auto* widths = showSignature ? readoutWidths : narrowReadoutWidths;
+    const auto* widths = narrowReadouts ? narrowReadoutWidths : readoutWidths;
     int readoutTotal = 0;
 
     for (int i = 0; i < (showSignature ? 4 : 3); ++i)
@@ -409,7 +439,6 @@ void Toolbar::resized()
         r.removeFromRight (8);
 
     // The whole story when there's room, else just the milliseconds
-    auto pillWidth = [] (const juce::String& s) { return (int) juce::GlyphArrangement::getStringWidth (font (16.5f, true), s) + 40; };
     latencyCompact = pillWidth (latencyText) > r.getWidth();
     const int width = std::min (pillWidth (latencyCompact ? latencyShort : latencyText), std::max (0, r.getWidth()));
     latencyArea = centred (r.removeFromRight (width), 32);

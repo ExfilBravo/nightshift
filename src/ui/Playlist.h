@@ -164,6 +164,10 @@ public:
         there are more than fit (two fifths of Arrange's height), the wheel scrolls them. */
     std::vector<std::pair<int, juce::String>> stripLanes() const;
 
+    /** Scrolls the lanes along the bottom so a bus's or the master's lane is in view (Automate, or
+        recording starting to write it). */
+    void revealLane (int owner, const juce::String& param);
+
     /** The handle in the middle (in time) of the line from a lane's point `index` on to the next,
         dragged up or down to bend it (FL's curve handles). A line too short or too flat for one has
         none. */

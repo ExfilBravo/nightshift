@@ -11551,6 +11551,11 @@ namespace
                            && ! last.empty() && last.back().owner == 0 && last.back().param == "volume" && last.front().param != first.front().param,
                        juce::String ((int) all.size()) + " lanes along the bottom, " + juce::String ((int) first.size())
                          + " showing: the wheel goes through them to the master's");
+
+                playlist.revealLane (busId, all.front().second);
+                const auto revealed = shownInStrip();
+                check (! revealed.empty() && revealed.front().owner == busId && revealed.front().param == all.front().second,
+                       "a lane opened by Automate (or being recorded) is scrolled into view along the bottom");
             }
 
             // A bus strip's fader and pan bar: Automate (and MIDI learn) on the right-click
@@ -12300,7 +12305,8 @@ namespace
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
                 { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
-                { "automation lanes", "--automationdemo" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
+                { "automation lanes", "--automationdemo" }, { "a bus's automation lanes", "--buses --automationdemo --busautomation" },
+                { "recording automation", "--automationdemo --recordautomation" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
                 { "a plugin's Inspector", "--moretracks --select \"Surge XT\"" },
@@ -16476,8 +16482,9 @@ namespace
                 main.repaint();
             }
 
-            // Automation as it looks: lanes shown, the first track's channel's volume drawn and its
-            // pan swept, and the master fading out over the last two bars
+            // Automation as it looks: lanes shown, the first track's channel's volume drawn (easing out
+            // down, easing in back up) and its pan swept, and the master fading out over the last two
+            // bars, eased out
             if (args.has ("--automationdemo"))
             {
                 const int bar = song.ticksPerBar();
@@ -16488,12 +16495,12 @@ namespace
 
                 if (first != 0)
                 {
-                    song.laneFor (first, "volume", "Volume").points = { { 0, 0.55f }, { 4 * bar, 0.35f }, { 6 * bar, 0.72f }, { 8 * bar, 0.72f } };
+                    song.laneFor (first, "volume", "Volume").points = { { 0, 0.55f, -0.6f }, { 4 * bar, 0.35f, 0.6f }, { 6 * bar, 0.72f }, { 8 * bar, 0.72f } };
                     song.laneFor (first, "pan", "Pan").points = { { 0, -0.6f }, { 8 * bar, 0.6f } };
                 }
 
                 const int end = std::max (4 * bar, song.songLengthInTicks());
-                song.laneFor (0, "volume", "Volume").points = { { end - 2 * bar, 0.8f }, { end, 0.0f } };
+                song.laneFor (0, "volume", "Volume").points = { { end - 2 * bar, 0.8f, -0.5f }, { end, 0.0f } };
                 song.showAutomation = true;
                 song.notify (Song::Change::automation);
                 audio.syncNow();
@@ -16622,6 +16629,20 @@ namespace
                 }
 
                 song.notify (Song::Change::channels);
+
+                // Buses' automation (with --automationdemo): the Reverb bus swelling up into the chorus and
+                // panned across, along the bottom above the master's
+                if (args.has ("--busautomation"))
+                {
+                    const int bar = song.ticksPerBar();
+                    audio.syncNow();
+                    song.laneFor (verbId, "volume", audio.automationName (verbId, "volume")).points
+                        = { { 0, 0.45f }, { 4 * bar, 0.45f, 0.55f }, { 6 * bar, 0.8f }, { 8 * bar, 0.6f } };
+                    song.laneFor (verbId, "pan", audio.automationName (verbId, "pan")).points = { { 0, 0.5f }, { 8 * bar, -0.5f } };
+                    song.showAutomation = true;
+                    song.notify (Song::Change::automation);
+                    audio.syncNow();
+                }
             }
 
             // A drum kit channel with an AI drummer conversation already had (written here, nothing
@@ -16793,6 +16814,48 @@ namespace
 
             if (args.has ("--armrecord"))
                 audio.setRecordArmed (true);
+
+            // Recording automation as it looks while it writes: the switch on, Song mode playing from bar 3,
+            // and the first track's channel's fader grabbed there (its lane red, what it's written so far
+            // drawn as a fade down over the bar before)
+            if (args.has ("--recordautomation"))
+            {
+                const int bar = song.ticksPerBar();
+                int first = 0;
+
+                for (int row = 0; row < song.numTracks() && first == 0; ++row)
+                    first = song.trackChannel (row);
+
+                song.mode = PlayMode::song;
+                song.showAutomation = true;
+                song.notify (Song::Change::transport);
+                audio.syncNow();
+
+                if (first != 0)
+                {
+                    const float zero = te::decibelsToVolumeFaderPosition (0.0f);
+                    song.laneFor (first, "volume", "Volume").points = { { 0, zero }, { bar, zero }, { bar + bar / 4, 0.62f }, { 2 * bar - bar / 8, 0.48f },
+                                                                         { 2 * bar, 0.48f } };
+                }
+
+                song.notify (Song::Change::automation);
+                audio.setAutomationRecording (true);
+                audio.setPlayheadTicks (2 * bar);
+                audio.togglePlay();
+
+                // (a block played, so the fader's parameter is where its lane has it when it's grabbed)
+                if (! args.has ("--live"))
+                {
+                    juce::AudioBuffer<float> block (2, 512);
+                    block.clear();
+                    audio.processHostedBlock (block);
+                }
+
+                if (first != 0)
+                    audio.touchControl (first, "volume", true);
+
+                main.repaint();
+            }
 
             // Paint once so lazily loaded things (waveforms) start, then let them and any
             // async layout settle before capturing

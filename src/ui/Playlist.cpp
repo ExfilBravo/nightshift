@@ -169,6 +169,25 @@ std::vector<juce::String> Playlist::laneParamsOf (int owner) const
     return params;
 }
 
+void Playlist::revealLane (int owner, const juce::String& param)
+{
+    resized();      // (the strip as it is now, lanes just added in it)
+    const auto lanes = stripLanes();
+    const int shown = masterArea.getHeight() / automationLaneHeight;
+
+    for (int i = 0; i < (int) lanes.size(); ++i)
+        if (lanes[(size_t) i].first == owner && lanes[(size_t) i].second == param)
+        {
+            if (i < stripScroll)
+                stripScroll = i;
+            else if (shown > 0 && i >= stripScroll + shown)
+                stripScroll = i - shown + 1;
+
+            repaint();
+            return;
+        }
+}
+
 std::vector<std::pair<int, juce::String>> Playlist::stripLanes() const
 {
     std::vector<std::pair<int, juce::String>> lanes;
@@ -1392,13 +1411,13 @@ void Playlist::paint (juce::Graphics& g)
         // More lanes than fit: a slim bar down the right edge says where these are among them
         if (const int total = (int) stripLanes().size(), shown = masterArea.getHeight() / automationLaneHeight; total > shown)
         {
-            const auto track = juce::Rectangle<float> ((float) masterArea.getRight() - 6.0f, (float) masterArea.getY() + 3.0f,
-                                                       3.0f, (float) masterArea.getHeight() - 6.0f);
+            const auto track = juce::Rectangle<float> ((float) masterArea.getRight() - 8.0f, (float) masterArea.getY() + 3.0f,
+                                                       5.0f, (float) masterArea.getHeight() - 6.0f);
             g.setColour (hairlineStrong);
-            g.fillRoundedRectangle (track, 1.5f);
-            g.setColour (textDim);
+            g.fillRoundedRectangle (track, 2.5f);
+            g.setColour (text.withAlpha (0.7f));
             g.fillRoundedRectangle (track.withHeight (track.getHeight() * (float) shown / (float) total)
-                                         .withY (track.getY() + track.getHeight() * (float) stripScroll / (float) total), 1.5f);
+                                         .withY (track.getY() + track.getHeight() * (float) stripScroll / (float) total), 2.5f);
         }
 
         g.setColour (hairlineStrong);
@@ -1492,16 +1511,10 @@ void Playlist::paintAutomationLane (juce::Graphics& g, const LaneView& lane)
     };
 
     juce::Path line;
+    line.startNewSubPath (xs.front(), yOf (valueAt (xToTick (xs.front()))));
 
-    for (auto x : xs)
-    {
-        const float y = yOf (valueAt (xToTick (x)));
-
-        if (line.isEmpty())
-            line.startNewSubPath (x, y);
-        else
-            line.lineTo (x, y);
-    }
+    for (size_t i = 1; i < xs.size(); ++i)
+        line.lineTo (xs[i], yOf (valueAt (xToTick (xs[i]))));
 
     juce::Path fill (line);
     fill.lineTo (area.getRight(), inner.getBottom());

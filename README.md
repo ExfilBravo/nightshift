@@ -198,15 +198,29 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   clip plays the notes that start in its part, as in FL. A recording's two dots on its top corners drag out its
   **fades** in and out. The **Edit** buttons in both headers list all of it with the keys; everything undoes.
 - **Automation** (as in Logic; Song mode plays it) – the **Automation** button in Arrange's header shows a lane
-  under each channel's track (its volume to start with) and the master's along the bottom. Click a lane to add a
-  point, drag points to move them (on the snap; Alt finer), right-click one (or click it and press Delete) to
-  delete it; the line runs straight from point to point, level before the first and after the last. A lane's
-  name opens its menu: **Add a lane for** any of the channel's controls (pan, its sends, the instrument's and
-  every effect's knobs, a plugin's parameters too), clear its points, or remove it. Right-click a fader, the pan
-  bar, or a knob on NightShift's own effects or Nova and choose **Automate** to open its lane. A lane with no
-  points leaves its control alone, and Pattern mode leaves every control where it is. A track playing several
-  channels' patterns (a drum pattern of many sounds) has no lanes of its own: automate one of its sounds from its
-  fader or a knob and it gets a track of its own. Buses can't be automated yet.
+  under each channel's track (its volume to start with), and the buses' and the master's along the bottom. Click a
+  lane to add a point, drag points to move them (on the snap; Alt finer), right-click one (or click it and press
+  Delete) to delete it; level before the first point and after the last. **Curves** (FL's): each line between two
+  points has a dot in its middle; drag it down or up to bend the line, easing in (starting slowly, getting there
+  quickly) or out, as far as you like; double-click or right-click the dot to straighten it. The lane draws each line
+  as it plays (a frequency knob's straight line in Hz curves up the lane as the knob would turn). A lane's name opens
+  its menu: **Add a lane for** any of the channel's controls (pan, its sends, the instrument's and every effect's
+  knobs, a plugin's parameters too), clear its points, or remove it. Right-click a fader, the pan bar, or a knob on
+  NightShift's own effects or Nova and choose **Automate** to open its lane. A lane with no points leaves its
+  control alone, and Pattern mode leaves every control where it is. A track playing several channels' patterns (a
+  drum pattern of many sounds) has no lanes of its own: automate one of its sounds from its fader or a knob and it
+  gets a track of its own. **Buses** have lanes too, for their volume, pan and every effect's knobs: right-click a
+  bus's fader or pan bar (or a knob on one of its effects) and choose Automate, or use the master lane's menu, *Add a
+  lane for a bus*. Their lanes sit along the bottom above the master's; when there are more than fit, the wheel goes
+  through them. **Recording automation**: switch on the record automation button beside Record (or in Record's
+  right-click menu), play the song in Song mode and move a control: a fader, a pan bar or a send in the Mixer or the
+  Inspector, the master volume, a knob on NightShift's effects or Nova, a control in a plugin's own window, or a
+  MIDI controller's knob linked by MIDI learn. Its lane is written from where you grab it to where you let go,
+  showing as it's written (its name in red): what the lane had in between is replaced, the moves become a few points
+  of smooth line, and a sixteenth after you let go it goes back to what the lane had (a lane that had nothing stays
+  where you left it). A MIDI knob counts as let go once it's left alone for a moment. Round the loop, it writes on
+  from the loop's start. While the song plays, faders, pan bars and sends follow their lanes, so grabbing one
+  carries on from where the lane has it. Each grab is one undo.
 - **MIDI keyboards and controllers** – plug a USB MIDI keyboard in (or one on an audio interface's MIDI in) and it
   plays the selected channel straight away, through its instrument and effects: velocity, the sustain pedal, and
   pitch bend and the mod wheel on Nova and plugin instruments. With an audio track selected it keeps playing the
@@ -214,8 +228,9 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   plugged in while NightShift runs says so ("MIDI keyboard ready"). With Record armed, Play records what you play
   into the pattern as the computer keyboard does, each note where you played it (allowing for the moment notes take to
   arrive); a note held by the pedal is written as long as it sounded. **Audio settings** (F10) lists each MIDI
-  input with a switch to turn it off. **MIDI learn**: right-click a fader or a pan bar (Mixer or Inspector) or a
-  knob on NightShift's effects or Nova, choose *Link to a knob on your MIDI controller...*, and move the knob: it
+  input with a switch to turn it off. **MIDI learn**: right-click a fader or a pan bar (Mixer or Inspector; a
+  channel's, a bus's or the master's) or a knob on NightShift's effects or Nova, choose *Link to a knob on your MIDI
+  controller...*, and move the knob: it
   drives that control from then on (one knob per control, one control per knob; Escape stops waiting). Links are
   saved with the song, and the same menu forgets one.
 - **Synths plugged in (MIDI out)** – a channel can play a synth, drum machine or sound module plugged in over MIDI
@@ -852,6 +867,10 @@ Nightshift.exe --arrangetest
 Nightshift.exe --editingtest
 Nightshift.exe --arrangeedittest
 Nightshift.exe --automationtest
+Nightshift.exe --automationcurvetest
+Nightshift.exe --busautomationtest
+Nightshift.exe --automationrecordtest
+Nightshift.exe --snapshot ui.png --automationdemo [--buses --busautomation] [--recordautomation]
 Nightshift.exe --miditest
 Nightshift.exe --midiouttest
 Nightshift.exe --midifiletest
@@ -928,8 +947,26 @@ in and out. `--snapshot ... --editdemo` shows a split clip, faded recordings and
 to right, a filter's cutoff lane closes on it and the master's volume lane fades the mix; checks Pattern mode
 takes every curve off (and the fader's value back), that an emptied lane gives the fader back, which lane a knob's
 parameter is, then adds, drags and deletes points in Arrange with real mouse events and the Delete key, undoes,
-saves, and removes a channel with its lanes. `--snapshot ... --automationdemo` shows lanes with points and a master
-fade. `--miditest` checks MIDI keyboards without one plugged in: the channel they play (the selected one, the last
+saves, and removes a channel with its lanes. `--snapshot ... --automationdemo` shows lanes with points, bent lines and
+a master fade; with `--buses --busautomation`, a bus's lanes along the bottom; with `--recordautomation`, a fader's
+lane being recorded as the song plays. `--automationcurvetest` checks bent lines: their shape eased in and out (the
+middle where the bend says, the ends staying put, never turning back), a bent lane's values, saving (a bend as a third
+number, an older song's points straight), the volume's curve as Song mode plays it (short straight lines within 0.0002
+of the lane), renders of a fade straight and bent each way within 1 dB of the lane, then Arrange with real mouse
+events: a line's middle dot dragged down 4 px eases it in with its middle where it was let go, up eases it out, undo,
+a moved point keeping its bend, double-click and right-click straightening it, and no dot on a line too short.
+`--busautomationtest` checks buses' automation: a bus's volume, pan and effects offered and found by their lanes,
+renders of a tone through a bus faded by its volume lane, swept by its pan lane and closed on by its filter's cutoff
+lane, Pattern mode and an emptied lane giving its fader back, a MIDI knob linked and learned for it, saving, its lanes
+along the bottom above the master's (clicked into, scrolled through with the wheel, scrolled to when opened),
+Automate on a bus strip's fader, and a bus taken away with its lanes, links and the channels' send lanes to it.
+`--automationrecordtest` records automation with the song played block by block in real time: nothing while stopped,
+a fader grabbed and moved down along a straight line in twenty steps, held and let go (written as it goes, four
+points in the end, what was between replaced, the rest kept and gone back to a sixteenth later, one undo, a render
+within 1 dB of it), a MIDI knob turned through 64 steps (one smooth line, let go once left alone), a knob on
+NightShift's filter, a control moved in a plugin's own window (Tracktion's gestures), a hold round the loop (written
+to its end and again from its start), nothing in Pattern mode, the Inspector's fader following its lane while the
+song plays, and the top bar's switch. `--miditest` checks MIDI keyboards without one plugged in: the channel they play (the selected one, the last
 instrument while an audio track is selected), recording into the pattern (a note on beat 2 for an eighth at velocity
 100, one that took a quarter of a second to arrive written half a beat earlier, a note the sustain pedal holds on),
 MIDI learn (knobs on a volume, a pan, the master and a filter's cutoff on MIDI channel 2; saved with the song; gone
@@ -967,7 +1004,7 @@ the text check, which reads back every piece of text as it's drawn and lists any
 capitals: 14), squeezed, cut short with "...", running out of what drew it, or fainter than 4.5 to 1 against what's
 behind it (a greyed-out control's: 3 to 1); `--alltext` lists every piece. Text that's painted over afterwards by
 something at least half opaque (the studio dimmed behind the start screen, a row label under an automation lane) isn't
-there to be read, so it isn't checked. `--texttest` runs it over 59 views (every tab, AI agent, Nova page, effect
+there to be read, so it isn't checked. `--texttest` runs it over 61 views (every tab, AI agent, Nova page, effect
 window and dialog, the start screen the first time and after it, a laptop's 1366 x 768) and fails on any
 of those; the user's own words (a channel's name, a sound's, a project's folder) may be cut short to fit, ours never.
 Sizes are Segoe UI's (a stand-in font's are measured by its letters). Where Segoe UI is installed, texttest also checks
