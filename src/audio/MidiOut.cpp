@@ -184,6 +184,17 @@ void MidiOutHub::refreshPorts()
     }
 }
 
+bool MidiOutHub::isOpen (const juce::String& output)
+{
+    const juce::ScopedLock sl (deviceLock);
+
+    for (int p = 0; p < numPorts.load(); ++p)
+        if (ports[(size_t) p].name == output)
+            return ports[(size_t) p].device != nullptr;
+
+    return false;
+}
+
 //==============================================================================
 void MidiOutHub::enqueue (int port, const juce::uint8* bytes, int size, double sendMs, double heardMs, bool scheduled)
 {

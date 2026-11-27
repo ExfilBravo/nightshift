@@ -11942,6 +11942,22 @@ namespace
             for (auto& d : juce::MidiOutput::getAvailableDevices())
                 std::cout << "JUCE out: " << d.name << "  [" << d.identifier << "]" << std::endl;
 
+            // Synths plugged in: NightShift's own sender (as the studio's) opens each output and sends it
+            // "all notes off" on channel 16, which nothing hears. (Before the engine below opens Tracktion's.)
+            {
+                MidiOutHub hub (false);
+
+                for (auto& name : hub.getOutputNames())
+                {
+                    hub.sendNow (name, juce::MidiMessage::allNotesOff (16));
+
+                    for (int i = 0; i < 20; ++i)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+                    std::cout << "NightShift's MIDI out: " << name << (hub.isOpen (name) ? ": opened, sent" : ": couldn't open it") << std::endl;
+                }
+            }
+
             AudioEngine::headlessMidiDevices = true;
             Song song;
             song.loadBlank();
@@ -13227,15 +13243,23 @@ namespace
                 MainComponent main (studio, audio);
                 main.setSize (1600, 940);
                 auto pump = [] { for (int i = 0; i < 10; ++i) juce::MessageManager::getInstance()->runDispatchLoopUntil (5); };
+                // Every dialog up dismissed (as Escape would), a few goes at most
                 auto closeDialogs = [&pump]
                 {
                     pump();
 
-                    while (auto* modal = juce::ModalComponentManager::getInstance()->getModalComponent (0))
+                    for (int tries = 0; tries < 20; ++tries)
                     {
+                        auto* modal = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+
+                        if (modal == nullptr)
+                            return;
+
                         modal->exitModalState (0);
                         pump();
                     }
+
+                    std::cout << "(a dialog that wouldn't close)" << std::endl;
                 };
 
                 pump();
@@ -13263,12 +13287,14 @@ namespace
                            + (what != nullptr ? " (" + juce::String (what->getNumItems()) + " choices)" : juce::String()));
                 closeDialogs();
 
+                // What Choose where to save... does once there's a file (its message box aside: shown
+                // with no callback, it would wait for a click)
                 const auto exported = folder.getChildFile ("exported.mid");
-                main.saveMidiFile (exported, 0);
-                closeDialogs();
+                const auto [saved, said] = main.saveMidiFile (exported, 0);
+                const auto notesInSong = midifile::notesAsPlayed (studio, 0, true).size();
                 juce::String exportError;
                 const auto back = midifile::read (exported, exportError);
-                check (back.has_value() && back->parts.size() == 3 && back->meterChanges.size() == 2
+                check (saved && back.has_value() && back->parts.size() == 3 && back->meterChanges.size() == 2
                            && [&]
                               {
                                   size_t count = 0;
@@ -13276,9 +13302,11 @@ namespace
                                   for (auto& part : back->parts)
                                       count += part.notes.size();
 
-                                  return count == midifile::notesAsPlayed (studio, 0, true).size();
-                              }(),
-                       "and writes the song's notes, every one, with its time signatures");
+                                  return count == notesInSong;
+                              }()
+                           && said.contains (juce::String ((int) notesInSong) + " notes on 3 tracks, the whole song"),
+                       "and writes the song's notes, every one, with its time signatures, and says so: \""
+                           + said.fromFirstOccurrenceOf ("\n", false, false) + "\"");
             }
 
             folder.deleteRecursively();

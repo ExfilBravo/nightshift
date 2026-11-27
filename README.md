@@ -954,7 +954,7 @@ Bass and a drum kit's own keys, turns down a file that isn't one, then in the st
 one on bar 5 (and undoes it) and exports through Export MIDI file. `--snapshot ... --settings --midiouts "Synth,Drum
 machine"` shows Audio settings with made-up outputs (the first 12 ms early, the second sent the tempo), `--midioutchannel`
 adds a channel playing the first, and `--exportmidi` shows Export MIDI file's question.
-`--mididevices` lists the MIDI inputs and outputs JUCE and the engine see. `--snapshot ... --midilight <name>` shows
+`--mididevices` lists the MIDI inputs and outputs JUCE and the engine see, and opens each output through NightShift's own sender (as the studio does) to send it "all notes off" on channel 16, which nothing hears. `--snapshot ... --midilight <name>` shows
 the top bar's MIDI light lit for a keyboard of that name; `--about 800` shows About as a screen 800 high fits it
 (scrolling). `--tempotest` checks tempo and time signature changes: the song's timing through a jump and a glide
 against Tracktion's (to a microsecond), bars across 7/8 and 3/4 changes and one cut short, snapping, saving, a

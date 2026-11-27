@@ -3594,12 +3594,16 @@ void MainComponent::exportMidi()
                               [this, patternId, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
         {
             if (auto file = fc.getResult(); file != juce::File())
-                saveMidiFile (file.withFileExtension ("mid"), patternId);
+            {
+                const auto [ok, said] = saveMidiFile (file.withFileExtension ("mid"), patternId);
+                juce::AlertWindow::showMessageBoxAsync (ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                                                        ok ? "Export finished" : "Export failed", said);
+            }
         });
     }), true);
 }
 
-void MainComponent::saveMidiFile (const juce::File& file, int patternId)
+std::pair<bool, juce::String> MainComponent::saveMidiFile (const juce::File& file, int patternId)
 {
     const auto notes = midifile::notesAsPlayed (song, patternId, true);
     std::set<int> channels;
@@ -3610,25 +3614,20 @@ void MainComponent::saveMidiFile (const juce::File& file, int patternId)
     const auto* pattern = song.findPattern (patternId);
 
     if (midifile::save (song, file, patternId))
-    {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Export finished",
-                                                "Saved " + file.getFullPathName() + "\n" + juce::String ((int) notes.size())
-                                                    + (notes.size() == 1 ? " note on " : " notes on ") + juce::String ((int) channels.size())
-                                                    + (channels.size() == 1 ? " track" : " tracks")
-                                                    + (pattern != nullptr ? ", the pattern " + pattern->name : juce::String (", the whole song"))
-                                                    + ", with its tempo and time signature.");
-        return;
-    }
+        return { true, "Saved " + file.getFullPathName() + "\n" + juce::String ((int) notes.size())
+                         + (notes.size() == 1 ? " note on " : " notes on ") + juce::String ((int) channels.size())
+                         + (channels.size() == 1 ? " track" : " tracks")
+                         + (pattern != nullptr ? ", the pattern " + pattern->name : juce::String (", the whole song"))
+                         + ", with its tempo and time signature." };
 
-    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Export failed",
-                                            "NightShift couldn't write " + file.getFullPathName()
-                                           #if JUCE_MAC
-                                            + "\n\nIf macOS refused NightShift access to that folder, allow it in "
-                                              "System Settings > Privacy & Security > Files and Folders, or save somewhere else.");
-                                           #else
-                                            + "\n\nIf Windows Security's Controlled folder access is on, it blocks apps it doesn't "
-                                              "know from Documents and the Desktop. Allow NightShift there, or save somewhere else.");
-                                           #endif
+    return { false, "NightShift couldn't write " + file.getFullPathName()
+                   #if JUCE_MAC
+                    + "\n\nIf macOS refused NightShift access to that folder, allow it in "
+                      "System Settings > Privacy & Security > Files and Folders, or save somewhere else." };
+                   #else
+                    + "\n\nIf Windows Security's Controlled folder access is on, it blocks apps it doesn't "
+                      "know from Documents and the Desktop. Allow NightShift there, or save somewhere else." };
+                   #endif
 }
 
 void MainComponent::openMidiFile (const juce::File& file)

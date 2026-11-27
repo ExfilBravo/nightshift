@@ -94,6 +94,9 @@ public:
     /** Opens the outputs the plan (or a test note) uses and closes ones that went away. Message thread. */
     void refreshPorts();
 
+    /** Whether an output is open now (opened once something was sent to it). */
+    bool isOpen (const juce::String& output);
+
     //==============================================================================
     /** A message a keyboard (the computer's or one plugged in) plays on a channel that plays a
         synth plugged in: sent at once, on the channel's MIDI channel. Any thread. */
