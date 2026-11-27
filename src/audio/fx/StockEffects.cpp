@@ -18,6 +18,7 @@ namespace
         { NightChorus::xmlTypeName,     "Nightshift Chorus",     "Thickens and widens with slowly moving copies" },
         { NightFilter::xmlTypeName,     "Nightshift Filter",     "Resonant low, band or high pass with drive" },
         { NightAmp::xmlTypeName,        "Nightshift NAM Amp",    "A real amp, captured: a Neural Amp Modeler model (.nam) and a cabinet" },
+        { NightTune::xmlTypeName,       "Nightshift Pitch Correction", "Pulls singing or playing onto the notes of the key" },
     };
 }
 
@@ -31,6 +32,7 @@ void registerAll (tracktion::Engine& engine)
     pm.createBuiltInType<NightChorus>();
     pm.createBuiltInType<NightFilter>();
     pm.createBuiltInType<NightAmp>();
+    pm.createBuiltInType<NightTune>();
 }
 
 const juce::Array<juce::PluginDescription>& descriptions()

@@ -89,8 +89,9 @@ target_compile_definitions(Nightshift PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Nightshift,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:Nightshift,JUCE_VERSION>"
-    # Time-stretching and pitch-shifting audio clips: Signalsmith Stretch (MIT, in the engine's 3rd_party), which
-    # keeps chords and voices clean, and SoundTouch (LGPL 2.1) beside it. Both ship with the engine (NOTICES.txt)
+    # The engine's time-stretchers: SoundTouch (LGPL 2.1) and Signalsmith Stretch (MIT), both in its 3rd_party
+    # (NOTICES.txt). NightShift renders stretched audio clips with Signalsmith Stretch itself (src/audio/Stretcher),
+    # lined up to the sample; --stretchtest holds SoundTouch beside it
     TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1
     TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH=1)
 

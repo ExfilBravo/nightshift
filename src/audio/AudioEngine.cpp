@@ -4,6 +4,8 @@
 #include "AudioEngine.h"
 #include "AutomationRecorder.h"
 #include "model/Paths.h"
+#include "model/SongKey.h"
+#include "Stretcher.h"
 #include "DrumKit.h"
 #include "DrumSynth.h"
 #include "MasterLimiter.h"
@@ -277,6 +279,10 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
     midiOut = std::make_unique<MidiOutHub> (! openAudioDevice);
     loadOptions();
 
+    // Stretched takes' renders nobody's played in two weeks go (the studio only)
+    if (liveAudio)
+        stretch::tidyCache();
+
     if (liveAudio)
     {
         if (options.preferInterface)
@@ -368,6 +374,8 @@ AudioEngine::AudioEngine (Song& s, bool openAudioDevice)
 AudioEngine::~AudioEngine()
 {
     *alive = false;
+    stopStretching = true;
+    stretchPool.removeAllJobs (true, 10000);
     stopTimer();
     automationRecorder.reset();     // off every parameter it listens to, while they're there
     pluginFinder.reset();
@@ -501,6 +509,30 @@ void AudioEngine::handleAsyncUpdate()
     // Synths plugged in: their notes as the song now plays them (unchanged, nothing's disturbed)
     if (flags & (needTempo | needChannels | needMixer | needNotes | needClips | needMutes | needInputs))
         syncMidiOut();
+
+    // Pitch correction pulls to the song's key, heard from its notes: new notes, or new correctors
+    if (flags & (needNotes | needClips | needChannels | needMixer))
+        syncSongKey();
+}
+
+void AudioEngine::syncSongKey()
+{
+    const auto key = songkey::find (song);
+
+    auto tell = [&key] (const std::vector<std::pair<int, te::Plugin::Ptr>>& chain)
+    {
+        for (auto& [id, plugin] : chain)
+            if (auto tune = dynamic_cast<NightTune*> (plugin.get()))
+                tune->setSongKey (key.root, key.minor);
+    };
+
+    for (auto& [id, slot] : slots)
+        tell (slot.effects);
+
+    for (auto& [id, slot] : busSlots)
+        tell (slot.effects);
+
+    tell (masterFx);
 }
 
 void AudioEngine::syncMutes()
@@ -2703,6 +2735,7 @@ void AudioEngine::syncClips (bool notesOnly)
     else
     {
         removeAllClips();
+        stretchDeferred = false;
 
         for (auto& placed : song.playlist)
         {
@@ -2741,9 +2774,29 @@ void AudioEngine::syncClips (bool notesOnly)
             // crossfade and they fade across each other (equal power: takes aren't
             // correlated); free edges get a short fade so nothing starts with a click.
             // The folder's times are its audio's: stretched, they land in the song through its
-            // speed, or (following the tempo) its beats on the song's
+            // speed, or (following the tempo) its beats on the song's, and each take plays as
+            // rendered so (over what the comp uses of it)
             const bool stretched = song.isStretched (folder);
             auto songSeconds = [this, &folder] (double t) { return ticksToSeconds (song.audioTickAt (folder, t)); };
+            std::map<int, std::pair<juce::File, double>> renders;      // a take's render, and the song second it starts at
+
+            if (stretched)
+            {
+                std::map<int, std::pair<double, double>> used;      // each take's stretch of the folder's time
+
+                for (auto& s : folder.comp)
+                    if (juce::isPositiveAndBelow (s.take, (int) folder.takes.size()))
+                    {
+                        const double from = std::max (0.0, s.from - compCrossfadeSeconds), to = std::min (folder.length, s.to + compCrossfadeSeconds);
+                        auto [at, isNew] = used.try_emplace (s.take, from, to);
+
+                        if (! isNew)
+                            at->second = { std::min (at->second.first, from), std::max (at->second.second, to) };
+                    }
+
+                for (auto& [take, range] : used)
+                    renders[take] = stretchedTake (folder, folder.takes[(size_t) take], range.first, range.second);
+            }
 
             for (size_t i = 0; i < folder.comp.size(); ++i)
             {
@@ -2753,9 +2806,13 @@ void AudioEngine::syncClips (bool notesOnly)
                     continue;
 
                 const auto& take = folder.takes[(size_t) segment.take];
-                const juce::File file (take.file);
+                juce::File file (take.file);
 
                 if (! file.existsAsFile())
+                    continue;
+
+                // Stretched, its render (silent while it's still being made)
+                if (stretched && ! renders[segment.take].first.existsAsFile())
                     continue;
 
                 const bool joinsBefore = i > 0 && std::abs (folder.comp[i - 1].to - segment.from) < 1.0e-6;
@@ -2771,11 +2828,15 @@ void AudioEngine::syncClips (bool notesOnly)
                 te::ClipPosition position { { te::TimePosition::fromSeconds (start), te::TimeDuration::fromSeconds (end - start) },
                                             te::TimeDuration::fromSeconds (take.fileOffset + from) };
 
+                if (stretched)
+                {
+                    const auto& [rendered, renderStart] = renders[segment.take];
+                    file = rendered;
+                    position.offset = te::TimeDuration::fromSeconds (std::max (0.0, start - renderStart));
+                }
+
                 if (auto clip = it->second.track->insertWaveClip (file.getFileNameWithoutExtension(), file, position, false))
                 {
-                    if (stretched)
-                        stretchClip (*clip, folder, take.fileOffset + from, position);
-
                     clip->setMuted (! song.isTrackAudible (folder.track));
                     rowClips.emplace_back (clip, folder.track);
                     clip->setFadeInType (te::AudioFadeCurve::convex);
@@ -2812,44 +2873,84 @@ void AudioEngine::syncClips (bool notesOnly)
     syncLooping();
 }
 
-void AudioEngine::stretchClip (te::WaveAudioClip& clip, const AudioClip& folder, double fileSeconds, te::ClipPosition position)
+std::pair<juce::File, double> AudioEngine::stretchedTake (const AudioClip& folder, const Take& take, double fromSeconds, double toSeconds)
 {
-    // Stretched live, by the stretcher, rather than into a copy rendered in the background (which
-    // would be silent until it's done)
-    clip.setUsesProxy (false);
-    clip.setTimeStretchMode (stretchMode);
-    clip.setResamplingQuality (te::ResamplingQuality::sincMedium);
-    clip.setPitchChange (juce::jlimit (-24.0f, 24.0f, folder.pitch));
-    const double speed = juce::jlimit (AudioClip::slowest, AudioClip::fastest, folder.speed);
+    // Where each moment of the song over that stretch reads the take's file, through the folder's time map: as many
+    // points as it takes (following the tempo: every 20 ms and at each tempo change; at a speed: its ends)
+    const double s0 = ticksToSeconds (song.audioTickAt (folder, fromSeconds)), s1 = ticksToSeconds (song.audioTickAt (folder, toSeconds));
+    std::vector<double> at { s0, s1 };
 
     if (Song::followsTempo (folder))
     {
-        // The file's beats at the folder's tempo as it now plays (its speed in it), counted in the
-        // song's beat (Tracktion's beat is the time signature's unit), so beat for beat on the song
-        const auto info = clip.getAudioFile().getInfo();
-        const double length = info.sampleRate > 0.0 ? (double) info.lengthInSamples / info.sampleRate : 0.0;
-        const double bpm = folder.sourceBpm / speed;
-        auto& loop = clip.getLoopInfo();
-        loop.setNumerator (song.meterBeats);
-        loop.setDenominator (song.meterUnit);
-        loop.setInMarker (0);
-        loop.setOutMarker (-1);
-        loop.setNumBeats (length * bpm / 60.0);
-        clip.setAutoTempo (true);
+        for (double s = s0 + 0.02; s < s1; s += 0.02)
+            at.push_back (s);
 
-        // Tracktion takes a beat-based clip's offset in beats at the tempo where it starts: the
-        // beats into the file it starts at, as many seconds of that tempo
-        const double beatsIn = fileSeconds * bpm / 60.0 * song.meterUnit / 4.0;
-        position.offset = te::TimeDuration::fromSeconds (beatsIn / edit->tempoSequence.getBeatsPerSecondAt (position.getStart()));
+        for (auto& change : song.tempoChanges)
+            if (const double s = ticksToSeconds (change.tick); s > s0 && s < s1)
+                at.push_back (s);
+
+        std::sort (at.begin(), at.end());
+        at.erase (std::unique (at.begin(), at.end(), [] (double a, double b) { return std::abs (a - b) < 1.0e-9; }), at.end());
     }
-    else
+
+    stretch::Job job;
+    job.source = juce::File (take.file);
+    job.semitones = juce::jlimit (-24.0f, 24.0f, folder.pitch);
+
+    for (double s : at)
+        job.map.emplace_back (s - s0, take.fileOffset + song.audioSecondsAt (folder, secondsToTicks (s)));
+
+    const auto file = stretch::cachedFile (job);
+
+    if (file.existsAsFile())
     {
-        // At its speed: Tracktion reads the file at (time in the clip + offset) times the speed
-        clip.setSpeedRatio (speed);
-        position.offset = te::TimeDuration::fromSeconds (fileSeconds / speed);
+        file.setLastModificationTime (juce::Time::getCurrentTime());     // used: kept a while longer
+        return { file, s0 };
     }
 
-    clip.setPosition (position);
+    // A short one (and every one when it's for a render or an export) at once; a long one in the background
+    if (stretchAllNow || job.length() <= stretchNowSeconds)
+    {
+        stretch::render (job, file);
+        return { file, s0 };
+    }
+
+    stretchDeferred = true;
+
+    {
+        const juce::ScopedLock sl (stretchingLock);
+
+        if (! stretching.insert (file.getFileName()).second)
+            return { {}, s0 };
+    }
+
+    stretchPool.addJob ([this, job, file, weakAlive = std::weak_ptr<bool> (alive)]
+    {
+        stretch::render (job, file, stretch::Kind::signalsmith, &stopStretching);
+
+        {
+            const juce::ScopedLock sl (stretchingLock);
+            stretching.erase (file.getFileName());
+        }
+
+        // Done: the folder plays it from the next time the clips are built (now)
+        juce::MessageManager::callAsync ([this, weakAlive]
+        {
+            if (auto stillAlive = weakAlive.lock(); stillAlive && *stillAlive)
+            {
+                pending |= needClips;
+                triggerAsyncUpdate();
+            }
+        });
+    });
+
+    return { {}, s0 };
+}
+
+bool AudioEngine::isStretching() const
+{
+    const juce::ScopedLock sl (stretchingLock);
+    return ! stretching.empty();
 }
 
 void AudioEngine::syncLooping()
@@ -4314,6 +4415,15 @@ bool AudioEngine::renderToFile (const juce::File& file, double tailSeconds, int 
 
     setMasterCompare (0, masterCompareDb);
     syncNow();
+
+    // A stretched take still being rendered in the background is rendered now: a render never has a silent folder
+    if (stretchDeferred)
+    {
+        const juce::ScopedValueSetter<bool> allNow (stretchAllNow, true);
+        pending |= needClips;
+        syncNow();
+    }
+
     ScopedLatencyBypassLift everythingOn (*edit);
 
     te::Renderer::Parameters params (*edit);

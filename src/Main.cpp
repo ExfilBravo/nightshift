@@ -16,6 +16,9 @@
 #include "audio/GuitarSound.h"
 #include "audio/Mastering.h"
 #include "audio/fx/StockEffects.h"
+#include "audio/LoopTempo.h"
+#include "audio/Stretcher.h"
+#include "model/SongKey.h"
 #include "audio/Kits.h"
 #include "audio/Machines.h"
 #include "audio/DrumSynth.h"
@@ -330,6 +333,8 @@ namespace
           --looptest / --mutetest               where loop playback starts; muting mid-chord lets go
           --fxtest                              effect plugins (the Nightshift Lofi VST3s) in channel and master chains
           --stockfxtest / --bustest / --mixertest  the stock effects measured; buses, sends, sidechain; the mixer
+          --tunetest                            pitch correction: on pitch, the key's notes, Speed, Amount 0, its latency made up for
+          --stretchtest                         audio in time with the song, stretched to fit, pitched; loops' tempo; Arrange's controls
           --devices [--probe]                   open the interface, report latency (and per buffer size)
         --render and --snapshot also take --pattern <name>, --channel <name>, --solo <name>.
         Returns -1 when there is nothing to do on the command line.
@@ -4282,6 +4287,432 @@ namespace
                 auto hot = noise ((int) sr * 2, 0.9f);
                 run (*filter, hot);
                 check (allFinite (hot, 4.0f), "full resonance and drive on loud noise stays finite and bounded");
+            }
+
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--tunetest"))
+        {
+            // Pitch correction (NightTune), straight through applyToBuffer at 48 kHz as the stock effects are measured:
+            // its latency reported, and at Amount 0 the sound only that much later; a sine 30 cents flat coming out on
+            // pitch, onto a key's notes (its own, every note, the song's from its notes), half way at 50%; Speed from
+            // natural (a singer's vibrato kept) to robotic (gone, and at once); a low sawtooth (a period of 9 ms);
+            // silence and noise left alone; then a render, where the engine lines its track up with one without it
+            Song song;
+            song.loadEmpty();
+            song.bpm = 120.0;
+            AudioEngine audio (song, false);
+            audio.syncNow();
+
+            static constexpr double sr = 48000.0;
+            static constexpr int block = 512;
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            std::vector<te::Plugin::Ptr> keep;
+            auto make = [&audio, &keep]() -> NightTune*
+            {
+                auto plugin = audio.getEdit().getPluginCache().createNewPlugin (NightTune::xmlTypeName, {});
+                keep.push_back (plugin);
+                auto t = dynamic_cast<NightTune*> (plugin.get());
+
+                if (t != nullptr)
+                    t->initialise ({ te::TimePosition(), sr, block });
+
+                return t;
+            };
+
+            auto run = [] (te::Plugin& p, juce::AudioBuffer<float>& b)
+            {
+                for (int start = 0; start < b.getNumSamples(); start += block)
+                {
+                    const int n = std::min (block, b.getNumSamples() - start);
+                    const te::TimeRange time (te::TimePosition::fromSeconds (start / sr), te::TimePosition::fromSeconds ((start + n) / sr));
+                    te::PluginRenderContext rc (&b, start, n, nullptr, 0.0, time, true, false, true, false);
+                    p.applyToBuffer (rc);
+                }
+            };
+
+            // A sine (both sides), with a vibrato of +/- `vibratoCents` at 5 Hz if asked; or a sawtooth
+            auto tone = [] (double hz, double seconds, double vibratoCents = 0.0, bool saw = false)
+            {
+                juce::AudioBuffer<float> b (2, (int) (seconds * sr));
+                double phase = 0.0;
+
+                for (int i = 0; i < b.getNumSamples(); ++i)
+                {
+                    const double f = hz * std::pow (2.0, vibratoCents / 1200.0 * std::sin (juce::MathConstants<double>::twoPi * 5.0 * i / sr));
+                    phase = std::fmod (phase + f / sr, 1.0);
+                    b.setSample (0, i, saw ? 0.4f * (float) (2.0 * phase - 1.0) : 0.4f * (float) std::sin (juce::MathConstants<double>::twoPi * phase));
+                }
+
+                b.copyFrom (1, 0, b, 0, 0, b.getNumSamples());
+                return b;
+            };
+
+            // The frequency of what came out over [from, to) seconds, from its rising zero crossings (placed between
+            // samples), low-passed first for a sawtooth
+            auto frequency = [] (const juce::AudioBuffer<float>& in, double from, double to, double lowPassHz = 0.0)
+            {
+                std::vector<float> x ((size_t) in.getNumSamples());
+
+                for (int i = 0; i < in.getNumSamples(); ++i)
+                    x[(size_t) i] = in.getSample (0, i);
+
+                if (lowPassHz > 0.0)
+                    for (int pass = 0; pass < 2; ++pass)
+                    {
+                        nightshift::dsp::Biquad lp;
+                        lp.c = nightshift::dsp::Coeffs::lowPass (lowPassHz, 0.707, sr);
+
+                        for (auto& v : x)
+                            v = lp.process (v, 0);
+                    }
+
+                int crossings = 0;
+                double first = 0.0, last = 0.0;
+
+                for (int i = std::max (1, (int) (from * sr)); i < std::min ((int) x.size(), (int) (to * sr)); ++i)
+                {
+                    const float a = x[(size_t) i - 1], c = x[(size_t) i];
+
+                    if (a < 0.0f && c >= 0.0f)
+                    {
+                        const double t = (i - 1) + a / (a - c);
+                        first = crossings == 0 ? t : first;
+                        last = t;
+                        ++crossings;
+                    }
+                }
+
+                return crossings > 1 ? (crossings - 1) * sr / (last - first) : 0.0;
+            };
+
+            auto cents = [] (double hz, double reference) { return hz > 0.0 ? 1200.0 * std::log2 (hz / reference) : -9999.0; };
+            auto set = [] (NightTune& t, const char* id, float v) { t.findParam (id)->set (v); };
+            auto through = [&run] (NightTune& t, juce::AudioBuffer<float> b) { t.reset(); run (t, b); return b; };
+            const double flatA = 440.0 * std::pow (2.0, -30.0 / 1200.0);
+
+            check (std::any_of (stockfx::descriptions().begin(), stockfx::descriptions().end(),
+                                [] (const juce::PluginDescription& d) { return d.name == "Nightshift Pitch Correction"; }),
+                   "Pitch Correction is in the effects' list, beside the EQ and the rest");
+
+            auto* tune = make();
+
+            if (tune == nullptr)
+            {
+                check (false, "the engine makes a pitch correction");
+                std::cout << "1 FAILED" << std::endl;
+                return 1;
+            }
+
+            // Its latency, and Amount 0
+            const double latency = tune->getLatencySeconds();
+            const int late = juce::roundToInt (latency * sr);
+            check (latency > 0.0 && latency < 0.015, "it reports its latency, " + juce::String (latency * 1000.0, 2) + " ms (" + juce::String (late)
+                                                       + " samples), under 15 ms: low enough to sing through");
+            {
+                set (*tune, "amount", 0.0f);
+                auto in = tone (flatA, 1.0);
+
+                for (int i = 0; i < in.getNumSamples(); i += 4800)
+                {
+                    in.setSample (0, i, 0.9f);
+                    in.setSample (1, i, -0.9f);
+                }
+
+                const auto out = through (*tune, in);
+                float worst = 0.0f;
+
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = late; i < out.getNumSamples(); ++i)
+                        worst = std::max (worst, std::abs (out.getSample (ch, i) - in.getSample (ch, i - late)));
+
+                check (worst < 1.0e-6f, "Amount at 0 leaves it alone: a sine 30 cents flat with clicks comes out as it went in, exactly "
+                                          + juce::String (late) + " samples later (largest difference " + juce::String (worst, 8) + ")");
+                set (*tune, "amount", 1.0f);
+            }
+
+            // Every note: a sine 30 cents flat comes out on A
+            set (*tune, "notes", 1.0f);
+            {
+                const auto out = through (*tune, tone (flatA, 1.5));
+                const double hz = frequency (out, 0.75, 1.5);
+                check (std::abs (cents (hz, 440.0)) < 2.0, "a sine 30 cents flat (" + juce::String (flatA, 2) + " Hz) comes out on pitch: "
+                                                             + juce::String (hz, 2) + " Hz, " + juce::String (cents (hz, 440.0), 2) + " cents from A 440");
+
+                const auto sharp = through (*tune, tone (440.0 * std::pow (2.0, 40.0 / 1200.0), 1.5));
+                const double hzSharp = frequency (sharp, 0.75, 1.5);
+                check (std::abs (cents (hzSharp, 440.0)) < 2.0, "and one 40 cents sharp comes down onto it: " + juce::String (hzSharp, 2) + " Hz");
+            }
+
+            set (*tune, "amount", 0.5f);
+            {
+                const double hz = frequency (through (*tune, tone (flatA, 1.5)), 0.75, 1.5);
+                check (std::abs (cents (hz, 440.0) + 15.0) < 2.0, "Amount at 50% pulls it half way: 15 cents flat (" + juce::String (cents (hz, 440.0), 2) + ")");
+            }
+            set (*tune, "amount", 1.0f);
+
+            // A key of its own: A flat major hasn't an A, so the nearest of its notes is A flat; C major has the A
+            set (*tune, "notes", 2.0f);
+            set (*tune, "root", 8.0f);
+            set (*tune, "scale", (float) songkey::major);
+            {
+                const double hz = frequency (through (*tune, tone (flatA, 1.5)), 0.75, 1.5);
+                check (std::abs (cents (hz, 415.305)) < 2.0, "in A flat major it goes to A flat, the nearest of its notes: " + juce::String (hz, 2)
+                                                               + " Hz (" + tune->describeTarget() + ")");
+                set (*tune, "root", 0.0f);
+                const double inC = frequency (through (*tune, tone (flatA, 1.5)), 0.75, 1.5);
+                check (std::abs (cents (inC, 440.0)) < 2.0, "in C major, to A: " + juce::String (inC, 2) + " Hz");
+            }
+            set (*tune, "notes", 1.0f);
+
+            // Speed: robotic pulls it in at once, natural takes its time (both from the note's start)
+            {
+                set (*tune, "speed", 1.0f);
+                const auto robotic = through (*tune, tone (flatA, 0.6));
+                set (*tune, "speed", 0.0f);
+                const auto natural = through (*tune, tone (flatA, 0.6));
+                const double early = cents (frequency (robotic, 0.08, 0.16), 440.0), slow = cents (frequency (natural, 0.08, 0.16), 440.0);
+                check (std::abs (early) < 3.0 && slow < -15.0, "Speed: robotic is on pitch 80 ms into the note (" + juce::String (early, 1)
+                                                                  + " cents), natural still on its way (" + juce::String (slow, 1) + " cents)");
+            }
+
+            // A singer's vibrato (+/- 40 cents at 5 Hz) around a note 20 cents flat: natural keeps it, robotic flattens it
+            {
+                auto spread = [&] (const juce::AudioBuffer<float>& b)
+                {
+                    // Each 20 ms's pitch, in cents from A, over a second; the spread of them
+                    std::vector<double> c;
+
+                    for (double t = 0.5; t < 1.5; t += 0.02)
+                        c.push_back (cents (frequency (b, t, t + 0.02), 440.0));
+
+                    double mean = 0.0, var = 0.0;
+
+                    for (auto v : c)
+                        mean += v / (double) c.size();
+
+                    for (auto v : c)
+                        var += (v - mean) * (v - mean) / (double) c.size();
+
+                    return std::make_pair (mean, std::sqrt (var));
+                };
+
+                const auto in = tone (440.0 * std::pow (2.0, -20.0 / 1200.0), 1.6, 40.0);
+                set (*tune, "speed", 0.1f);
+                const auto natural = spread (through (*tune, in));
+                set (*tune, "speed", 1.0f);
+                const auto robotic = spread (through (*tune, in));
+                const auto dry = spread (in);
+
+                // What it heard of it, frame by frame (5 ms each)
+                {
+                    NightTune::Frame frames[NightTune::historySize];
+                    tune->copyHistory (frames);
+                    int heardOnes = 0;
+                    float lowest = 999.0f, highest = -1.0f;
+
+                    for (auto& f : frames)
+                        if (f.heard >= 0.0f)
+                        {
+                            ++heardOnes;
+                            lowest = std::min (lowest, f.heard);
+                            highest = std::max (highest, f.heard);
+                        }
+
+                    std::cout << "      heard a note in " << heardOnes << " frames, from " << juce::String (lowest, 2) << " to "
+                              << juce::String (highest, 2) << std::endl;
+                }
+                std::cout << "      vibrato spread: in " << juce::String (dry.second, 1) << " cents, natural " << juce::String (natural.second, 1)
+                          << ", robotic " << juce::String (robotic.second, 1) << "; centre in " << juce::String (dry.first, 1) << ", natural "
+                          << juce::String (natural.first, 1) << ", robotic " << juce::String (robotic.first, 1) << std::endl;
+                check (natural.second > 0.6 * dry.second && std::abs (natural.first) < 6.0,
+                       "Speed natural keeps a singer's vibrato (" + juce::String (natural.second, 1) + " of " + juce::String (dry.second, 1)
+                         + " cents) and centres it on the note (" + juce::String (natural.first, 1) + ")");
+                check (robotic.second < 0.3 * dry.second, "Speed robotic irons it flat, the hard sound (" + juce::String (robotic.second, 1) + " cents left)");
+                set (*tune, "speed", 0.6f);
+            }
+
+            // A low note, a sawtooth 30 cents under A at 110 Hz (a period of 9 ms): the longest periods it steps by
+            {
+                const auto out = through (*tune, tone (110.0 * std::pow (2.0, -30.0 / 1200.0), 1.5, 0.0, true));
+                const double hz = frequency (out, 0.75, 1.5, 200.0);
+                check (std::abs (cents (hz, 110.0)) < 3.0, "a low sawtooth 30 cents flat comes out on A at 110 Hz: " + juce::String (hz, 2) + " Hz");
+            }
+
+            // Silence and noise: nothing to hear, nothing done to them
+            {
+                juce::AudioBuffer<float> quiet (2, (int) sr);
+                quiet.clear();
+                const auto out = through (*tune, quiet);
+                check (out.getMagnitude (0, out.getNumSamples()) == 0.0f, "silence stays silent");
+
+                juce::Random random (7);
+                juce::AudioBuffer<float> hiss (2, (int) sr);
+
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < hiss.getNumSamples(); ++i)
+                        hiss.setSample (ch, i, 0.3f * (random.nextFloat() * 2.0f - 1.0f));
+
+                const auto noisy = through (*tune, hiss);
+                const float change = juce::Decibels::gainToDecibels (noisy.getRMSLevel (0, (int) (sr / 2), (int) (sr / 2)))
+                                       - juce::Decibels::gainToDecibels (hiss.getRMSLevel (0, (int) (sr / 2), (int) (sr / 2)));
+                bool finite = true;
+
+                for (int i = 0; i < noisy.getNumSamples(); ++i)
+                    finite = finite && std::isfinite (noisy.getSample (0, i));
+
+                check (finite && std::abs (change) < 0.5f, "noise goes through at its level (" + juce::String (change, 2) + " dB)");
+            }
+
+            // The song's key, heard from its notes: E minor's tune makes F (30 cents sharp) go to F sharp, the nearer
+            // of E minor's notes
+            {
+                check (! songkey::find (song).known(), "a song of drum hits alone has no key to hear (" + songkey::find (song).name() + ")");
+
+                auto& keys = song.addChannel ("Keys", InstrumentType::synth);
+                keys.synthPreset = "Warm Analog Pad";
+                const int keysId = keys.id;
+                auto& vocals = song.addChannel ("Vocals", InstrumentType::audio);
+                vocals.input = audio.getInputNames()[0];
+                Effect fx;
+                fx.id = song.createId();
+                fx.name = "Nightshift Pitch Correction";
+
+                for (auto& d : stockfx::descriptions())
+                    if (d.name == fx.name)
+                        fx.pluginId = d.createIdentifierString();
+
+                vocals.effects.push_back (fx);
+                auto& pattern = song.addPatternFor (keysId);
+                int at = 0;
+
+                for (int key : { 64, 67, 71, 64, 66, 67, 69, 71, 72, 71, 67, 64, 59, 64 })    // E G B E F# G A B C B G E B E
+                {
+                    pattern.notesFor (keysId).push_back ({ at, ticksPerBeat, key, 100 });
+                    at += ticksPerBeat;
+                }
+
+                song.notify (Song::Change::channels);
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                const auto key = songkey::find (song);
+                check (key.root == 4 && key.minor, "a tune in E minor is heard as " + key.name());
+
+                auto* vocalTune = dynamic_cast<NightTune*> (audio.getEffect (fx.id));
+                check (vocalTune != nullptr && vocalTune->getSongRoot() == 4 && vocalTune->isSongMinor()
+                           && vocalTune->describeTarget() == "E minor, the song's key",
+                       "the engine tells the vocal's pitch correction the song's key (" + (vocalTune != nullptr ? vocalTune->describeTarget() : juce::String ("none")) + ")");
+
+                if (vocalTune != nullptr)
+                {
+                    vocalTune->initialise ({ te::TimePosition(), sr, block });     // (set up as playing would)
+                    const double f = 349.228 * std::pow (2.0, 30.0 / 1200.0);
+                    const double hz = frequency (through (*vocalTune, tone (f, 1.5)), 0.75, 1.5);
+                    check (std::abs (cents (hz, 369.994)) < 2.0, "a sung F 30 cents sharp goes to F sharp in E minor: " + juce::String (hz, 2) + " Hz");
+                }
+
+                // Its notes in C major instead: the key follows
+                const int inC[] { 60, 64, 67, 60, 62, 64, 65, 67, 69, 67, 64, 60, 55, 60 };       // C E G C D E F G A G E C G C
+                auto& tuneNotes = song.findPattern (pattern.id)->notesFor (keysId);
+
+                for (size_t i = 0; i < tuneNotes.size() && i < std::size (inC); ++i)
+                    tuneNotes[i].key = inC[i];
+
+                song.notify (Song::Change::notes);
+                audio.syncNow();
+                check (vocalTune != nullptr && vocalTune->getSongRoot() == 0 && ! vocalTune->isSongMinor(),
+                       "rewritten in C major, the song's key follows (" + songkey::find (song).name() + ")");
+            }
+
+            // The engine makes up for its latency: a click on a track with it (panned left) and on one without (right)
+            // land together in a render
+            {
+                const auto clickFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-tunetest-click.wav");
+                {
+                    juce::AudioBuffer<float> click (1, (int) (sr * 2));
+                    click.clear();
+                    click.setSample (0, (int) sr, 0.8f);
+                    clickFile.deleteFile();
+                    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (clickFile);
+
+                    if (auto writer = juce::WavAudioFormat().createWriterFor (stream, juce::AudioFormatWriterOptions{}
+                                                                                          .withSampleRate (sr).withNumChannels (1).withBitsPerSample (24)))
+                        writer->writeFromAudioSampleBuffer (click, 0, click.getNumSamples());
+                }
+
+                Song pdc;
+                pdc.loadBlank();
+                pdc.tracks.clear();
+                pdc.mode = PlayMode::song;
+                int ids[2] {};
+
+                for (int side = 0; side < 2; ++side)
+                {
+                    auto& c = pdc.addChannel (side == 0 ? "With" : "Without", InstrumentType::audio);
+                    c.pan = side == 0 ? -1.0f : 1.0f;
+
+                    if (side == 0)
+                    {
+                        Effect e;
+                        e.id = pdc.createId();
+                        e.name = "Nightshift Pitch Correction";
+
+                        for (auto& d : stockfx::descriptions())
+                            if (d.name == e.name)
+                                e.pluginId = d.createIdentifierString();
+
+                        c.effects.push_back (e);
+                    }
+
+                    ids[side] = c.id;
+                    Track t;
+                    t.channelId = c.id;
+                    pdc.insertTrack (t);
+                    pdc.addAudioFile (clickFile, c.id, side, 0, 2.0, 0.0);
+                }
+
+                // (a second engine can't share this process: this one plays the new song)
+                song.fromVar (pdc.toVar());
+                song.notify (Song::Change::everything);
+                audio.syncNow();
+
+                const auto out = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-tunetest-render.wav");
+                audio.renderToFile (out, 0.5);
+                double at[2] { -1.0, -1.0 };
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+
+                if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (out)); reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b ((int) reader->numChannels, (int) reader->lengthInSamples);
+                    reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+
+                    for (int ch = 0; ch < std::min (2, b.getNumChannels()); ++ch)
+                    {
+                        int loudest = 0;
+
+                        for (int i = 0; i < b.getNumSamples(); ++i)
+                            if (std::abs (b.getSample (ch, i)) > std::abs (b.getSample (ch, loudest)))
+                                loudest = i;
+
+                        at[ch] = loudest / reader->sampleRate;
+                    }
+                }
+
+                out.deleteFile();
+                clickFile.deleteFile();
+                check (at[0] > 0.9 && std::abs (at[0] - at[1]) < 0.0005,
+                       "the engine lines its track up: a click through it lands at " + juce::String (at[0], 4) + " s, beside one without at "
+                         + juce::String (at[1], 4) + " s");
+                juce::ignoreUnused (ids);
             }
 
             std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
@@ -11208,6 +11639,634 @@ namespace
             return failures == 0 ? 0 : 1;
         }
 
+        if (args.has ("--stretchtest"))
+        {
+            // Time-stretching: a loop's tempo from its file, its name or its length; a 120 BPM loop in a 90 BPM song
+            // lasting 4/3 as long at the same pitch (rendered: where its sound ends, its pitch, where its beats land),
+            // through a tempo change and in 6/8, and as it was at its own tempo (untouched); at its own speed, pitched up
+            // three semitones at its length, stretched to twice its length; the two stretchers compared on a chord;
+            // Arrange's Ctrl+drag stretching it to fit, its speed and pitch button and menu, audio files dropped on
+            // Arrange; a recording knowing its tempo; all of it saved and opened
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            static constexpr double sr = 48000.0;
+            const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift stretch test");
+            folder.deleteRecursively();
+            folder.createDirectory();
+
+            // A loop: an A (440 Hz) on the left, a click on each beat on the right (or a chord on both), with what its
+            // file says about itself
+            auto writeLoop = [] (const juce::File& f, double bpm, int beats, bool chord, const juce::StringPairArray& meta)
+            {
+                const int n = (int) std::round (beats * 60.0 / bpm * sr);
+                juce::AudioBuffer<float> b (2, n);
+                b.clear();
+
+                for (int i = 0; i < n; ++i)
+                {
+                    const double t = i / sr;
+
+                    if (chord)
+                    {
+                        float v = 0.0f;
+
+                        for (double hz : { 220.0, 277.183, 329.628 })
+                            v += 0.15f * (float) std::sin (juce::MathConstants<double>::twoPi * hz * t);
+
+                        b.setSample (0, i, v);
+                        b.setSample (1, i, v);
+                    }
+                    else
+                    {
+                        b.setSample (0, i, 0.4f * (float) std::sin (juce::MathConstants<double>::twoPi * 440.0 * t));
+                    }
+                }
+
+                // (under the master limiter's ceiling, so nothing it does is the limiter's)
+                if (! chord)
+                    for (int k = 0; k < beats; ++k)
+                        b.setSample (1, (int) std::round (k * 60.0 / bpm * sr), 0.5f);
+
+                f.deleteFile();
+                std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (f);
+                auto options = juce::AudioFormatWriterOptions{}.withSampleRate (sr).withNumChannels (2).withBitsPerSample (24);
+
+                for (auto& key : meta.getAllKeys())
+                    options = options.withMetadata (key, meta[key]);
+
+                if (auto writer = juce::WavAudioFormat().createWriterFor (stream, options))
+                    writer->writeFromAudioSampleBuffer (b, 0, n);
+            };
+
+            juce::StringPairArray acid, none, oneShot;
+            acid.set (juce::WavAudioFormat::acidBeats, "8");
+            acid.set (juce::WavAudioFormat::acidTempo, "120");
+            acid.set (juce::WavAudioFormat::acidNumerator, "4");
+            acid.set (juce::WavAudioFormat::acidDenominator, "4");
+            oneShot.set (juce::WavAudioFormat::acidOneShot, "1");
+            oneShot.set (juce::WavAudioFormat::acidBeats, "1");
+
+            const auto loop = folder.getChildFile ("Beat and tone.wav"), acidLoop = folder.getChildFile ("Acid loop.wav");
+            const auto named = folder.getChildFile ("Drum loop 95 bpm.wav"), hit = folder.getChildFile ("Hit.wav"), single = folder.getChildFile ("One shot.wav");
+            const auto chordLoop = folder.getChildFile ("Chord.wav");
+            writeLoop (loop, 120.0, 8, false, none);
+            writeLoop (acidLoop, 120.0, 8, false, acid);
+            writeLoop (named, 95.0, 4, false, none);
+            writeLoop (hit, 160.0, 1, false, none);         // 0.375 s: not whole bars of anything
+            writeLoop (single, 120.0, 2, false, oneShot);
+            writeLoop (chordLoop, 120.0, 8, true, none);
+
+            //==============================================================================
+            // A loop's tempo
+            check (looptempo::fromName ("Drums 120bpm") == 120.0 && looptempo::fromName ("128 BPM house") == 128.0
+                       && looptempo::fromName ("bpm_95 break") == 95.0 && looptempo::fromName ("loop_95_Am") == 95.0,
+                   "a tempo written in a name: \"Drums 120bpm\", \"128 BPM house\", \"bpm_95 break\", \"loop_95_Am\"");
+            check (looptempo::fromName ("Take 3") == 0.0 && looptempo::fromName ("808 kick") == 0.0 && looptempo::fromName ("Vocals 70s") == 0.0
+                       && looptempo::fromName ("Pad 90 120") == 0.0,
+                   "and numbers that aren't a tempo: \"Take 3\", \"808 kick\", \"Vocals 70s\", two numbers in \"Pad 90 120\"");
+            {
+                double beats = 0.0;
+                const double fromFour = looptempo::fromLength (4.0, &beats);
+                check (fromFour == 120.0 && beats == 8.0 && looptempo::fromLength (3.2) == 150.0 && looptempo::fromLength (3.27) == 0.0,
+                       "a length of whole bars: 4 s is two bars at 120, 3.2 s two at 150 (nearer 120 than one at 75), 3.27 s nothing");
+            }
+            {
+                const auto a = looptempo::find (acidLoop), n = looptempo::find (named), l = looptempo::find (loop), h = looptempo::find (hit), s = looptempo::find (single);
+                check (std::abs (a.bpm - 120.0) < 1.0e-6 && a.how == "file" && std::abs (a.seconds - 4.0) < 1.0e-4,
+                       "a WAV's acid chunk: 8 beats in 4 s, 120 BPM (" + juce::String (a.bpm, 3) + ", " + a.how + ")");
+                check (n.bpm == 95.0 && n.how == "name" && l.bpm == 120.0 && l.how == "length",
+                       "a name with \"95 bpm\" in it is 95; a plain 4 s loop is two bars at 120 (" + juce::String (n.bpm) + " " + n.how + ", "
+                         + juce::String (l.bpm) + " " + l.how + ")");
+                check (h.bpm == 0.0 && h.seconds > 0.3 && s.oneShot && s.bpm == 0.0,
+                       "a 0.375 s hit has no tempo to keep, nor does a file that says it's a one-shot");
+            }
+
+            //==============================================================================
+            // The model: a 120 BPM loop in a 90 BPM song
+            Song song;
+            song.loadBlank();
+            song.tracks.clear();
+            song.bpm = 90.0;
+            song.mode = PlayMode::song;
+            const int loopChannel = song.addChannel ("Loop", InstrumentType::audio).id;
+            {
+                Track t;
+                t.channelId = loopChannel;
+                song.insertTrack (t);
+            }
+
+            song.addAudioFile (loop, loopChannel, 0, 0, 4.0, 120.0);
+            {
+                const auto& c = song.audioClips[0];
+                check (c.followTempo && c.sourceBpm == 120.0 && song.audioClipEnd (c) == 8 * ticksPerBeat,
+                       "a 120 BPM loop of two bars goes in in time with the song: 8 beats long at 90 BPM too");
+                check (std::abs (song.secondsAt (song.audioTickAt (c, c.length)) - 16.0 / 3.0) < 1.0e-9 && song.isStretched (c)
+                           && std::abs (song.stretchRatioAt (c, 0.0) - 0.75) < 1.0e-12,
+                       "it lasts 5.333 s, 4/3 of its 4, played at 75% through the stretcher");
+                check (std::abs (song.audioSecondsAt (c, 4 * ticksPerBeat) - 2.0) < 1.0e-12, "the song's beat 5 is its own beat 5, 2 s into it");
+            }
+
+            AudioEngine audio (song, false);
+            audio.syncNow();
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+
+            auto render = [&] (double tail = 0.5)
+            {
+                const auto file = folder.getChildFile ("render.wav");
+                song.notify (Song::Change::transport);      // (the tempo and the clips)
+                audio.syncNow();
+                audio.renderToFile (file, tail);
+                juce::AudioBuffer<float> b;
+
+                if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file)); reader != nullptr)
+                {
+                    b.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
+                    reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+                }
+
+                file.deleteFile();
+                return b;
+            };
+
+            // Where the tone stops (the last 10 ms over a tenth of its level), its pitch, and where the clicks are
+            auto endOf = [] (const juce::AudioBuffer<float>& b)
+            {
+                const int w = (int) (sr * 0.01);
+                double end = 0.0;
+
+                for (int i = 0; i + w <= b.getNumSamples(); i += w)
+                    if (b.getRMSLevel (0, i, w) > 0.028f)
+                        end = (i + w) / sr;
+
+                return end;
+            };
+
+            auto pitchOf = [] (const juce::AudioBuffer<float>& b, double from, double to)
+            {
+                int crossings = 0;
+                double first = 0.0, last = 0.0;
+
+                for (int i = std::max (1, (int) (from * sr)); i < std::min (b.getNumSamples(), (int) (to * sr)); ++i)
+                {
+                    const float a = b.getSample (0, i - 1), c = b.getSample (0, i);
+
+                    if (a < 0.0f && c >= 0.0f)
+                    {
+                        const double t = (i - 1) + a / (a - c);
+                        first = crossings == 0 ? t : first;
+                        last = t;
+                        ++crossings;
+                    }
+                }
+
+                return crossings > 1 ? (crossings - 1) * sr / (last - first) : 0.0;
+            };
+
+            auto clicksOf = [] (const juce::AudioBuffer<float>& b)
+            {
+                std::vector<double> at;
+
+                if (b.getNumChannels() < 2)
+                    return at;
+
+                // (stretched, a click is spread a little and lower: a third of the loudest finds them; the one on
+                // the clip's first sample is under its edge fade, so they're looked for from 0.1 s)
+                const float threshold = 0.33f * b.getMagnitude (1, 0, b.getNumSamples());
+
+                for (int i = (int) (sr * 0.1); i < b.getNumSamples(); ++i)
+                    if (threshold > 0.0f && std::abs (b.getSample (1, i)) > threshold)
+                    {
+                        // The loudest within 40 ms of where it rises, then on past it
+                        int loudest = i;
+
+                        for (int j = i; j < std::min (b.getNumSamples(), i + (int) (sr * 0.04)); ++j)
+                            if (std::abs (b.getSample (1, j)) > std::abs (b.getSample (1, loudest)))
+                                loudest = j;
+
+                        at.push_back (loudest / sr);
+                        i = loudest + (int) (sr * 0.15);
+                    }
+
+                return at;
+            };
+
+            auto clicksOn = [] (const std::vector<double>& heard, const std::vector<double>& expected, double tolerance)
+            {
+                double worst = 0.0;
+
+                if (heard.size() != expected.size())
+                    return 1.0e9;
+
+                for (size_t k = 0; k < heard.size(); ++k)
+                    worst = std::max (worst, std::abs (heard[k] - expected[k]));
+
+                return worst <= tolerance ? worst : 1.0e9;
+            };
+
+            auto describe = [] (const std::vector<double>& times)
+            {
+                juce::StringArray s;
+
+                for (auto t : times)
+                    s.add (juce::String (t, 3));
+
+                return s.joinIntoString (" ");
+            };
+
+            auto beats = [] (std::initializer_list<double> spacing, int count)
+            {
+                // Beat times from the spacing of each bar's beats ({ 0.6667, then 0.4444 from the second bar }), from
+                // beat 2 (the first is under the clip's edge fade)
+                std::vector<double> t;
+                double now = 0.0;
+                const auto* s = spacing.begin();
+
+                for (int k = 0; k < count; ++k)
+                {
+                    if (k > 0)
+                        t.push_back (now);
+
+                    now += s[std::min ((int) spacing.size() - 1, k / 4)];
+                }
+
+                return t;
+            };
+
+            auto cents = [] (double hz, double reference) { return hz > 0.0 ? 1200.0 * std::log2 (hz / reference) : -9999.0; };
+
+            {
+                const auto b = render();
+                const double end = endOf (b), hz = pitchOf (b, 0.5, 5.0);
+                const auto clicks = clicksOf (b);
+                const double off = clicksOn (clicks, beats ({ 2.0 / 3.0 }, 8), 0.02);
+                std::cout << "      clicks at " << describe (clicks) << std::endl;
+                check (std::abs (end - 16.0 / 3.0) < 0.03, "a 120 BPM loop in a 90 BPM song lasts 4/3 as long: its sound ends at " + juce::String (end, 3) + " s (4 s made 5.333)");
+                check (std::abs (cents (hz, 440.0)) < 3.0, "at the same pitch: its A is " + juce::String (hz, 2) + " Hz (" + juce::String (cents (hz, 440.0), 2) + " cents)");
+                check (off < 0.02, "its beats land on the song's, every 0.667 s (furthest " + juce::String (off * 1000.0, 1) + " ms off)");
+            }
+
+            // Through a tempo change: 90 for its first bar, 135 for its second
+            song.setTempoAt (4 * ticksPerBeat, 135.0);
+            {
+                const auto b = render();
+                const double end = endOf (b), hz = pitchOf (b, 3.0, 4.2);
+                const auto clicks = clicksOf (b);
+                const double off = clicksOn (clicks, beats ({ 2.0 / 3.0, 4.0 / 9.0 }, 8), 0.02);
+                std::cout << "      clicks at " << describe (clicks) << std::endl;
+                check (std::abs (end - (8.0 / 3.0 + 16.0 / 9.0)) < 0.03 && off < 0.02 && std::abs (cents (hz, 440.0)) < 3.0,
+                       "through a jump to 135 BPM at its second bar it keeps the beat: ends at " + juce::String (end, 3) + " s (4.444), beats "
+                         + juce::String (off * 1000.0, 1) + " ms off at most, its A " + juce::String (hz, 2) + " Hz in the faster bar");
+            }
+            song.tempoChanges.clear();
+
+            // In 6/8 (Tracktion's beat an eighth): the same quarter-note beats
+            song.meterBeats = 6;
+            song.meterUnit = 8;
+            song.notify (Song::Change::transport);
+            {
+                const auto b = render();
+                const double end = endOf (b);
+                const double off = clicksOn (clicksOf (b), beats ({ 2.0 / 3.0 }, 8), 0.02);
+                check (std::abs (end - 16.0 / 3.0) < 0.03 && off < 0.02, "in 6/8 at 90 it's the same: ends at " + juce::String (end, 3) + " s, beats "
+                                                                            + juce::String (off * 1000.0, 1) + " ms off at most");
+            }
+            song.meterBeats = 4;
+            song.meterUnit = 4;
+            song.notify (Song::Change::transport);
+
+            // At its own tempo it isn't stretched at all: what's rendered is the file
+            song.bpm = 120.0;
+            song.notify (Song::Change::transport);
+            {
+                const auto& c = song.audioClips[0];
+                const auto b = render();
+                juce::AudioBuffer<float> file;
+
+                if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (loop)); reader != nullptr)
+                {
+                    file.setSize (2, (int) reader->lengthInSamples);
+                    reader->read (&file, 0, file.getNumSamples(), 0, true, true);
+                }
+
+                // The render against the file, lined up (the best of a few ms either way) and at the level it plays at:
+                // what's left over is what a stretcher would have changed (the first and last 3 ms are the edge fades)
+                auto residual = [&] (int lag, float* gainOut)
+                {
+                    double rf = 0.0, ff = 0.0;
+                    const int from = (int) (sr * 0.003) + 512, to = file.getNumSamples() - (int) (sr * 0.003) - 512;
+
+                    for (int i = from; i < to && i + lag < b.getNumSamples(); ++i)
+                    {
+                        rf += (double) b.getSample (0, i + lag) * file.getSample (0, i);
+                        ff += (double) file.getSample (0, i) * file.getSample (0, i);
+                    }
+
+                    const float gain = ff > 0.0 ? (float) (rf / ff) : 0.0f;
+                    float worst = 0.0f;
+
+                    for (int i = from; i < to && i + lag < b.getNumSamples(); ++i)
+                        worst = std::max (worst, std::abs (b.getSample (0, i + lag) - gain * file.getSample (0, i)));
+
+                    if (gainOut != nullptr)
+                        *gainOut = gain;
+
+                    return worst;
+                };
+
+                int bestLag = 0;
+                float best = 1.0e9f, gain = 0.0f;
+
+                for (int lag = -256; lag <= 256; ++lag)
+                    if (const float r = residual (lag, nullptr); r < best)
+                    {
+                        best = r;
+                        bestLag = lag;
+                    }
+
+                residual (bestLag, &gain);
+                check (! song.isStretched (c) && best < 2.0e-4f && gain > 0.5f && gain < 1.1f,
+                       "at its own tempo (120) it's played as it is, not stretched: the render is the file (largest difference " + juce::String (best, 6)
+                         + ", at " + juce::String (juce::Decibels::gainToDecibels (gain), 2) + " dB)");
+            }
+            song.bpm = 90.0;
+            song.notify (Song::Change::transport);
+
+            // Not following: its own speed, pitched, stretched to twice its length
+            song.audioClips[0].followTempo = false;
+            {
+                const auto b = render();
+                const double off = clicksOn (clicksOf (b), beats ({ 0.5 }, 8), 0.002);
+                check (std::abs (endOf (b) - 4.0) < 0.02 && off < 0.002, "switched off, it plays at its own speed: 4 s, its beats every 0.5 s");
+            }
+
+            song.audioClips[0].pitch = 3.0f;
+            {
+                const auto b = render();
+                const double hz = pitchOf (b, 0.5, 3.5), end = endOf (b);
+                check (std::abs (cents (hz, 440.0 * std::pow (2.0, 3.0 / 12.0))) < 3.0 && std::abs (end - 4.0) < 0.03,
+                       "pitched up 3 semitones it plays a C (" + juce::String (hz, 2) + " Hz, 523.25) for as long as before (" + juce::String (end, 3) + " s)");
+            }
+            song.audioClips[0].pitch = 0.0f;
+
+            check (song.stretchAudioTo (song.audioClips[0], 0, song.tickAt (8.0)) && std::abs (song.audioClips[0].speed - 0.5) < 1.0e-9,
+                   "stretched to fit 8 s it plays at half its speed");
+            {
+                const auto b = render();
+                const double hz = pitchOf (b, 1.0, 7.0), end = endOf (b);
+                check (std::abs (end - 8.0) < 0.03 && std::abs (cents (hz, 440.0)) < 3.0,
+                       "and lasts 8 s (" + juce::String (end, 3) + ") at its pitch (" + juce::String (hz, 2) + " Hz)");
+            }
+            check (! song.stretchAudioTo (song.audioClips[0], 0, song.tickAt (20.0)) && std::abs (song.audioClips[0].speed - 0.5) < 1.0e-9,
+                   "but not past a quarter of its speed (20 s for its 4 is too far)");
+            song.audioClips[0].speed = 1.0;
+            song.audioClips[0].followTempo = true;
+
+            //==============================================================================
+            // Signalsmith Stretch and SoundTouch on a chord held at 120 BPM, played at 90: how much of what comes out is
+            // the chord's three notes (a 1 s window, within 4 Hz of each), and how sharp a click stays
+            {
+                auto purity = [&] (const juce::AudioBuffer<float>& b)
+                {
+                    constexpr int order = 15, size = 1 << order;
+                    juce::dsp::FFT fft (order);
+                    std::vector<float> data ((size_t) size * 2, 0.0f);
+                    const int start = (int) (sr * 1.5), length = std::min ((int) sr, b.getNumSamples() - start);
+
+                    for (int i = 0; i < length; ++i)
+                        data[(size_t) i] = b.getSample (0, start + i) * 0.5f * (1.0f - std::cos (juce::MathConstants<float>::twoPi * (float) i / (float) length));
+
+                    fft.performFrequencyOnlyForwardTransform (data.data());
+                    double inChord = 0.0, all = 0.0;
+
+                    for (int k = 1; k < size / 2; ++k)
+                    {
+                        const double hz = k * sr / size, e = (double) data[(size_t) k] * data[(size_t) k];
+                        all += e;
+
+                        for (double note : { 220.0, 277.183, 329.628 })
+                            if (std::abs (hz - note) <= 4.0)
+                                inChord += e;
+                    }
+
+                    return all > 0.0 ? inChord / all : 0.0;
+                };
+
+                auto sharpness = [&] (const juce::AudioBuffer<float>& b)
+                {
+                    // Of the energy round each click (60 ms either side), the share within 3 ms of its loudest point
+                    double close = 0.0, around = 0.0;
+
+                    for (double t : clicksOf (b))
+                    {
+                        const int at = (int) (t * sr);
+
+                        for (int i = std::max (0, at - (int) (sr * 0.06)); i < std::min (b.getNumSamples(), at + (int) (sr * 0.06)); ++i)
+                        {
+                            const double e = (double) b.getSample (1, i) * b.getSample (1, i);
+                            around += e;
+                            close += std::abs (i - at) <= (int) (sr * 0.003) ? e : 0.0;
+                        }
+                    }
+
+                    return around > 0.0 ? close / around : 0.0;
+                };
+
+                // Both through the same render (stretch::render), a 120 BPM loop played at 90: what comes out read back
+                auto stretched = [&] (const juce::File& source, stretch::Kind kind)
+                {
+                    stretch::Job job;
+                    job.source = source;
+                    job.map = { { 0.0, 0.0 }, { 16.0 / 3.0, 4.0 } };
+                    const auto out = folder.getChildFile ("compared.wav");
+                    stretch::render (job, out, kind);
+                    juce::AudioBuffer<float> b;
+
+                    if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (out)); reader != nullptr)
+                    {
+                        b.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
+                        reader->read (&b, 0, b.getNumSamples(), 0, true, true);
+                    }
+
+                    out.deleteFile();
+                    return b;
+                };
+
+                double chord[2] {}, click[2] {}, late[2] {};
+                juce::String names[2] { "Signalsmith Stretch", "SoundTouch" };
+                const stretch::Kind kinds[2] { stretch::Kind::signalsmith, stretch::Kind::soundTouch };
+
+                for (int m = 0; m < 2; ++m)
+                {
+                    chord[m] = purity (stretched (chordLoop, kinds[m]));
+                    const auto clicked = stretched (loop, kinds[m]);
+                    click[m] = sharpness (clicked);
+                    const auto at = clicksOf (clicked);
+
+                    for (size_t k = 0; k < at.size(); ++k)
+                        late[m] = std::max (late[m], std::abs (at[k] - (double) (k + 1) * 2.0 / 3.0));
+
+                    std::cout << "      " << names[m] << ": the chord " << juce::String (chord[m] * 100.0, 2) << "% its own notes, clicks "
+                              << juce::String (click[m] * 100.0, 1) << "% within 3 ms of their peaks, at most " << juce::String (late[m] * 1000.0, 1)
+                              << " ms from their beats" << std::endl;
+                }
+
+                check (chord[0] > 0.97 && chord[0] >= chord[1] - 0.001 && click[0] > click[1] && late[0] < 0.005,
+                       "the stretcher NightShift uses (Signalsmith Stretch) keeps a chord as clean as SoundTouch (" + juce::String (chord[0] * 100.0, 2)
+                         + "% against " + juce::String (chord[1] * 100.0, 2) + "%), clicks sharper, and on their beats");
+            }
+
+            //==============================================================================
+            // Arrange: Ctrl+drag stretches, the button and its menu, files dropped
+            song.audioClips.resize (1);
+            song.notify (Song::Change::playlist);
+            audio.syncNow();
+            Playlist playlist (song, audio);
+            playlist.setSize (1600, 800);
+            juce::String toast;
+            playlist.onMessage = [&toast] (const juce::String& m) { toast = m; };
+
+            const int bar = song.ticksPerBar();
+            const float pxPerTick = 72.0f / bar;
+            auto xOf = [&] (double tick) { return (float) Playlist::headerWidth + (float) tick * pxPerTick; };
+            auto yOf = [] (int row) { return (float) (Playlist::rulerHeight + row * Playlist::rowHeight + Playlist::rowHeight / 2); };
+
+            auto mouse = [&playlist] (juce::Point<float> from, juce::Point<float> to, int extraMods = 0)
+            {
+                const auto now = juce::Time::getCurrentTime();
+                const juce::ModifierKeys mods (juce::ModifierKeys::leftButtonModifier | extraMods);
+                auto event = [&] (juce::Point<float> p, bool dragged)
+                {
+                    return juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(), p, mods, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                             &playlist, &playlist, now, from, now, 1, dragged);
+                };
+
+                playlist.mouseDown (event (from, false));
+
+                if (from != to)
+                    for (int i = 1; i <= 6; ++i)
+                        playlist.mouseDrag (event (from + (to - from) * (i / 6.0f), true));
+
+                playlist.mouseUp (event (to, from != to));
+            };
+
+            // (low on the clip's end: its fade-out dot is up by its top corner)
+            const float edgeY = yOf (0) + 15.0f;
+            playlist.setSnap (Song::barGrid);
+            mouse ({ xOf (2 * bar) - 3.0f, edgeY }, { xOf (4 * bar) - 3.0f, edgeY }, juce::ModifierKeys::commandModifier);
+            {
+                const auto& c = song.audioClips[0];
+                check (song.audioClipEnd (c) == 4 * bar && std::abs (c.speed - 0.5) < 1.0e-9 && c.followTempo && toast.contains ("50%"),
+                       "Ctrl+dragging its end from bar 3 to bar 5 stretches it to fit: four bars, at half its speed, still in time (" + toast + ")");
+                check (Playlist::speedBadgeText (c) == juce::String (juce::CharPointer_UTF8 ("In time \xc2\xb7 50%")),
+                       "its button says so: \"" + Playlist::speedBadgeText (c) + "\"");
+            }
+
+            mouse ({ xOf (4 * bar) - 3.0f, edgeY }, { xOf (3 * bar) - 3.0f, edgeY });
+            check (song.audioClipEnd (song.audioClips[0]) == 3 * bar && std::abs (song.audioClips[0].speed - 0.5) < 1.0e-9
+                       && std::abs (song.audioClips[0].length - 3.0) < 1.0e-6,
+                   "dragged without Ctrl the end trims it instead: three bars, 3 s of its audio at half speed");
+
+            // The button's menu, as clicked
+            {
+                auto act = [&playlist] (const juce::String& text)
+                {
+                    const auto menu = playlist.createSpeedMenu (0);
+                    juce::PopupMenu::MenuItemIterator items (menu, true);
+
+                    while (items.next())
+                        if (items.getItem().text == text && items.getItem().action != nullptr)
+                        {
+                            items.getItem().action();
+                            return true;
+                        }
+
+                    return false;
+                };
+
+                auto ticked = [&playlist] (const juce::String& text)
+                {
+                    const auto menu = playlist.createSpeedMenu (0);
+                    juce::PopupMenu::MenuItemIterator items (menu, true);
+
+                    while (items.next())
+                        if (items.getItem().text == text)
+                            return items.getItem().isTicked;
+
+                    return false;
+                };
+
+                const auto inTime = juce::String ("Keep it in time with the song's tempo");
+                check (ticked (inTime) && act (inTime) && ! song.audioClips[0].followTempo, "its menu has \"" + inTime + "\" ticked; clicked, it's off");
+                check (act (inTime) && song.audioClips[0].followTempo, "and on again");
+                check (act ("Up 3 semitones") && song.audioClips[0].pitch == 3.0f
+                           && Playlist::speedBadgeText (song.audioClips[0]) == juce::String (juce::CharPointer_UTF8 ("In time \xc2\xb7 50% \xc2\xb7 up 3")),
+                       "Pitch > Up 3 semitones pitches it up (\"" + Playlist::speedBadgeText (song.audioClips[0]) + "\")");
+                check (act ("Play it at its own speed") && song.audioClips[0].speed == 1.0, "Play it at its own speed puts its speed back");
+                song.undo();
+                check (std::abs (song.audioClips[0].speed - 0.5) < 1.0e-9 && song.audioClips[0].pitch == 3.0f, "each is one undo");
+                song.audioClips[0].pitch = 0.0f;
+                song.audioClips[0].speed = 1.0;
+                song.notify (Song::Change::playlist);
+            }
+
+            // Audio files dropped from the computer: under the tracks, a new audio track; on the loop's track, a clip there
+            {
+                const int before = (int) song.audioClips.size();
+                const int added = playlist.dropAudioFiles ({ acidLoop.getFullPathName() }, { (int) xOf (bar), (int) yOf (2) });
+                const auto& c = song.audioClips.back();
+                const auto* channel = song.findChannel (c.channelId);
+                check (added == 1 && (int) song.audioClips.size() == before + 1 && channel != nullptr && channel->type == InstrumentType::audio
+                           && channel->name == "Acid loop" && c.track == 1 && c.start == bar && c.followTempo && c.sourceBpm == 120.0
+                           && toast.contains ("120 BPM loop (its file says)"),
+                       "an acid loop dropped under the tracks gets an audio track of its own, and goes in at bar 2 in time (" + toast + ")");
+
+                playlist.dropAudioFiles ({ named.getFullPathName(), hit.getFullPathName() }, { (int) xOf (5 * bar), (int) yOf (0) });
+                const auto& first = song.audioClips[song.audioClips.size() - 2];
+                const auto& second = song.audioClips.back();
+                check (first.track == 0 && first.channelId == loopChannel && first.start == 5 * bar && first.sourceBpm == 95.0 && first.followTempo
+                           && second.start == song.audioClipEnd (first) && ! second.followTempo,
+                       "two dropped on the loop's track at bar 6 go one after the other: the 95 BPM loop in time, the hit as it is");
+            }
+
+            //==============================================================================
+            // A recording knows the tempo it was played at, and plays as recorded until it's told to follow
+            {
+                std::vector<Take> takes { { loop.getFullPathName(), 0.0, 0.0, 4.0 } };
+                const auto& recorded = song.addTakes (loopChannel, song.secondsAt (12 * bar), 4.0, takes, 0);
+                check (recorded.sourceBpm == 90.0 && ! recorded.followTempo && ! song.isStretched (recorded),
+                       "a recording at 90 BPM knows its tempo and plays as recorded");
+                auto copy = recorded;
+                song.setFollowTempo (copy, true);
+                song.bpm = 120.0;
+                check (song.isStretched (copy) && std::abs (song.stretchRatioAt (copy, copy.start) - 120.0 / 90.0) < 1.0e-9,
+                       "told to follow, it speeds up with the song to 120");
+                song.bpm = 90.0;
+            }
+
+            // Saved and opened
+            {
+                song.audioClips[0].pitch = -2.0f;
+                song.audioClips[0].speed = 0.75;
+                Song saved;
+                saved.fromVar (song.toVar());
+                const auto& a = song.audioClips[0];
+                const auto& b = saved.audioClips[0];
+                check (saved.audioClips.size() == song.audioClips.size() && b.followTempo == a.followTempo && b.sourceBpm == a.sourceBpm
+                           && std::abs (b.speed - 0.75) < 1.0e-12 && b.pitch == -2.0f,
+                       "following the tempo, its tempo, speed and pitch are saved and opened");
+            }
+
+            folder.deleteRecursively();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--automationtest"))
         {
             // Automation from the song to the sound: a lane's value between its points; renders of
@@ -12950,10 +14009,13 @@ namespace
                 { "the chorus", "--effectpanel nightshiftChorus" }, { "the NAM amp, empty", "--effectpanel nightshiftAmp" },
                 { "the NAM amp with an amp in it", "--effectpanel nightshiftAmp --nammodel example" },
                 { "the NAM amp, a model in two sizes, the smaller", "--effectpanel nightshiftAmp --nammodel a2 --namsize 0" },
+                { "pitch correction, listening", "--effectpanel nightshiftTune" },
+                { "pitch correction, a sung phrase pulled onto the key", "--effectpanel nightshiftTune --tunedemo" },
                 { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
                 { "automation lanes", "--automationdemo" }, { "a bus's automation lanes", "--buses --automationdemo --busautomation" },
-                { "recording automation", "--automationdemo --recordautomation" }, { "editing", "--editdemo" }, { "every kind of track", "--moretracks" },
+                { "recording automation", "--automationdemo --recordautomation" }, { "editing", "--editdemo" },
+                { "audio clips in time with the song, pitched and stretched", "--stretchdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
                 { "a plugin's Inspector", "--moretracks --select \"Surge XT\"" },
@@ -17146,6 +18208,65 @@ namespace
                 main.repaint();
             }
 
+            // Stretching as it looks: two audio tracks under the demo's, a 120 BPM drum loop in time with the song, a
+            // bass loop in time and pitched up 3, a recording as it was played (its button a metronome alone) and a
+            // guitar riff stretched to fit (80%); their sounds written to the temp folder
+            if (args.has ("--stretchdemo"))
+            {
+                const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift stretch demo");
+                dir.createDirectory();
+
+                // A hit a beat (or a held, wavering note for the voice), as a loop's waveform looks
+                auto write = [&dir] (const juce::String& name, double seconds, double hz, bool held)
+                {
+                    const auto f = dir.getChildFile (name + ".wav");
+                    juce::AudioBuffer<float> b (1, (int) (seconds * 48000.0));
+
+                    for (int i = 0; i < b.getNumSamples(); ++i)
+                    {
+                        const double t = i / 48000.0, sinceBeat = std::fmod (t, 0.5);
+                        const double shape = held ? 0.5 + 0.4 * std::sin (juce::MathConstants<double>::twoPi * 0.7 * t) : std::exp (-sinceBeat * 9.0);
+                        b.setSample (0, i, (float) (0.7 * shape * std::sin (juce::MathConstants<double>::twoPi * hz * t * (held ? 1.0 + 0.004 * std::sin (30.0 * t) : 1.0))));
+                    }
+
+                    f.deleteFile();
+                    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (f);
+
+                    if (auto writer = juce::WavAudioFormat().createWriterFor (stream, juce::AudioFormatWriterOptions{}
+                                                                                          .withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (16)))
+                        writer->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+
+                    return f;
+                };
+
+                const int bar = song.ticksPerBar();
+                auto track = [&song, &audio] (const juce::String& name)
+                {
+                    auto& c = song.addChannel (name, InstrumentType::audio);
+                    c.input = audio.getInputNames()[0];
+                    Track t;
+                    t.channelId = c.id;
+                    return std::make_pair (c.id, song.insertTrack (t));
+                };
+
+                const auto loops = track ("Loops");
+                song.addAudioFile (write ("Drum loop 120", 4.0, 90.0, false), loops.first, loops.second, 0, 4.0, 120.0);
+                song.addAudioFile (write ("Bass loop 120", 4.0, 55.0, false), loops.first, loops.second, 4 * bar, 4.0, 120.0).pitch = 3.0f;
+
+                const auto takes = track ("Vocals");
+                {
+                    std::vector<Take> take { { write ("Vocal take", 6.0, 330.0, true).getFullPathName(), 0.0, 0.0, 6.0 } };
+                    song.addTakes (takes.first, song.secondsAt (bar), 6.0, take, 0);
+                }
+
+                auto& riff = song.addAudioFile (write ("Guitar riff", 4.0, 196.0, false), takes.first, takes.second, 6 * bar, 4.0, 0.0);
+                song.stretchAudioTo (riff, riff.start, song.tickAt (song.secondsAt (riff.start) + 5.0));
+                song.notify (Song::Change::channels);
+                song.notify (Song::Change::playlist);
+                audio.syncNow();
+                main.repaint();
+            }
+
             // Automation as it looks: lanes shown, the first track's channel's volume drawn (easing out
             // down, easing in back up) and its pan swept, and the master fading out over the last two
             // bars, eased out
@@ -17564,6 +18685,41 @@ namespace
 
                         if (auto cab = args.valueAfter ("--namcabinet"); cab.isNotEmpty())
                             amp->loadCabinet (juce::File (cab));
+                    }
+
+                    // Pitch correction told the song's key (as the engine tells one in a channel's chain), and with
+                    // --tunedemo, a sung phrase through it (each note a little off, with vibrato and a slide) for its graph
+                    if (auto tune = dynamic_cast<NightTune*> (fx))
+                    {
+                        const auto key = songkey::find (song);
+                        tune->setSongKey (key.root, key.minor);
+
+                        if (args.has ("--tunedemo"))
+                        {
+                            struct Sung { double note, seconds, slide; };
+                            const Sung phrase[] { { 69.0 - 0.3, 0.45, 0.0 }, { 72.0 + 0.35, 0.4, 0.0 }, { 71.0 - 0.2, 0.3, 0.0 },
+                                                  { 69.0 + 0.25, 0.55, -0.6 }, { 67.0 - 0.3, 0.6, 0.0 } };
+                            juce::AudioBuffer<float> voice (2, 512);
+                            double phase = 0.0, t = 0.0;
+
+                            for (auto& n : phrase)
+                                for (int done = 0; done < (int) (n.seconds * 48000.0); done += 512)
+                                {
+                                    for (int i = 0; i < 512; ++i, t += 1.0 / 48000.0)
+                                    {
+                                        const double along = (done + i) / (n.seconds * 48000.0);
+                                        const double note = n.note + n.slide * along + 0.25 * std::sin (juce::MathConstants<double>::twoPi * 5.5 * t);
+                                        phase = std::fmod (phase + 440.0 * std::pow (2.0, (note - 69.0) / 12.0) / 48000.0, 1.0);
+                                        voice.setSample (0, i, 0.3f * (float) std::sin (juce::MathConstants<double>::twoPi * phase));
+                                    }
+
+                                    voice.copyFrom (1, 0, voice, 0, 0, 512);
+                                    te::PluginRenderContext rc (&voice, 0, 512, nullptr, 0.0,
+                                                                te::TimeRange (te::TimePosition::fromSeconds (t), te::TimePosition::fromSeconds (t + 512 / 48000.0)),
+                                                                true, false, true, false);
+                                    tune->applyToBuffer (rc);
+                                }
+                        }
                     }
 
                     effectPanel = createStockPanel (*fx, song, audio);

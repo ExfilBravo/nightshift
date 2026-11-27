@@ -94,6 +94,23 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   Click a folder's arrow (or double-click it) to show a lane per take; drag across a lane to use that part
   of the take (Quick Swipe Comping), click a lane to use all of it, right-click a lane to delete it or keep
   only the comp. Joins get a 10 ms equal-power crossfade. Click the loop strip to switch the loop off.
+- **Time-stretching** (as in Logic and FL) – an audio clip can play faster or slower without its pitch changing, or
+  higher or lower without its length changing. The button on its title strip (a metronome, or what's set: *In time*,
+  *80%*, *Up 3*) opens **Speed and pitch**: **Keep it in time with the song's tempo** (its beats stay on the song's
+  beats whatever the tempo does, through tempo changes and glides too), **Its own tempo...** (the tempo it was played
+  at), **Play it at its own speed**, and **Pitch** (up or down by semitones, an octave either way). **Ctrl+drag**
+  either end of an audio clip to stretch it to fit: its audio plays faster or slower to fill it (from a quarter of its
+  speed to four times); plain dragging still trims. A recording remembers the tempo it was played at and plays as
+  recorded until it's kept in time. A loop dropped into the song, from the computer's files onto Arrange (on an audio
+  track, or anywhere else for an audio track of its own) or from the sidebar's Samples, is kept in time when its
+  tempo is known: its file says (a WAV's acid chunk, an AIFF's Apple Loops beats), its name does ("Drums 120bpm",
+  "loop_95_Am"), or it's whole bars of 4/4 at a whole-number tempo between 70 and 180. A stretched clip's takes are
+  rendered by Signalsmith Stretch (`src/audio/Stretcher`) the moment it changes, lined up to the sample with the beats
+  they belong on, and then play as they are, costing nothing while they play (pitched, they're stretched and then read
+  back faster or slower, so the pitch is exact); a render longer than 30 s is made in the background and the clip is
+  silent until it's done (an export waits for it). Renders are kept in the system's temporary folder ("NightShift
+  stretched audio"), so going back to a tempo finds them, and ones unplayed for two weeks are let go. A clip at its own
+  speed, pitch and tempo isn't touched at all.
 - **Low latency** – built around the Arturia MiniFuse 2 on its ASIO driver (MiniFuse Control Center), opened at
   32 samples: 2.2 ms in + 3.5 ms out = 5.7 ms round trip, measured. While an armed track monitors, plugins that
   look ahead (the master limiter) leave the graph so they add nothing. Takes are placed using the driver's
@@ -189,6 +206,16 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   song saved before keeps the sound it had (matching off). A model that comes in sizes (NAM's "slimmable" models, as
   its A2) shows **Size**: a smaller one takes less of the computer (A2's small size runs about 3 times faster than its
   whole one) and sounds a little less like the amp; a new model starts whole, and the size is kept with the song.
+- **Pitch Correction** (a stock effect) – for singing or a guitar: it hears the note being played (the YIN method, from
+  60 Hz to 1.4 kHz, every 2.5 ms) and pulls it to the nearest note of the key: **The song's key** (heard from the song's
+  own notes with Krumhansl and Kessler's key profiles; every note until it has some), **Every note**, or **A key of its
+  own** (a key and a scale: major, minor, harmonic minor, major or minor pentatonic). **Speed** is how fast it gets
+  there, from natural (400 ms: a singer's slides and vibrato stay) to **Robotic** at the top (at once: the hard tuned
+  sound); **Amount** is how far (at 0 the sound comes out exactly as it went in). It moves the pitch without changing
+  the length by reading the sound back a little faster or slower and stepping back or on by a whole period at a time,
+  across a crossfade, so it runs a fixed 9.4 ms behind (at 48 kHz), which it tells the engine: the track is lined up
+  with the rest. Its panel draws the last few seconds, what it heard (faint) and what comes out (in its colour) over the
+  key's notes, the note it hears now and how far off it was.
 - **Effects** – stock or any VST3 (the Nightshift Lofi four included) goes in a channel's chain, after its
   instrument (or straight off an audio track's input), a bus's, or the master's before the limiter.
   Double-click one in the sidebar's Effects or Plugin effects to put it on the selected channel, drag it onto
@@ -888,6 +915,8 @@ Nightshift.exe --pianotest
 Nightshift.exe --arrangetest
 Nightshift.exe --editingtest
 Nightshift.exe --arrangeedittest
+Nightshift.exe --stretchtest
+Nightshift.exe --tunetest
 Nightshift.exe --automationtest
 Nightshift.exe --automationcurvetest
 Nightshift.exe --busautomationtest
@@ -967,6 +996,22 @@ which the moved second half plays only its own kick, box selection and moving tw
 copy and paste keeping a clip's part of its pattern, Ctrl+B, Ctrl+T at the song position, trimming both ends,
 saving split clips, Delete; a take folder split, trimmed and grown back, its fade dots, and a render that fades
 in and out. `--snapshot ... --editdemo` shows a split clip, faded recordings and everything selected.
+`--stretchtest` checks time-stretching: a loop's tempo from a WAV's acid chunk, a name and a length (and numbers in
+names that aren't tempos); renders where a 120 BPM loop in a 90 BPM song lasts 4/3 as long (5.333 s) at the same pitch
+(its A within 3 cents) with its clicks on the song's beats, through a jump to 135 BPM at its second bar, in 6/8, and at
+its own tempo exactly the file; switched off at its own speed, pitched up three semitones at its length, stretched to
+fit 8 s at its pitch; Signalsmith Stretch and SoundTouch on a held chord (how much of what comes out is the chord's
+own notes); then in Arrange with real mouse events, Ctrl+dragging a clip's end to stretch it and plain dragging to trim,
+its button's words and its menu's items (each one undo), audio files dropped from the computer (a new audio track, or
+the track under them, one after another), a recording knowing its tempo, and saving. `--snapshot ... --stretchdemo`
+shows loops in time with the song, one pitched, a recording as played and a riff stretched to fit.
+`--tunetest` measures pitch correction: its latency reported (under 15 ms), and at Amount 0 the sound exactly as it
+went in that much later; a sine 30 cents flat (and one 40 sharp) coming out within 2 cents of A, half way at 50%, to A
+flat in A flat major, to F sharp from an F in a song whose notes are in E minor (and the key following when they're
+rewritten in C major); Speed robotic on pitch 80 ms into a note where natural is still on its way, natural keeping a
+singer's vibrato and robotic ironing it flat; a low sawtooth at 110 Hz; silence and noise left alone; and a render where
+a click through it lands with one on a track without it. `--snapshot ... --effectpanel nightshiftTune --tunedemo`
+shows its panel after a sung phrase.
 `--automationtest` renders a steady tone while a channel's volume lane fades it out, its pan lane sweeps it left
 to right, a filter's cutoff lane closes on it and the master's volume lane fades the mix; checks Pattern mode
 takes every curve off (and the fader's value back), that an emptied lane gives the fader back, which lane a knob's
@@ -1363,6 +1408,12 @@ AudioDSPTools by Steven Atkinson (MIT; the resampler comes from iPlug2 and Cocko
 [Eigen](https://eigen.tuxfamily.org) (MPL 2.0) and [nlohmann/json](https://github.com/nlohmann/json) (MIT), all
 GPL-compatible. They're in `external/NeuralAmpModelerCore` at tag v0.6.0 (`git clone --branch v0.6.0
 --recurse-submodules https://github.com/sdatkinson/NeuralAmpModelerCore.git`), with their licence files.
+
+Time-stretching and pitch-shifting audio clips is done by [Signalsmith Stretch](https://signalsmith-audio.co.uk/code/stretch/)
+(Geraint Luff and Signalsmith Audio, MIT), which comes with Tracktion Engine (in its `3rd_party` folder) beside
+[SoundTouch](https://www.surina.net/soundtouch/) (Olli Parviainen, LGPL 2.1), both switched on in `CMakeLists.txt`; their
+licences are in NOTICES.txt. Pitch Correction is NightShift's own code, after the YIN method (Alain de Cheveigné and
+Hideki Kawahara, 2002) for hearing a note's pitch.
 
 On a Mac (anywhere Segoe UI isn't installed) NightShift's text is [Selawik](https://github.com/microsoft/Selawik),
 Microsoft's open-source stand-in for Segoe UI, release 1.01, under the SIL Open Font License 1.1

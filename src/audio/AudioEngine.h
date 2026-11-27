@@ -4,6 +4,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <set>
 #include "model/Song.h"
 #include "Nova.h"
 #include "Metronome.h"
@@ -172,9 +173,14 @@ public:
     /** Crossfade at each join between comp segments, and the fade at a folder's free edges. */
     static constexpr double compCrossfadeSeconds = 0.010, edgeFadeSeconds = 0.002;
 
-    /** The time-stretcher a stretched take folder plays through (Song::isStretched): Signalsmith
-        Stretch, which keeps chords and voices clean. Tests compare it with SoundTouch. */
-    static inline te::TimeStretcher::Mode stretchMode = te::TimeStretcher::signalsmithDefault;
+    /** A stretched take folder (Song::isStretched) plays its takes as rendered by stretch::render
+        (Signalsmith Stretch, lined up to the sample): a render up to this long is made at once,
+        a longer one in the background (the folder silent until it's done; renders and exports
+        wait for it). */
+    static constexpr double stretchNowSeconds = 30.0;
+
+    /** Whether any stretched take is still being rendered in the background. */
+    bool isStretching() const;
 
     /** Audio is being recorded. */
     bool isRecording() const;
@@ -655,6 +661,9 @@ private:
     /** The song's notes on synths plugged in, as the MIDI out plays them (see MidiOutHub). */
     void syncMidiOut();
 
+    /** Tells every pitch correction (NightTune) the song's key, heard from its notes (songkey::find). */
+    void syncSongKey();
+
     /** Tracktion's own MIDI outputs closed: the hub opens the ones it needs (a port open twice fails on Windows). */
     void closeTracktionMidiOutputs();
     std::unique_ptr<MidiOutHub> midiOut;
@@ -755,10 +764,18 @@ private:
     void fillClip (te::MidiClip&, const std::vector<Note>*, int offset = 0, int length = -1);
     void removeAllClips();
 
-    /** Plays a comp segment of a stretched take folder through the time-stretcher, live (no
-        rendered copy): following the tempo beat by beat (the file's beats at the folder's tempo),
-        else at its speed; at its pitch. `fileSeconds` is where in the file it starts. */
-    void stretchClip (te::WaveAudioClip&, const AudioClip&, double fileSeconds, te::ClipPosition);
+    /** A stretched take folder's take rendered over [fromSeconds, toSeconds) of its own time (into
+        the cache: stretch::cachedFile), with the song second where the render starts; the file is
+        empty while it's still being rendered in the background. */
+    std::pair<juce::File, double> stretchedTake (const AudioClip&, const Take&, double fromSeconds, double toSeconds);
+
+    std::set<juce::String> stretching;          // renders under way in the background, by their files' names
+    juce::CriticalSection stretchingLock;
+    std::atomic<bool> stopStretching { false };
+    bool stretchAllNow = false;                 // a render or export: every stretched take rendered first, here
+    bool stretchDeferred = false;               // a take was left to render in the background (its folder silent)
+    juce::ThreadPool stretchPool { juce::ThreadPoolOptions{}.withThreadName ("Stretching audio").withNumberOfThreads (1)
+                                                            .withDesiredThreadPriority (juce::Thread::Priority::low) };
 
     /** Each instrument's clips under the playhead, as text that changes if they do. */
     std::map<int, juce::String> clipsUnderPlayhead() const;

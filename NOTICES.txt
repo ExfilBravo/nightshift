@@ -20,6 +20,9 @@ text is in its folder in the source (external/tracktion_engine and external/Neur
       with, inside the engine: SoundTouch (GNU LGPL 2.1), signalsmith-stretch (MIT),
       Airwindows (MIT), libsamplerate (BSD 2-clause), CHOC (ISC), crill (Boost 1.0),
       magic_enum (MIT), rigtorp (MIT), rpmalloc (public domain / MIT)
+      (audio clips are time-stretched and pitch-shifted by signalsmith-stretch, Copyright (c) 2022
+      Geraint Luff / Signalsmith Audio Ltd., MIT; SoundTouch, Copyright (c) Olli Parviainen, is built
+      in beside it)
   Neural Amp Modeler core and AudioDSPTools . MIT (Steven Atkinson)
       with: Eigen (MPL 2.0), nlohmann/json (MIT), the iPlug2 / WDL resampler (zlib-style)
   Selawik font 1.01 (Microsoft) ............. SIL Open Font License 1.1 (resources/fonts)
