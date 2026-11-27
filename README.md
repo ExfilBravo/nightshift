@@ -1285,7 +1285,9 @@ Nightshift.exe is a GUI-subsystem program: in PowerShell, pipe it to `Out-String
   the master limiter plugin around it (`MasterLimiter`, with the loudness meter); synths plugged in (`MidiOut`: each
   output's notes planned from the song, the node at the end of the graph that sends them in time and the clock, the
   silent instrument that hands on what a keyboard plays) and MIDI files (`MidiFiles`: the notes as the song plays them,
-  a .mid written and read, a file's parts brought in as channels); `fx` holds
+  a .mid written and read, a file's parts brought in as channels); the sample browser's folders and what's in them
+  (`Samples`: Downloads, Music and folders added, looked through on a thread of their own) and a sample heard from it
+  (`SamplePreview`: played after the master, as the metronome is); `fx` holds
   the stock effects (Tracktion plugins) and their DSP building blocks. Drum kits: `Kits` (the SFZ reader and
   player, fetching), `DrumGizmo` (mixing a studio kit to stereo), `Machines` (the 808 and 909),
   `KitImport` (a kit from a folder), `DrumSynth` (what the synthesised drums are made of), `ZipReader`
