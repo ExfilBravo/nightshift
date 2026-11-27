@@ -26,7 +26,11 @@
 #include "audio/Samples.h"
 #include "audio/Sfz.h"
 #include "audio/MidiFiles.h"
+#include "audio/Freeze.h"
+#include "audio/Mp3Encoder.h"
 #include "ui/Donate.h"
+#include "ui/ExportWindow.h"
+#include "ui/FreezeGuard.h"
 #include "ai/Drummer.h"
 #include "ai/Genres.h"
 #include "ai/OfflineDrummer.h"
@@ -320,7 +324,10 @@ namespace
           --snapshot <file.png> [--show playlist,rack,piano] [--raise playlist] [--toggle rack] [--size 1600x940]
                      [--arm <channel names>] [--search <text>] [--opensounds "Plugin effects;Nightshift"] [--sampledemo] [--lofi] [--settings] [--live]
                      [--midilight <keyboard>] [--midiouts "Synth,Drum machine" [--midioutchannel]] [--exportmidi]
+                     [--exportwindow 0..3] [--freeze "Kick,Keys" [--askunfreeze]]
           --midiouttest / --midifiletest        synths plugged in (MIDI out), caught with their timing; .mid files out and in
+          --stemtest / --mp3test                stems read back (lengths, lining up, levels); MP3s read back against the mix
+          --freezetest                          frozen channels: the same sound, less work, saved, out of date, editing asks
           --rectest <folder> [--countin] [--monitor]   record from a virtual input and check the take's timing
           --comptest <folder> [--countin] [--monitor]  loop-record takes, comp them, check takes and joins
           --pianotest                           check which channel the piano roll edits, and its picker
@@ -6590,6 +6597,405 @@ namespace
             return ok ? 0 : 1;
         }
 
+        if (args.has ("--freezetest"))
+        {
+            // Freeze: a supersaw lead, a kick through an EQ, a compressor, a delay and a reverb, and a hat on two Arrange
+            // rows through a delay and a reverb. Frozen, the song renders the same as live, to the sample; their plugins
+            // are off and playing it costs less, measured; it saves and opens frozen; a change it was rendered without
+            // plays it live until it's frozen again (undo puts it back); Pattern mode plays the pattern's loop; editing
+            // its notes (the piano roll, Steps, the AI band, recording) asks to unfreeze it first; Unfreeze plays it live
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            // Nova seeded at every render, so its random unison start points are the same live and frozen
+            NovaPlugin::seedForTests = 1;
+            const double rate = 48000.0;
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+
+            auto read = [&formats] (const juce::File& f)
+            {
+                juce::AudioBuffer<float> b;
+
+                if (std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f)); r != nullptr)
+                {
+                    b.setSize ((int) r->numChannels, (int) r->lengthInSamples);
+                    r->read (&b, 0, b.getNumSamples(), 0, true, true);
+                }
+
+                return b;
+            };
+
+            // How far under `a` what differs between them is, in dB (over `a`'s length), and the biggest difference
+            auto apart = [] (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int from = 0, int to = -1)
+            {
+                double signal = 0.0, residual = 0.0;
+                float worst = 0.0f;
+                const int end = to < 0 ? a.getNumSamples() : std::min (to, a.getNumSamples());
+
+                for (int ch = 0; ch < std::min (a.getNumChannels(), b.getNumChannels()); ++ch)
+                    for (int i = from; i < end; ++i)
+                    {
+                        const float y = i < b.getNumSamples() ? b.getSample (ch, i) : 0.0f, d = a.getSample (ch, i) - y;
+                        signal += (double) a.getSample (ch, i) * a.getSample (ch, i);
+                        residual += (double) d * d;
+                        worst = std::max (worst, std::abs (d));
+                    }
+
+                return std::pair<double, float> (10.0 * std::log10 ((residual + 1.0e-30) / (signal + 1.0e-30)), worst);
+            };
+
+            auto effectNamed = [] (Song& s, const juce::String& word)
+            {
+                Effect e;
+                e.id = s.createId();
+
+                for (auto& d : stockfx::descriptions())
+                    if (d.name.containsIgnoreCase (word) && e.pluginId.isEmpty())
+                    {
+                        e.pluginId = d.createIdentifierString();
+                        e.name = d.name;
+                    }
+
+                return e;
+            };
+
+            const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-freezetest");
+            folder.deleteRecursively();
+            folder.createDirectory();
+            const auto projectFile = folder.getChildFile ("Frozen song.nsproj");
+
+            Song song;
+            song.loadEmpty();
+            song.bpm = 120.0;
+            song.mode = PlayMode::song;
+            int kick = 0, hat = 0;
+
+            for (auto& c : song.channels)
+            {
+                kick = c.name == "Kick" ? c.id : kick;
+                hat = c.name == "Hat" ? c.id : hat;
+            }
+
+            auto& leadChannel = song.addChannel ("Lead", InstrumentType::synth);
+            leadChannel.synthPreset = "Supersaw Lead";
+            const int lead = leadChannel.id;
+            song.findChannel (kick)->effects = { effectNamed (song, "EQ"), effectNamed (song, "Compressor"), effectNamed (song, "Delay"), effectNamed (song, "Reverb") };
+            song.findChannel (hat)->effects = { effectNamed (song, "Delay"), effectNamed (song, "Reverb") };
+            song.findChannel (lead)->volume = 0.78f * std::pow (10.0f, -3.0f / 40.0f);     // its fader, live on the frozen audio
+
+            // Four bars each: the kick on every beat, the lead's chords, the hat on the eighths' offbeats
+            auto& beat = song.currentPattern();
+            beat.name = "Beat";
+            const int beatId = beat.id;
+
+            for (int s = 0; s < 64; s += 4)
+                steps::set (beat.notesFor (kick), s, true, defaultRootKey);
+
+            const int chordsId = song.addPattern ("Chords").id;
+            const int bar = song.ticksPerBar();
+
+            for (int b = 0; b < 4; ++b)
+                for (int key : (b < 2 ? std::vector<int> { 60, 64, 67, 71 } : std::vector<int> { 57, 60, 64, 67 }))
+                    song.findPattern (chordsId)->notesFor (lead).push_back ({ b * bar, bar - ticksPerStep, key, 96 });
+
+            const int hatsId = song.addPattern ("Hats").id;
+
+            for (int s = 2; s < 64; s += 4)
+                steps::set (song.findPattern (hatsId)->notesFor (hat), s, true, defaultRootKey);
+
+            // Eight bars: the beat and the chords twice on their rows, the hats once on each of two rows
+            for (int row = 0; row < 4; ++row)
+                song.tracks.push_back ({});
+
+            song.playlist = { { beatId, 0, 0 }, { beatId, 0, 4 * bar }, { chordsId, 1, 0 }, { chordsId, 1, 4 * bar },
+                              { hatsId, 2, 0 }, { hatsId, 3, 4 * bar } };
+            song.notify (Song::Change::everything);
+
+            juce::AudioBuffer<float> live;
+
+            {
+                AudioEngine audio (song, false);
+                audio.setProjectFile (projectFile);     // its audio beside it, in the temp folder (not Documents)
+                audio.syncNow();
+                MainComponent main (song, audio);
+                main.setSize (1600, 940);
+
+                audio.renderToFile (folder.getChildFile ("live.wav"), 2.0, 32);
+                live = read (folder.getChildFile ("live.wav"));
+                const auto liveStems = audio.renderStems (folder.getChildFile ("live stems"), false, 32);
+
+                auto started = juce::Time::getMillisecondCounterHiRes();
+                const auto saidLead = main.freezeChannel (lead);
+                const auto leadSeconds = (juce::Time::getMillisecondCounterHiRes() - started) / 1000.0;
+                main.freezeChannel (kick);
+                main.freezeChannel (hat);
+
+                auto& frozenLead = song.findChannel (lead)->freeze;
+                bool filesThere = true;
+
+                for (auto id : { lead, kick, hat })
+                    for (auto& f : freeze::filesOf (song.findChannel (id)->freeze))
+                        filesThere = filesThere && juce::File (f).existsAsFile() && juce::File (f).isAChildOf (audio.frozenFolder());
+
+                check (frozenLead.on && frozenLead.rows.size() == 1 && frozenLead.rows.count (1) == 1 && frozenLead.patterns.size() == 1
+                         && frozenLead.patterns.count (chordsId) == 1 && song.findChannel (hat)->freeze.rows.size() == 2 && filesThere
+                         && saidLead.startsWith ("Lead is frozen"),
+                       "freezing the lead took " + juce::String (leadSeconds, 1) + " s: the song on its row, its pattern as a loop, the hat a file for each of "
+                         "its two rows, all in the project's Frozen folder: \"" + saidLead + "\"");
+
+                // Their instrument and effects switched off, so out of playback altogether
+                bool off = audio.isPlayingFrozen (lead) && audio.isPlayingFrozen (kick) && audio.isPlayingFrozen (hat);
+
+                for (auto id : { lead, kick, hat })
+                {
+                    if (auto instrument = audio.getInstrument (id))
+                        off = off && ! instrument->isEnabled();
+
+                    for (auto& e : song.findChannel (id)->effects)
+                        if (auto plugin = audio.getEffect (e.id))
+                            off = off && ! plugin->isEnabled();
+                }
+
+                check (off, "frozen, each plays its audio with its instrument and effects switched off");
+
+                // The same sound: the song rendered frozen, against it live
+                audio.renderToFile (folder.getChildFile ("frozen.wav"), 2.0, 32);
+                const auto frozen = read (folder.getChildFile ("frozen.wav"));
+                const auto [db, worst] = apart (live, frozen);
+
+                // (where it differs, if it does: each channel's stem live and frozen, and by the second)
+                if (db >= -90.0)
+                    for (auto& s : audio.renderStems (folder.getChildFile ("frozen stems"), false, 32))
+                        for (auto& l : liveStems)
+                            if (l.name == s.name)
+                            {
+                                const auto a = read (l.file), b = read (s.file);
+                                juce::String seconds;
+
+                                for (int second = 0; second < a.getNumSamples() / 48000; ++second)
+                                    seconds << juce::String (apart (a, b, second * 48000, (second + 1) * 48000).first, 0) << " ";
+
+                                std::cout << "      " << s.name << ": " << juce::String (apart (a, b).first, 1) << " dB apart; by the second: " << seconds << std::endl;
+                            }
+                check (frozen.getNumSamples() == live.getNumSamples() && db < -90.0,
+                       "the song frozen sounds as it did live: " + juce::String (frozen.getNumSamples()) + " samples each, what differs "
+                         + juce::String (db, 1) + " dB under it (" + juce::String (worst, 9) + " at most), the hat summed from its two rows too");
+
+                // Less to do: playing 8 s of it, the time spent working out each block, frozen and live, in turns
+                auto busyFor = [&audio, rate] (double seconds)
+                {
+                    audio.syncNow();
+                    audio.setPlayheadTicks (0.0);
+                    audio.togglePlay();
+
+                    for (int i = 0; i < 10; ++i)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (2);
+
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    double busy = 0.0;
+                    float loudest = 0.0f;
+
+                    for (int b = 0; b < (int) (seconds * rate / 512.0); ++b)
+                    {
+                        buffer.clear();
+                        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+                        audio.processHostedBlock (buffer);
+                        busy += juce::Time::getMillisecondCounterHiRes() - t0;
+                        loudest = std::max (loudest, buffer.getMagnitude (0, buffer.getNumSamples()));
+
+                        if (b % 16 == 0)
+                            juce::MessageManager::getInstance()->runDispatchLoopUntil (1);
+                    }
+
+                    audio.stop();
+                    return std::pair<double, float> (busy, loudest);
+                };
+
+                std::vector<double> frozenMs, liveMs;
+                float frozenLoudest = 0.0f, liveLoudest = 0.0f;
+
+                for (int round = 0; round < 3; ++round)
+                {
+                    const auto f = busyFor (8.0);
+                    frozenMs.push_back (f.first);
+                    frozenLoudest = std::max (frozenLoudest, f.second);
+
+                    for (int i = 0; i < 3; ++i)
+                        song.undo();        // the three freezes
+
+                    audio.syncNow();
+                    const bool liveNow = ! audio.isPlayingFrozen (lead) && ! audio.isPlayingFrozen (kick) && ! audio.isPlayingFrozen (hat);
+                    const auto l = busyFor (8.0);
+                    liveMs.push_back (liveNow ? l.first : 0.0);
+                    liveLoudest = std::max (liveLoudest, l.second);
+
+                    for (int i = 0; i < 3; ++i)
+                        song.redo();
+
+                    audio.syncNow();
+                }
+
+                std::sort (frozenMs.begin(), frozenMs.end());
+                std::sort (liveMs.begin(), liveMs.end());
+                const double share = frozenMs[1] / std::max (1.0e-6, liveMs[1]);
+                check (liveMs[1] > 0.0 && share < 0.5 && frozenLoudest > 0.05f && std::abs (juce::Decibels::gainToDecibels (frozenLoudest / liveLoudest)) < 0.5f
+                         && audio.isPlayingFrozen (lead),
+                       "playing 8 s takes the computer " + juce::String (liveMs[1], 0) + " ms of work live and " + juce::String (frozenMs[1], 0)
+                         + " ms frozen (" + juce::String (share * 100.0, 0) + "%, the middle of three each), as loud either way");
+
+                // A change it was rendered without (the lead's second clip a bar later): it plays live, and back with undo
+                song.checkpoint();
+                song.playlist[3].start += bar;
+                song.notify (Song::Change::playlist);
+                audio.syncNow();
+                const bool liveAfterMove = ! audio.isPlayingFrozen (lead) && audio.getInstrument (lead) != nullptr && audio.getInstrument (lead)->isEnabled()
+                                            && audio.isPlayingFrozen (kick) && song.findChannel (lead)->freeze.on;
+                song.undo();
+                audio.syncNow();
+                check (liveAfterMove && audio.isPlayingFrozen (lead) && ! audio.getInstrument (lead)->isEnabled(),
+                       "moving the lead's clip plays it live (still frozen, out of date; the kick stays frozen), and undo has it frozen again");
+
+                song.checkpoint();
+                song.bpm = 100.0;
+                song.notify (Song::Change::transport);
+                audio.syncNow();
+                const bool liveAfterTempo = ! audio.isPlayingFrozen (lead) && ! audio.isPlayingFrozen (kick);
+                song.undo();
+                audio.syncNow();
+                check (liveAfterTempo && audio.isPlayingFrozen (kick), "a new tempo plays every frozen channel live until undo");
+
+                // Pattern mode: the pattern's loop (its tail folded onto its start), as loud as the pattern played live
+                {
+                    song.mode = PlayMode::pattern;
+                    song.currentPatternId = chordsId;
+                    song.notify (Song::Change::transport);
+                    audio.syncNow();
+                    const bool looping = audio.isPlayingFrozen (lead);
+                    audio.renderToFile (folder.getChildFile ("pattern frozen.wav"), 2.0, 32);
+                    const auto frozenLoop = read (folder.getChildFile ("pattern frozen.wav"));
+                    std::unique_ptr<juce::AudioFormatReader> loopFile (formats.createReaderFor (juce::File (song.findChannel (lead)->freeze.patterns[chordsId])));
+
+                    main.unfreezeChannel (lead);
+                    audio.renderToFile (folder.getChildFile ("pattern live.wav"), 2.0, 32);
+                    const auto livePattern = read (folder.getChildFile ("pattern live.wav"));
+                    song.undo();
+                    audio.syncNow();
+
+                    const int loop = (int) std::round (8.0 * rate);
+                    auto rmsDb = [] (const juce::AudioBuffer<float>& b, int to)
+                    {
+                        double sum = 0.0;
+
+                        for (int ch = 0; ch < b.getNumChannels(); ++ch)
+                            for (int i = 0; i < std::min (to, b.getNumSamples()); ++i)
+                                sum += (double) b.getSample (ch, i) * b.getSample (ch, i);
+
+                        return 10.0 * std::log10 (sum / (2.0 * to) + 1.0e-30);
+                    };
+
+                    const double level = rmsDb (frozenLoop, loop) - rmsDb (livePattern, loop);
+                    check (looping && loopFile != nullptr && loopFile->lengthInSamples == loop && std::abs (level) < 0.5,
+                           "Pattern mode plays the chords' frozen loop: " + juce::String (loopFile != nullptr ? (int) loopFile->lengthInSamples : 0)
+                             + " samples (its four bars), " + juce::String (level, 2) + " dB from the pattern played live");
+
+                    song.mode = PlayMode::song;
+                    song.notify (Song::Change::transport);
+                    audio.syncNow();
+                }
+
+                // Editing a frozen channel's notes asks to unfreeze it first
+                {
+                    auto modal = [] { return dynamic_cast<juce::AlertWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (0)); };
+                    auto answer = [&] (int button)
+                    {
+                        if (auto w = modal())
+                            w->exitModalState (button);
+
+                        for (int i = 0; i < 10; ++i)
+                            juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+                    };
+
+                    song.currentPatternId = chordsId;
+                    song.selectedChannelId = lead;
+                    song.notify (Song::Change::selection);
+                    auto& roll = main.getPianoRoll();
+                    const auto notesBefore = song.findPattern (chordsId)->notesFor (lead).size();
+                    roll.edit (EditCommand::selectAll);
+                    const bool removed = roll.edit (EditCommand::remove);
+                    const auto asked = modal() != nullptr ? modal()->getName() : juce::String();
+                    answer (0);     // Cancel
+                    const bool kept = ! removed && song.findPattern (chordsId)->notesFor (lead).size() == notesBefore && song.findChannel (lead)->freeze.on;
+
+                    roll.edit (EditCommand::selectAll);
+                    roll.edit (EditCommand::remove);
+                    answer (1);     // Unfreeze
+                    const bool unfrozen = ! song.findChannel (lead)->freeze.on && ! audio.isPlayingFrozen (lead);
+                    roll.edit (EditCommand::selectAll);
+                    const bool removedNow = roll.edit (EditCommand::remove) && song.findPattern (chordsId)->notesFor (lead).empty();
+
+                    check (asked == "Lead is frozen" && kept && unfrozen && removedNow,
+                           "deleting the lead's notes in the piano roll asks \"" + asked + "\" first: Cancel keeps them and the freeze, Unfreeze lets them go");
+
+                    song.undo();        // the notes back
+                    song.undo();        // and frozen again
+                    audio.syncNow();
+
+                    // Steps, the AI band and recording ask (or say) the same of the frozen kick
+                    const bool stepsAsk = ! main.getRack().mayEditNotes (kick) && modal() != nullptr;
+                    answer (0);
+                    const bool bandAsks = ! freezing::mayEdit (kick) && modal() != nullptr;
+                    answer (0);
+                    song.selectedChannelId = kick;
+                    song.notify (Song::Change::selection);
+                    audio.setRecordArmed (true);
+                    const auto recording = audio.togglePlay();
+                    audio.stop();
+                    audio.setRecordArmed (false);
+
+                    check (song.findChannel (lead)->freeze.on && audio.isPlayingFrozen (lead) && stepsAsk && bandAsks && recording.contains ("Kick is frozen"),
+                           "undo has the lead's notes back and it frozen; Steps and the AI band ask about the kick too, and recording says: \""
+                             + recording.upToFirstOccurrenceOf ("\n", false, false) + "\"");
+                }
+
+                song.save (projectFile);
+            }
+
+            // Saved and opened again: still frozen, its files found, the same sound; then unfrozen it plays live, the same
+            {
+                Song opened;
+                opened.load (projectFile);
+                AudioEngine audio (opened, false);
+                audio.syncNow();
+                const bool same = opened.findChannel (lead) != nullptr && opened.findChannel (lead)->freeze == song.findChannel (lead)->freeze
+                                   && opened.findChannel (hat)->freeze == song.findChannel (hat)->freeze;
+                const bool playing = audio.isPlayingFrozen (lead) && audio.isPlayingFrozen (kick) && audio.isPlayingFrozen (hat);
+                audio.renderToFile (folder.getChildFile ("opened.wav"), 2.0, 32);
+                const auto [db, worst] = apart (live, read (folder.getChildFile ("opened.wav")));
+                check (same && playing && db < -90.0, "saved and opened again it's frozen, playing its files, the same sound (" + juce::String (db, 1) + " dB apart)");
+
+                MainComponent main (opened, audio);
+                const auto said = main.unfreezeChannel (lead);
+                main.unfreezeChannel (kick);
+                main.unfreezeChannel (hat);
+                audio.syncNow();
+                const bool on = audio.getInstrument (lead) != nullptr && audio.getInstrument (lead)->isEnabled() && ! audio.isPlayingFrozen (lead);
+                audio.renderToFile (folder.getChildFile ("unfrozen.wav"), 2.0, 32);
+                const auto [backDb, backWorst] = apart (live, read (folder.getChildFile ("unfrozen.wav")));
+                check (on && backDb < -90.0 && said.startsWith ("Lead is unfrozen"),
+                       "Unfreeze switches them back on, playing live as before (" + juce::String (backDb, 1) + " dB apart): \"" + said + "\"");
+            }
+
+            NovaPlugin::seedForTests.reset();
+            folder.deleteRecursively();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--arrangetest"))
         {
             // Arrange on the demo, with real mouse events: mute and solo in the track headers
@@ -11566,6 +11972,522 @@ namespace
             return failures == 0 ? 0 : 1;
         }
 
+        if (args.has ("--stemtest"))
+        {
+            // Stems: a beat of the kit with the snare played into a Drums bus (6 dB down) and the hat sending to a
+            // Reverb bus; a muted clap and a channel with no notes. Each stem read back: named after its channel or
+            // bus, every one as long as the export and lined up with its notes, the buses' levels as set, the mix
+            // before the master exactly the stems added up, through the master each as the master turns it
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            const double rate = 48000.0;
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+
+            auto read = [&formats] (const juce::File& f)
+            {
+                juce::AudioBuffer<float> b;
+
+                if (std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f)); r != nullptr)
+                {
+                    b.setSize ((int) r->numChannels, (int) r->lengthInSamples);
+                    r->read (&b, 0, b.getNumSamples(), 0, true, true);
+                }
+
+                return b;
+            };
+
+            auto rmsDb = [] (const juce::AudioBuffer<float>& b)
+            {
+                double sum = 0.0;
+
+                for (int ch = 0; ch < b.getNumChannels(); ++ch)
+                    for (int i = 0; i < b.getNumSamples(); ++i)
+                        sum += (double) b.getSample (ch, i) * b.getSample (ch, i);
+
+                return 10.0 * std::log10 (sum / std::max (1, b.getNumChannels() * b.getNumSamples()) + 1.0e-30);
+            };
+
+            // Where a stem first sounds, in seconds (-1: never)
+            auto onset = [rate] (const juce::AudioBuffer<float>& b, float threshold = 0.01f)
+            {
+                for (int i = 0; i < b.getNumSamples(); ++i)
+                    for (int ch = 0; ch < b.getNumChannels(); ++ch)
+                        if (std::abs (b.getSample (ch, i)) > threshold)
+                            return i / rate;
+
+                return -1.0;
+            };
+
+            Song song;
+            song.loadEmpty();
+            song.bpm = 120.0;
+            song.mode = PlayMode::song;
+
+            auto idOf = [&song] (const juce::String& name)
+            {
+                for (auto& c : song.channels)
+                    if (c.name == name)
+                        return c.id;
+
+                return 0;
+            };
+
+            const int kick = idOf ("Kick"), clap = idOf ("Clap"), hat = idOf ("Hat"), snare = idOf ("Snare");
+            song.addChannel ("Empty", InstrumentType::sampler).sample = "kit:Kick";
+            auto& pattern = song.currentPattern();
+
+            for (int s : { 0, 8 })
+                steps::set (pattern.notesFor (kick), s, true, defaultRootKey);
+
+            for (int s : { 4, 12 })
+                steps::set (pattern.notesFor (snare), s, true, defaultRootKey);
+
+            for (int s = 2; s < 16; s += 4)
+                steps::set (pattern.notesFor (hat), s, true, defaultRootKey);
+
+            steps::set (pattern.notesFor (clap), 6, true, defaultRootKey);
+            song.findChannel (clap)->muted = true;
+
+            const int drumsBus = song.addBus ("Drums").id;
+            const int verbBus = song.addBus ("Reverb").id;
+            song.findBus (drumsBus)->volume = 0.78f * std::pow (10.0f, -6.0f / 40.0f);      // -6 dB on its fader
+
+            Effect reverb;
+            reverb.id = song.createId();
+
+            for (auto& d : stockfx::descriptions())
+                if (d.name.containsIgnoreCase ("Reverb"))
+                {
+                    reverb.pluginId = d.createIdentifierString();
+                    reverb.name = d.name;
+                }
+
+            song.findBus (verbBus)->effects = { reverb };
+            song.findChannel (snare)->output = drumsBus;
+            song.findChannel (hat)->sends.push_back ({ verbBus, 0.78f, false });
+
+            // The bar at bar 1 and at bar 3: the song is three bars (6 s at 120), the export that and 2 s more
+            song.tracks.push_back ({});
+            song.playlist.push_back ({ pattern.id, 0, 0 });
+            song.playlist.push_back ({ pattern.id, 0, 2 * song.ticksPerBar() });
+            song.notify (Song::Change::everything);
+
+            AudioEngine audio (song, false);
+            audio.syncNow();
+            const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-stemtest");
+            folder.deleteRecursively();
+
+            juce::StringArray silent, progressSaid;
+            const auto started = juce::Time::getMillisecondCounterHiRes();
+            const auto stems = audio.renderStems (folder.getChildFile ("dry"), false, 32,
+                                                  [&progressSaid] (int done, int total, const juce::String& name)
+                                                  { progressSaid.add (juce::String (done) + "/" + juce::String (total) + " " + name); },
+                                                  &silent);
+            std::cout << "      " << stems.size() << " stems in " << juce::String ((juce::Time::getMillisecondCounterHiRes() - started) / 1000.0, 1)
+                      << " s; " << progressSaid.joinIntoString (", ") << std::endl;
+
+            juce::StringArray names;
+
+            for (auto& s : stems)
+                names.add (s.file.getFileName());
+
+            names.sort (true);
+            check (names.joinIntoString (", ") == "Drums (bus).wav, Hat.wav, Kick.wav, Reverb (bus).wav, Snare.wav"
+                     && silent.joinIntoString (", ") == "Clap, Empty",
+                   "a stem for each channel and bus that sounds, named after it (" + names.joinIntoString (", ")
+                     + "); left out as silent: " + silent.joinIntoString (", ") + " (the muted clap, the channel with no notes)");
+
+            std::map<juce::String, juce::AudioBuffer<float>> got;
+
+            for (auto& s : stems)
+                got[s.file.getFileNameWithoutExtension()] = read (s.file);
+
+            // Every one as long as the export: the song's three bars and the 2 s tail
+            const int expected = (int) std::round ((6.0 + 2.0) * rate);
+            juce::StringArray lengths;
+            bool sameLength = got.size() == 5;
+
+            for (auto& [name, b] : got)
+            {
+                lengths.add (name + " " + juce::String (b.getNumSamples()));
+                sameLength = sameLength && b.getNumSamples() == expected && b.getNumChannels() == 2;
+            }
+
+            check (sameLength, "every stem is " + juce::String (expected) + " samples (8 s at 48 kHz), stereo: " + lengths.joinIntoString (", "));
+
+            // Lined up: each starts where its first note is (kick on 1, the hat's eighth after it, the snare on 2)
+            const double kickAt = onset (got["Kick"]), hatAt = onset (got["Hat"]), snareAt = onset (got["Snare"]),
+                         drumsAt = onset (got["Drums (bus)"]), verbAt = onset (got["Reverb (bus)"], 0.001f);
+            check (kickAt >= 0.0 && kickAt < 0.002 && std::abs (hatAt - 0.25) < 0.002 && std::abs (snareAt - 0.5) < 0.002
+                     && std::abs (drumsAt - 0.5) < 0.002 && verbAt > 0.249 && verbAt < 0.3,
+                   "each lines up with its notes: kick at " + juce::String (kickAt * 1000.0, 1) + " ms, hat " + juce::String (hatAt * 1000.0, 1)
+                     + " ms, snare " + juce::String (snareAt * 1000.0, 1) + " ms (its bus " + juce::String (drumsAt * 1000.0, 1)
+                     + " ms), the reverb from " + juce::String (verbAt * 1000.0, 1) + " ms");
+
+            // The Drums bus is the snare 6 dB down, sample for sample
+            {
+                const auto& bus = got["Drums (bus)"];
+                const auto& sn = got["Snare"];
+                const float gain = juce::Decibels::decibelsToGain (-6.0f);
+                double residual = 0.0, signal = 0.0;
+
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < std::min (bus.getNumSamples(), sn.getNumSamples()); ++i)
+                    {
+                        const double d = bus.getSample (ch, i) - gain * sn.getSample (ch, i);
+                        residual += d * d;
+                        signal += (double) bus.getSample (ch, i) * bus.getSample (ch, i);
+                    }
+
+                const double level = rmsDb (bus) - rmsDb (sn), apart = 10.0 * std::log10 ((residual + 1.0e-30) / (signal + 1.0e-30));
+                check (std::abs (level + 6.0) < 0.05 && apart < -80.0,
+                       "the Drums bus's stem is the snare through its fader: " + juce::String (level, 2) + " dB from the snare's, the rest "
+                         + juce::String (apart, 1) + " dB under it");
+            }
+
+            // The mix as it reaches the master is exactly the stems that play into it added up (the snare is in its bus)
+            {
+                const auto capture = folder.getChildFile ("mix.wav");
+                audio.captureMix (capture, true);
+                const auto mix = read (capture);
+                double residual = 0.0, signal = 0.0;
+                const int n = std::min (mix.getNumSamples(), expected);
+
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const double sum = (double) got["Kick"].getSample (ch, i) + got["Hat"].getSample (ch, i)
+                                           + got["Drums (bus)"].getSample (ch, i) + got["Reverb (bus)"].getSample (ch, i);
+                        const double d = mix.getSample (ch, i) - sum;
+                        residual += d * d;
+                        signal += (double) mix.getSample (ch, i) * mix.getSample (ch, i);
+                    }
+
+                const double apart = 10.0 * std::log10 ((residual + 1.0e-30) / (signal + 1.0e-30));
+
+                // (where it differs: what's left against each stem, and when)
+                if (apart >= -80.0)
+                {
+                    for (auto& [name, b] : got)
+                    {
+                        double dot = 0.0, norm = 0.0;
+
+                        for (int ch = 0; ch < 2; ++ch)
+                            for (int i = 0; i < n; ++i)
+                            {
+                                const double sum = (double) got["Kick"].getSample (ch, i) + got["Hat"].getSample (ch, i)
+                                                   + got["Drums (bus)"].getSample (ch, i) + got["Reverb (bus)"].getSample (ch, i);
+                                dot += (mix.getSample (ch, i) - sum) * b.getSample (ch, i);
+                                norm += (double) b.getSample (ch, i) * b.getSample (ch, i);
+                            }
+
+                        std::cout << "      left over along " << name << ": " << juce::String (dot / (norm + 1.0e-30), 4) << " of it" << std::endl;
+                    }
+
+                    for (int second = 0; second < 8; ++second)
+                    {
+                        double r = 0.0, s = 0.0;
+
+                        for (int ch = 0; ch < 2; ++ch)
+                            for (int i = second * 48000; i < std::min (n, (second + 1) * 48000); ++i)
+                            {
+                                const double sum = (double) got["Kick"].getSample (ch, i) + got["Hat"].getSample (ch, i)
+                                                   + got["Drums (bus)"].getSample (ch, i) + got["Reverb (bus)"].getSample (ch, i);
+                                r += (mix.getSample (ch, i) - sum) * (mix.getSample (ch, i) - sum);
+                                s += (double) mix.getSample (ch, i) * mix.getSample (ch, i);
+                            }
+
+                        std::cout << "      second " << second << ": " << juce::String (10.0 * std::log10 ((r + 1.0e-30) / (s + 1.0e-30)), 1) << " dB" << std::endl;
+                    }
+                }
+
+                check (mix.getNumSamples() == expected && apart < -80.0,
+                       "kick + hat + the two buses' stems make the mix before the master (" + juce::String (mix.getNumSamples())
+                         + " samples): what's left is " + juce::String (apart, 1) + " dB under it");
+            }
+
+            // Through the master: each as the master turns it (its volume 8.2 dB down; quiet enough that nothing's limited)
+            {
+                song.masterVolume = 0.5f;
+                song.notify (Song::Change::mixer);
+                juce::StringArray none;
+                const auto through = audio.renderStems (folder.getChildFile ("through"), true, 32, nullptr, &none);
+                juce::StringArray diffs;
+                bool ok = through.size() == 5;
+
+                const float g = juce::Decibels::decibelsToGain (masterVolumeToDb (0.5f));
+
+                for (auto& s : through)
+                {
+                    const auto b = read (s.file);
+                    const auto& dry = got[s.file.getFileNameWithoutExtension()];
+                    const double diff = rmsDb (b) - rmsDb (dry);
+
+                    // Lined up as the dry one is: what's left once that's turned down by the master's volume
+                    double residual = 0.0, signal = 0.0;
+
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < std::min (b.getNumSamples(), dry.getNumSamples()); ++i)
+                        {
+                            const double d = b.getSample (ch, i) - g * dry.getSample (ch, i);
+                            residual += d * d;
+                            signal += (double) b.getSample (ch, i) * b.getSample (ch, i);
+                        }
+
+                    const double left = 10.0 * std::log10 ((residual + 1.0e-30) / (signal + 1.0e-30));
+                    diffs.add (s.name + " " + juce::String (diff, 2) + " (" + juce::String (left, 0) + " dB left, peak "
+                               + juce::String (juce::Decibels::gainToDecibels (dry.getMagnitude (0, dry.getNumSamples())), 1) + " dB dry)");
+                    ok = ok && b.getNumSamples() == expected && std::abs (diff - masterVolumeToDb (0.5f)) < 0.1 && left < -60.0;
+                }
+
+                check (ok, "through the master's effects and volume (" + juce::String (masterVolumeToDb (0.5f), 2) + " dB), each stem is that much "
+                             "quieter and still lined up: " + diffs.joinIntoString (", "));
+                song.masterVolume = 0.8f;
+                song.notify (Song::Change::mixer);
+            }
+
+            // 16-bit stems are 16-bit; the finished message, and Export's own path (a folder named after the song)
+            {
+                const auto sixteen = audio.renderStems (folder.getChildFile ("sixteen"), false, 16);
+                std::unique_ptr<juce::AudioFormatReader> r (sixteen.empty() ? nullptr : formats.createReaderFor (sixteen.front().file));
+                check (r != nullptr && r->bitsPerSample == 16 && r->lengthInSamples == expected, "stems at CD quality are 16-bit, as long as the rest");
+
+                MainComponent main (song, audio);
+                const auto parent = folder.getChildFile ("export");
+                parent.createDirectory();
+                const auto message = main.exportStems (parent, 24, false);
+                const auto made = parent.getChildFile ("NightShift stems");
+                check (message.startsWith ("Saved 5 stems in " + made.getFullPathName()) && message.contains ("3 channels and 2 buses")
+                         && message.contains ("24-bit WAVs, 48 kHz, each 0:08 long") && message.contains ("Left out, as they make no sound: Clap, Empty")
+                         && made.getChildFile ("Kick.wav").existsAsFile() && made.getChildFile ("Reverb (bus).wav").existsAsFile(),
+                       "Export's stems go in a folder of their own, and it says what it did: \"" + message.replace ("\n", " / ") + "\"");
+            }
+
+            folder.deleteRecursively();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
+        if (args.has ("--mp3test"))
+        {
+            // MP3 export with LAME, built into NightShift: a tone and noise at each bit rate (the size it should be),
+            // then the demo song as Export makes it, read back with JUCE's own MP3 reader and held against the mix it
+            // was made from (lined up past the encoder's delay): the same level, close to the same sound, its tags there
+            int failures = 0;
+            auto check = [&failures] (bool ok, const juce::String& what)
+            {
+                std::cout << (ok ? "PASS  " : "FAIL  ") << what << std::endl;
+                failures += ok ? 0 : 1;
+            };
+
+            const double rate = 48000.0;
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+            const auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("nightshift-mp3test");
+            folder.deleteRecursively();
+            folder.createDirectory();
+
+            auto read = [&formats] (const juce::File& f, juce::String* format = nullptr)
+            {
+                juce::AudioBuffer<float> b;
+
+                if (std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f)); r != nullptr)
+                {
+                    b.setSize ((int) r->numChannels, (int) r->lengthInSamples);
+                    r->read (&b, 0, b.getNumSamples(), 0, true, true);
+
+                    if (format != nullptr)
+                        *format = r->getFormatName() + " " + juce::String (r->sampleRate, 0) + " Hz " + juce::String ((int) r->numChannels) + " ch";
+                }
+
+                return b;
+            };
+
+            // The decoded MP3 against its source: the lag that lines them up best (the encoder's and decoder's
+            // delay), and then the level difference and how far under the source what differs is
+            struct Compared { int lag = -1; double levelDb = 0.0, apartDb = 0.0; };
+
+            auto compare = [] (const juce::AudioBuffer<float>& source, const juce::AudioBuffer<float>& decoded)
+            {
+                Compared c;
+                double best = -1.0;
+                const int from = (int) (0.2 * 48000.0), span = std::min (source.getNumSamples() - from, (int) (2.0 * 48000.0));
+
+                for (int lag = 0; lag < 4000 && from + lag + span <= decoded.getNumSamples(); ++lag)
+                {
+                    double dot = 0.0, a = 0.0, b = 0.0;
+
+                    for (int i = from; i < from + span; i += 2)
+                    {
+                        const double x = source.getSample (0, i), y = decoded.getSample (0, i + lag);
+                        dot += x * y;
+                        a += x * x;
+                        b += y * y;
+                    }
+
+                    if (const double r = dot / std::sqrt (a * b + 1.0e-30); r > best)
+                    {
+                        best = r;
+                        c.lag = lag;
+                    }
+                }
+
+                // Then to the sample: the lag either side that leaves the least difference over all of it (a bass-heavy
+                // stretch correlates almost as well a sample off, which a bright one doesn't forgive)
+                auto errorAt = [&source, &decoded] (int lag)
+                {
+                    double e = 0.0;
+
+                    for (int ch = 0; ch < std::min (source.getNumChannels(), decoded.getNumChannels()); ++ch)
+                        for (int i = 0; i < source.getNumSamples() && i + lag < decoded.getNumSamples(); ++i)
+                        {
+                            const double x = source.getSample (ch, i) - decoded.getSample (ch, i + lag);
+                            e += x * x;
+                        }
+
+                    return e;
+                };
+
+                for (int lag = c.lag - 3, coarse = c.lag; lag <= coarse + 3; ++lag)
+                    if (lag >= 0 && errorAt (lag) < errorAt (c.lag))
+                        c.lag = lag;
+
+                double s = 0.0, d = 0.0, e = 0.0;
+
+                for (int ch = 0; ch < std::min (source.getNumChannels(), decoded.getNumChannels()); ++ch)
+                    for (int i = 0; i < source.getNumSamples() && i + c.lag < decoded.getNumSamples(); ++i)
+                    {
+                        const double x = source.getSample (ch, i), y = decoded.getSample (ch, i + c.lag);
+                        s += x * x;
+                        d += y * y;
+                        e += (x - y) * (x - y);
+                    }
+
+                c.levelDb = 10.0 * std::log10 ((d + 1.0e-30) / (s + 1.0e-30));
+                c.apartDb = 10.0 * std::log10 ((e + 1.0e-30) / (s + 1.0e-30));
+                return c;
+            };
+
+            check (mp3::lameVersion() == "3.100", "LAME " + mp3::lameVersion() + " is built in (3.100, as CMakeLists.txt pins it)");
+
+            // A tone in each ear and some noise, 6 s
+            juce::AudioBuffer<float> tone (2, (int) (6.0 * rate));
+            juce::Random random (11);
+
+            for (int i = 0; i < tone.getNumSamples(); ++i)
+            {
+                const float t = (float) (i / rate);
+                tone.setSample (0, i, 0.3f * std::sin (juce::MathConstants<float>::twoPi * 440.0f * t) + 0.03f * (random.nextFloat() * 2.0f - 1.0f));
+                tone.setSample (1, i, 0.3f * std::sin (juce::MathConstants<float>::twoPi * 660.0f * t) + 0.03f * (random.nextFloat() * 2.0f - 1.0f));
+            }
+
+            const auto toneWav = folder.getChildFile ("tone.wav");
+            drumsynth::writeWav (toneWav, tone, rate);
+
+            juce::StringArray sizes;
+            bool sized = true;
+
+            for (int kbps : mp3::bitRates())
+            {
+                const auto out = folder.getChildFile ("tone " + juce::String (kbps) + ".mp3");
+                const auto error = mp3::encode (toneWav, out, kbps);
+                const double expected = kbps * 1000.0 / 8.0 * 6.0;
+                sizes.add (juce::String (kbps) + " kbps " + juce::String (out.getSize() / 1024) + " KB");
+                sized = sized && error.isEmpty() && std::abs (out.getSize() - expected) < expected * 0.05;
+            }
+
+            check (sized, "6 s at each bit rate is the size it should be (within 5%): " + sizes.joinIntoString (", "));
+
+            {
+                juce::String format;
+                const auto decoded = read (folder.getChildFile ("tone 320.mp3"), &format);
+                const auto c = compare (tone, decoded);
+                check (format == "MP3 file 48000 Hz 2 ch" && decoded.getNumSamples() >= tone.getNumSamples() && c.lag > 0
+                         && std::abs (c.levelDb) < 0.1 && c.apartDb < -25.0,
+                       "the 320 kbps tone reads back (" + format + "), " + juce::String (c.lag) + " samples late (the encoder's delay), "
+                         + juce::String (c.levelDb, 3) + " dB from the original, what differs " + juce::String (-c.apartDb, 1) + " dB under it");
+            }
+
+            // The demo song as Export makes it, against the mix it was made from (Nova seeded at each render: its pads'
+            // random unison start points the same in both renders, so they're the same mix)
+            NovaPlugin::seedForTests = 1;
+            Song song;
+            song.loadDemo();
+            song.mode = PlayMode::song;
+            song.notify (Song::Change::everything);
+            AudioEngine audio (song, false);
+            audio.syncNow();
+
+            const auto mix = folder.getChildFile ("demo.wav");
+            audio.renderToFile (mix, 2.0, 32);
+            const auto mp3File = folder.getChildFile ("Demo song.mp3");
+            mastering::Readings loudness;
+            const auto started = juce::Time::getMillisecondCounterHiRes();
+            const auto error = audio.renderMp3 (mp3File, 320, "Demo song", &loudness);
+            const auto took = (juce::Time::getMillisecondCounterHiRes() - started) / 1000.0;
+
+            const auto source = read (mix);
+            juce::String format;
+            const auto decoded = read (mp3File, &format);
+            const auto c = compare (source, decoded);
+            const double seconds = source.getNumSamples() / rate;
+            const double kbpsMade = mp3File.getSize() * 8.0 / 1000.0 / seconds;
+
+            check (error.isEmpty() && format == "MP3 file 48000 Hz 2 ch" && decoded.getNumSamples() >= source.getNumSamples()
+                     && std::abs (kbpsMade - 320.0) < 8.0,
+                   "the demo song (" + juce::String (seconds, 1) + " s) saved as an MP3 in " + juce::String (took, 1) + " s, rendering included: "
+                     + juce::String (mp3File.getSize() / 1024) + " KB, " + juce::String (kbpsMade, 1) + " kbps, " + format
+                     + (error.isEmpty() ? juce::String() : " (" + error + ")"));
+
+            // The mix and the MP3 (two renders of it, the second through LAME): lined up, the same level
+            check (c.lag > 500 && c.lag < 2500 && std::abs (c.levelDb) < 0.1,
+                   "read back by JUCE it's the mix: lined up " + juce::String (c.lag) + " samples on (the encoder's and decoder's delay), "
+                     + juce::String (c.levelDb, 3) + " dB from it");
+
+            // The encoder alone, on that very mix: what an MP3 changes, how far under the music
+            {
+                const auto direct = folder.getChildFile ("mix.mp3");
+                const auto encodeError = mp3::encode (mix, direct, 320);
+                const auto back = compare (source, read (direct));
+                const auto twice = compare (source, read (mix));   // (the mix against itself, for the sake of the measure)
+                check (encodeError.isEmpty() && back.lag == c.lag && std::abs (back.levelDb) < 0.05 && back.apartDb < -20.0 && twice.apartDb < -200.0,
+                       "the mix encoded at 320 kbps and read back: " + juce::String (back.levelDb, 3) + " dB from it, what LAME changed "
+                         + juce::String (-back.apartDb, 1) + " dB under the music (Export's own render of it: " + juce::String (-c.apartDb, 1) + " dB)");
+            }
+
+            // Its tags: the title in an ID3 tag at the front, LAME's tag in the first frame (the exact length)
+            {
+                juce::MemoryBlock bytes;
+                mp3File.loadFileAsData (bytes);
+                const bool id3 = bytes.getSize() > 10 && std::memcmp (bytes.getData(), "ID3", 3) == 0;
+                bool info = false, lame = false, title = false;
+                auto* data = (const char*) bytes.getData();
+
+                for (size_t i = 0; i + 9 < std::min<size_t> (bytes.getSize(), 8000); ++i)
+                {
+                    info = info || std::memcmp (data + i, "Info", 4) == 0;
+                    lame = lame || std::memcmp (data + i, "LAME3.100", 9) == 0;
+                    title = title || std::memcmp (data + i, "Demo song", 9) == 0;
+                }
+
+                check (id3 && title && info && lame, "the title is in an ID3 tag at the front, and LAME's own tag (Info, LAME3.100) holds the length");
+            }
+
+            check (loudness.integratedValid && MainComponent::describeMp3 (mp3File, 320, true, loudness).contains ("320 kbps MP3, 48 kHz, the whole song."),
+                   "the finished message says what it made: \"" + MainComponent::describeMp3 (mp3File, 320, true, loudness).replace ("\n", " / ") + "\"");
+
+            NovaPlugin::seedForTests.reset();
+            folder.deleteRecursively();
+            std::cout << (failures == 0 ? "ALL PASSED" : juce::String (failures) + " FAILED") << std::endl;
+            return failures == 0 ? 0 : 1;
+        }
+
         if (args.has ("--startscreentest"))
         {
             // The start screen and templates: a blank project is one empty track; each template
@@ -14719,12 +15641,17 @@ namespace
                 { "the NAM amp, a model in two sizes, the smaller", "--effectpanel nightshiftAmp --nammodel a2 --namsize 0" },
                 { "pitch correction, listening", "--effectpanel nightshiftTune" },
                 { "pitch correction, a sung phrase pulled onto the key", "--effectpanel nightshiftTune --tunedemo" },
-                { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" }, { "About", "--about 900" },
+                { "Save changes?", "--closedialog" }, { "Export MIDI file", "--exportmidi" },
+                { "Export: the song as a WAV", "--exportwindow 0" }, { "Export: an MP3", "--exportwindow 1" },
+                { "Export: stems", "--exportwindow 2" }, { "Export: a MIDI file", "--exportwindow 3" }, { "About", "--about 900" },
                 { "Check for updates: a newer version", "--updatefound" }, { "Check for updates: up to date", "--uptodate" },
                 { "automation lanes", "--automationdemo" }, { "a bus's automation lanes", "--buses --automationdemo --busautomation" },
                 { "recording automation", "--automationdemo --recordautomation" },
                 { "tempo changes, glides curved", "--tempodemo --curved" }, { "the tempo dialog", "--tempodemo --curved --tempodialog" },
                 { "editing", "--editdemo" },
+                { "frozen channels in Steps", "--freeze \"Kick,Keys\"" },
+                { "a frozen channel in the piano roll", "--freeze Kick --raise piano" },
+                { "a frozen channel's notes asked about", "--freeze Keys --select Keys --askunfreeze" },
                 { "audio clips in time with the song, pitched and stretched", "--stretchdemo" }, { "every kind of track", "--moretracks" },
                 { "an audio track's Inspector", "--moretracks --select Guitar" },
                 { "a synth's Inspector", "--moretracks --select \"Warm Analog Pad\"" },
@@ -19984,6 +20911,45 @@ namespace
                 closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
             }
 
+            // Channels frozen (--freeze "Kick,Keys"), as their menu's Freeze makes them (the audio in a temp folder);
+            // --askunfreeze then asks, as editing the selected one's notes does
+            if (auto names = args.valueAfter ("--freeze").unquoted(); names.isNotEmpty())
+            {
+                audio.setProjectFile (juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NightShift snapshot")
+                                                                                                .getChildFile ("Snapshot.nsproj"));
+
+                for (auto& name : juce::StringArray::fromTokens (names, ",", ""))
+                {
+                    int id = 0;
+
+                    for (auto& c : song.channels)
+                        id = c.name == name.trim() ? c.id : id;
+
+                    if (id != 0)
+                        std::cout << main.freezeChannel (id) << std::endl;
+                }
+
+                audio.syncNow();
+                main.repaint();
+
+                if (args.has ("--askunfreeze"))
+                {
+                    main.mayEditNotes (song.selectedChannelId);
+                    closeDialog = juce::ModalComponentManager::getInstance()->getModalComponent (0);
+                }
+            }
+
+            // Export's window on its own (--exportwindow 0 the song as a WAV, 1 an MP3, 2 stems, 3 a MIDI file)
+            std::unique_ptr<ExportWindow> exportWindow;
+
+            if (auto kind = args.valueAfter ("--exportwindow"); kind.isNotEmpty())
+            {
+                ExportWindow::Choice choice;
+                choice.kind = kind.getIntValue();
+                exportWindow = std::make_unique<ExportWindow> (choice, song.mode == PlayMode::song);
+                exportWindow->setVisible (true);
+            }
+
             // What the master's for (--mastertarget streaming), as clicking it in the Master tab does
             if (auto target = args.valueAfter ("--mastertarget"); target.isNotEmpty())
                 main.getMaster().chooseTarget (target);
@@ -20056,6 +21022,7 @@ namespace
             juce::Component& shown = closeDialog != nullptr ? *closeDialog
                                    : metronomePanel != nullptr ? static_cast<juce::Component&> (*metronomePanel)
                                    : effectPanel != nullptr ? *effectPanel
+                                   : exportWindow != nullptr ? static_cast<juce::Component&> (*exportWindow)
                                    : settings != nullptr ? static_cast<juce::Component&> (*settings)
                                                          : static_cast<juce::Component&> (main);
             juce::Image image;

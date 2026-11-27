@@ -2,6 +2,7 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "DrummerPanel.h"
+#include "FreezeGuard.h"
 #include "audio/Kits.h"
 
 namespace nightshift
@@ -433,6 +434,10 @@ void DrummerPanel::showKitMenu()
 void DrummerPanel::ask (const juce::String& text)
 {
     if (text.trim().isEmpty())
+        return;
+
+    // A frozen channel's notes can't change: it asks to unfreeze it first
+    if (auto frozen = channel(); frozen != nullptr && ! freezing::mayEdit (frozen->id))
         return;
 
     // No kit to write for and none here: it waits for the kits

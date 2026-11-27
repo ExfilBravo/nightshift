@@ -436,6 +436,10 @@ struct NovaPlugin::Engine
     std::array<Voice, maxVoices> voices {};
     Lfo freeLfo[2];
     juce::Random random;
+
+    // The free-running LFOs' own: they turn whether notes play or not, so drawing from `random` made each
+    // note's random start points depend on how long Nova had been running (a render's run-in, say)
+    juce::Random freeRandom;
     juce::uint32 counter = 0;
     std::vector<int> stack;             // keys held, oldest first (mono and legato)
     double lastPitch = -1.0;
@@ -1084,7 +1088,7 @@ struct NovaPlugin::Engine
             for (int l = 0; l < 2; ++l)
             {
                 freeValues[l] = freeLfo[l].value (choice (ix::lfo[l] + ix::lfoShape));
-                freeLfo[l].advance (lfoRate (l) * length / sr, random);
+                freeLfo[l].advance (lfoRate (l) * length / sr, freeRandom);
             }
 
             for (auto& v : voices)
@@ -1372,6 +1376,7 @@ namespace nova
         // Seeded, so a sound measures the same every time
         NovaPlugin::Engine engine;
         engine.random.setSeed (1);
+        engine.freeRandom.setSeed (2);      // as a seeded NovaPlugin seeds them
         engine.prepare (rate);
         engine.bpm = bpm;
         engine.readSettings (patch);
@@ -1596,7 +1601,10 @@ void NovaPlugin::prepare()
     engine->prepare (sampleRate);
 
     if (seedForTests.has_value())
+    {
         engine->random.setSeed (*seedForTests);
+        engine->freeRandom.setSeed (*seedForTests + 1);
+    }
 }
 
 void NovaPlugin::reset()

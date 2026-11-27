@@ -86,6 +86,10 @@ void NightDelay::reset()
     highCut.reset();
     lowCut.reset();
     currentDelay = -1.0;
+
+    // The wobble from the start of its swing, as the chorus's: a render (an export, a freeze) comes out the same
+    // every time, not wherever the last playing left it
+    lfoPhase = 0.0;
 }
 
 void NightDelay::applyToBuffer (const tracktion::PluginRenderContext& fc)

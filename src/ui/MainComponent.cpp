@@ -2,6 +2,10 @@
 // NightShift - Copyright (C) 2026 NightWriter. See LICENSE.
 
 #include "MainComponent.h"
+#include "ExportWindow.h"
+#include "FreezeGuard.h"
+#include "audio/Freeze.h"
+#include "audio/Mp3Encoder.h"
 #include "model/Paths.h"
 #include "ai/SongWriter.h"
 #include "audio/GuitarSound.h"
@@ -364,6 +368,13 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     rack.onScanPlugins = [this] { findNewPlugins (true); };       // "Find new instruments and effects"
     rack.onShowAudioSettings = [this] { showAudioSettings(); };   // a synth plugged in's timing and tempo
 
+    // Freeze and unfreeze from a channel's menu; a frozen channel's notes ask to unfreeze it before they change
+    rack.onFreeze = [this] (int id) { showToast (freezeChannel (id)); };
+    rack.onUnfreeze = [this] (int id) { showToast (unfreezeChannel (id)); };
+    rack.mayEditNotes = [this] (int id) { return mayEditNotes (id); };
+    pianoRoll.mayEditNotes = [this] (int id) { return mayEditNotes (id); };
+    freezing::mayEditNotes = [this] (int id) { return mayEditNotes (id); };     // the AI band's players
+
     playlist.onOpenPattern = [this] (int id) { openPattern (id); };
     playlist.onOpenChannel = [this] (int id) { openChannel (id); };
     playlist.onAddSound = [this] (const juce::String& sound) { return rack.addSound (sound); };
@@ -644,6 +655,7 @@ MainComponent::~MainComponent()
     automation::showMenuFor = nullptr;
     automation::touchFor = nullptr;
     audio.onAutomationWriting = nullptr;
+    freezing::mayEditNotes = nullptr;
     audio.onMidiInputAdded = nullptr;
     stopTimer();
     keyboardPoll.stopTimer();
@@ -2772,7 +2784,7 @@ void MainComponent::showMainMenu()
     withKey ("Save as...", "Ctrl+Shift+S", [this] { saveProject (true); });
     menu.addItem ("Load the demo song", [this] { confirmDiscard ([this] { currentFile = juce::File(); song.loadDemo(); }); });
     menu.addSeparator();
-    withKey ("Export WAV...", "Ctrl+R", [this] { exportAudio(); });
+    withKey ("Export (WAV, MP3, stems, MIDI)...", "Ctrl+R", [this] { exportAudio(); });
     menu.addItem ("Export MIDI file...", [this] { exportMidi(); });
     menu.addSeparator();
     withKey ("Undo", "Ctrl+Z", [this] { song.undo(); });
@@ -3179,8 +3191,9 @@ namespace
                        "AudioDSPTools by Steven Atkinson (MIT), with Eigen (MPL 2.0) and nlohmann/json (MIT). On a Mac the "
                        "text is Selawik by Microsoft (SIL Open Font License 1.1), Segoe UI's open stand-in. The AI drummer's "
                        "feel is learned from the Groove MIDI Dataset by Jon Gillick, Adam Roberts, Jesse Engel, Douglas Eck "
-                       "and David Bamman (Google Magenta), CC BY 4.0. The 808, 909, Nova and the AI drummer are NightShift's "
-                       "own, and the AI drummer writes on this computer, offline.",
+                       "and David Bamman (Google Magenta), CC BY 4.0. MP3s are made with LAME 3.100 (lame.sourceforge.io), "
+                       "GNU LGPL 2. The 808, 909, Nova and the AI drummer are NightShift's own, and the AI drummer writes on "
+                       "this computer, offline.",
                        font (15.0f), textFaint);
             y += 14;
 
@@ -3469,51 +3482,332 @@ void MainComponent::saveProject (bool saveAs, std::function<void()> saved)
     });
 }
 
-namespace
-{
-    // How an export can be saved, in plain words
-    struct ExportQuality { int bits; const char* name; const char* shortName; };
-
-    const ExportQuality exportQualities[] {
-        { 24, "Best quality (24-bit): for more mixing or mastering later",         "24-bit" },
-        { 16, "CD quality (16-bit, smoothed with dither): CDs and most uploads",    "16-bit with dither" },
-        { 32, "Studio float (32-bit): nothing lost, even above 0 dB",               "32-bit float" },
-    };
-}
-
 void MainComponent::exportAudio()
 {
-    // How it should be saved first, then where
+    // What to make and how first (ExportWindow), then where
     audio.stop();
-    auto* window = new juce::AlertWindow ("Export WAV", "How should it be saved?", juce::MessageBoxIconType::NoIcon, this);
-    window->setName ("Export WAV");
-    juce::StringArray names;
-    int current = 0;
 
-    for (int i = 0; i < (int) std::size (exportQualities); ++i)
+    if (exportWindow != nullptr)
     {
-        names.add (exportQualities[i].name);
-
-        if (exportQualities[i].bits == audio.getOptions().exportBits)
-            current = i;
+        exportWindow->toFront (true);
+        return;
     }
 
-    window->addComboBox ("quality", names);
-    window->getComboBoxComponent ("quality")->setSelectedItemIndex (current, juce::dontSendNotification);
-    window->addButton ("Choose where to save...", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    const auto o = audio.getOptions();
+    auto content = std::make_unique<ExportWindow> (ExportWindow::Choice { o.exportKind, o.exportBits, o.mp3Kbps, o.stemsThroughMaster },
+                                                   song.mode == PlayMode::song);
+    juce::Component::SafePointer<MainComponent> self (this);
 
-    window->enterModalState (true, juce::ModalCallbackFunction::create ([this, window] (int result)
+    // (it was launched to go when it's dismissed: ending its modal state deletes it)
+    auto close = [self]
     {
-        if (result != 1)
+        if (self != nullptr && self->exportWindow != nullptr)
+            self->exportWindow->exitModalState (0);
+    };
+
+    content->onCancel = close;
+    content->onChosen = [self, close] (const ExportWindow::Choice& c)
+    {
+        close();
+
+        if (self == nullptr)
             return;
 
-        const int index = juce::jlimit (0, (int) std::size (exportQualities) - 1, window->getComboBoxComponent ("quality")->getSelectedItemIndex());
-        auto o = audio.getOptions();
-        o.exportBits = exportQualities[index].bits;
-        audio.setOptions (o);
-        chooseExportFile (o.exportBits);
+        auto options = self->audio.getOptions();
+        options.exportKind = c.kind;
+        options.mp3Kbps = c.kbps;
+        options.stemsThroughMaster = c.throughMaster;
+
+        if (c.kind != ExportWindow::mp3)
+            options.exportBits = c.bits;
+
+        self->audio.setOptions (options);
+
+        // (after this window's gone: the system's own dialog comes next)
+        juce::MessageManager::callAsync ([self, c]
+        {
+            if (self == nullptr)
+                return;
+
+            if (c.kind == ExportWindow::mp3)
+                self->chooseMp3File (c.kbps);
+            else if (c.kind == ExportWindow::stems)
+                self->chooseStemsFolder (c.bits, c.throughMaster);
+            else if (c.kind == ExportWindow::midi)
+                self->exportMidi();
+            else
+                self->chooseExportFile (c.bits);
+        });
+    };
+
+    juce::DialogWindow::LaunchOptions launch;
+    launch.dialogTitle = "Export";
+    launch.dialogBackgroundColour = theme::panelLight;
+    launch.useNativeTitleBar = true;
+    launch.resizable = false;
+    launch.componentToCentreAround = this;
+    launch.escapeKeyTriggersCloseButton = true;
+    launch.content.setOwned (content.release());
+    exportWindow = launch.launchAsync();
+}
+
+namespace
+{
+    // How loud an export came out, and a warning when its peak is over -1 dB (`mp3`: said for an MP3)
+    juce::String loudnessReport (const mastering::Readings& loudness, bool mp3)
+    {
+        if (! loudness.integratedValid)
+            return {};
+
+        juce::String message;
+        message << "\n\nLoudness " << juce::String (loudness.integratedLufs, 1) << " LUFS, peak " << juce::String (loudness.truePeakDb, 1) << " dB.";
+
+        if (loudness.truePeakDb > -0.95f)
+            message << (mp3 ? "\nThe peak is above -1 dB, and an MP3 can go a little over 0 dB when it's played, so it may distort a little. "
+                              "The Master tab (F12) keeps it under."
+                            : "\nThe peak is above -1 dB, so streaming services may distort it a little when they convert it. "
+                              "The Master tab (F12) keeps it under.");
+
+        return message;
+    }
+
+    juce::String lengthText (double seconds)
+    {
+        const int whole = (int) std::round (seconds);
+        return juce::String (whole / 60) + ":" + juce::String (whole % 60).paddedLeft ('0', 2);
+    }
+}
+
+void MainComponent::runWithProgress (const juce::String& title, std::function<void (std::function<void (double, const juce::String&)>)> work)
+{
+    // A window with a bar while it works: the renders keep the screen alive, and nothing behind it can be clicked.
+    // (Only in the studio: a test or a command-line run works without one)
+    jobProgress = 0.0;
+    std::unique_ptr<juce::AlertWindow> window;
+
+    if (audio.isStudio())
+    {
+        window = std::make_unique<juce::AlertWindow> (title, "Starting...", juce::MessageBoxIconType::NoIcon, this);
+        window->addProgressBarComponent (jobProgress);
+        window->setEscapeKeyCancels (false);
+        window->enterModalState (false);
+    }
+
+    juce::MouseCursor::showWaitCursor();
+
+    work ([this, shown = juce::Component::SafePointer<juce::AlertWindow> (window.get())] (double done, const juce::String& what)
+    {
+        jobProgress = juce::jlimit (0.0, 1.0, done);
+
+        if (shown != nullptr && what.isNotEmpty())
+            shown->setMessage (what);
+    });
+
+    juce::MouseCursor::hideWaitCursor();
+
+    if (window != nullptr)
+        window->exitModalState (0);
+}
+
+void MainComponent::chooseMp3File (int kbps)
+{
+    const auto name = currentFile.existsAsFile() ? currentFile.getFileNameWithoutExtension() : juce::String ("NightShift export");
+    chooser = std::make_unique<juce::FileChooser> ("Export MP3", projectsFolder().getChildFile (name + ".mp3"), "*.mp3");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                            | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this, kbps, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+
+        if (file == juce::File())
+            return;
+
+        file = file.withFileExtension ("mp3");
+        mastering::Readings loudness;
+        juce::String error;
+
+        runWithProgress ("Export MP3", [&] (auto report)
+        {
+            report (0.0, "Making " + file.getFileName() + "...");
+            error = audio.renderMp3 (file, kbps, file.getFileNameWithoutExtension(), &loudness);
+            report (1.0, {});
+        });
+
+        juce::AlertWindow::showMessageBoxAsync (error.isEmpty() ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                                                error.isEmpty() ? "Export finished" : "Export failed",
+                                                error.isEmpty() ? describeMp3 (file, kbps, song.mode == PlayMode::song, loudness)
+                                                                : "NightShift couldn't make " + file.getFullPathName() + ": " + error);
+    });
+}
+
+juce::String MainComponent::describeMp3 (const juce::File& file, int kbps, bool wholeSong, const mastering::Readings& loudness)
+{
+    return "Saved " + file.getFullPathName() + "\n" + juce::String (kbps) + " kbps MP3, 48 kHz, " + (wholeSong ? "the whole song" : "the current pattern")
+             + "." + loudnessReport (loudness, true);
+}
+
+void MainComponent::chooseStemsFolder (int bits, bool throughMaster)
+{
+    // Where: a folder of their own is made in the one chosen, named after the song
+    projectsFolder().createDirectory();
+    chooser = std::make_unique<juce::FileChooser> ("Choose where to put the stems' folder", projectsFolder());
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                          [this, bits, throughMaster, dialog = ComputerKeyboard::openSystemDialog()] (const juce::FileChooser& fc)
+    {
+        const auto parent = fc.getResult();
+
+        if (parent == juce::File())
+            return;
+
+        const auto message = exportStems (parent, bits, throughMaster);
+        const bool made = message.startsWith ("Saved");
+        juce::AlertWindow::showMessageBoxAsync (made ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                                                made ? "Export finished" : "Export failed", message);
+    });
+}
+
+juce::String MainComponent::exportStems (const juce::File& parent, int bits, bool throughMaster)
+{
+    const auto name = (currentFile.existsAsFile() ? currentFile.getFileNameWithoutExtension() : juce::String ("NightShift")) + " stems";
+    const auto folder = parent.getNonexistentChildFile (juce::File::createLegalFileName (name), {}, false);
+    std::vector<AudioEngine::Stem> stems;
+    juce::StringArray silent;
+
+    runWithProgress ("Export stems", [&] (auto report)
+    {
+        stems = audio.renderStems (folder, throughMaster, bits, [&report] (int done, int total, const juce::String& what)
+        {
+            report (total > 0 ? done / (double) total : 1.0,
+                    what.isEmpty() ? juce::String ("Done") : what + "  (" + juce::String (done + 1) + " of " + juce::String (total) + ")");
+        }, &silent);
+    });
+
+    if (stems.empty())
+    {
+        folder.deleteRecursively();
+        return "Nothing in the song makes a sound yet, so there are no stems to save.";
+    }
+
+    double seconds = 0.0;
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+
+    if (std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (stems.front().file)); reader != nullptr)
+        seconds = (double) reader->lengthInSamples / reader->sampleRate;
+
+    return describeStems (folder, stems, bits, throughMaster, seconds, song.mode == PlayMode::song, silent);
+}
+
+juce::String MainComponent::describeStems (const juce::File& folder, const std::vector<AudioEngine::Stem>& stems, int bits, bool throughMaster,
+                                           double seconds, bool wholeSong, const juce::StringArray& silent)
+{
+    juce::String quality = "24-bit";
+
+    for (auto& q : ExportWindow::wavQualities())
+        if (q.bits == bits)
+            quality = q.shortName;
+
+    int buses = 0;
+
+    for (auto& s : stems)
+        buses += s.bus ? 1 : 0;
+
+    const int channels = (int) stems.size() - buses;
+    auto message = "Saved " + juce::String ((int) stems.size()) + (stems.size() == 1 ? " stem" : " stems") + " in " + folder.getFullPathName() + "\n"
+                   + juce::String (channels) + (channels == 1 ? " channel" : " channels")
+                   + (buses > 0 ? " and " + juce::String (buses) + (buses == 1 ? " bus" : " buses") : juce::String())
+                   + ", " + quality + " WAVs, 48 kHz, each " + lengthText (seconds) + " long (" + (wholeSong ? "the whole song" : "the current pattern")
+                   + " and its tail), so they line up.\n"
+                   + (throughMaster ? "Each went through the master's effects and loudness, as the song does."
+                                    : "None went through the master's effects: put together, they make the mix before it.");
+
+    if (! silent.isEmpty())
+        message << "\n\nLeft out, as they make no sound: " << silent.joinIntoString (", ") << ".";
+
+    return message;
+}
+
+juce::String MainComponent::freezeChannel (int channelId)
+{
+    auto* channel = song.findChannel (channelId);
+
+    if (channel == nullptr)
+        return {};
+
+    const auto name = channel->name;
+
+    if (channel->type == InstrumentType::audio)
+        return name + " plays audio already: there's nothing to freeze";
+
+    std::optional<Freeze> made;
+    juce::String error;
+
+    runWithProgress ("Freeze " + name, [&] (auto report)
+    {
+        report (0.0, "Playing " + name + "'s instrument and effects into audio...");
+        made = audio.renderFreeze (channelId, error);
+        report (1.0, {});
+    });
+
+    channel = song.findChannel (channelId);
+
+    if (! made.has_value() || channel == nullptr)
+        return "NightShift couldn't freeze " + name + ": " + error;
+
+    song.checkpoint();
+    channel->freeze = *made;
+    song.notify (Song::Change::channels);
+    audio.syncNow();
+    return name + " is frozen: it plays from audio, its instrument and effects switched off. Its fader, pan and sends still work";
+}
+
+juce::String MainComponent::unfreezeChannel (int channelId)
+{
+    auto* channel = song.findChannel (channelId);
+
+    if (channel == nullptr || ! channel->freeze.on)
+        return {};
+
+    song.checkpoint();
+    channel->freeze = {};
+    song.notify (Song::Change::channels);
+    audio.syncNow();
+    return channel->name + " is unfrozen: it plays live again, its instrument and effects switched back on";
+}
+
+bool MainComponent::mayEditNotes (int channelId)
+{
+    auto* channel = song.findChannel (channelId);
+
+    if (channel == nullptr || ! channel->freeze.on)
+        return true;
+
+    // One question at a time (a drag or a held key would ask again and again)
+    if (askingToUnfreeze)
+        return false;
+
+    askingToUnfreeze = true;
+    auto* window = new juce::AlertWindow (channel->name + " is frozen",
+                                          "It plays from audio, its instrument and effects switched off, so its notes can't change "
+                                          "while it's frozen. Unfreeze it to edit them?",
+                                          juce::MessageBoxIconType::QuestionIcon, this);
+    window->addButton ("Unfreeze", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<MainComponent> self (this);
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([self, channelId] (int result)
+    {
+        if (self == nullptr)
+            return;
+
+        self->askingToUnfreeze = false;
+
+        if (result == 1)
+            if (const auto said = self->unfreezeChannel (channelId); said.isNotEmpty())
+                self->showToast (said);
     }), true);
+
+    return false;
 }
 
 void MainComponent::chooseExportFile (int bits)
@@ -3546,7 +3840,7 @@ juce::String MainComponent::describeExport (const juce::File& file, int bits, bo
 {
     juce::String quality = "24-bit";
 
-    for (auto& q : exportQualities)
+    for (auto& q : ExportWindow::wavQualities())
         if (q.bits == bits)
             quality = q.shortName;
 

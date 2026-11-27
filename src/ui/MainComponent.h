@@ -76,11 +76,36 @@ public:
 
     /** Saves (asking for a name if it has none, or for Save as), then calls `saved` if it did. */
     void saveProject (bool saveAs, std::function<void()> saved = nullptr);
+
+    /** Export (Ctrl+R): its window (ExportWindow) - the song as a WAV or an MP3, or stems - then where
+        to save it, the render, and what came out. The choices are remembered for next time. */
     void exportAudio();
 
     /** What the export's finished message says: where, how (bits, sample rate, how much), and
         how loud it came out, warning when the peak's above -1 dB. */
     static juce::String describeExport (const juce::File&, int bits, bool wholeSong, const mastering::Readings&);
+
+    /** The same for an MP3 ("320 kbps MP3"). */
+    static juce::String describeMp3 (const juce::File&, int kbps, bool wholeSong, const mastering::Readings&);
+
+    /** What stems' finished message says: how many, where, how long and how, and which channels and
+        buses were left out for making no sound. */
+    static juce::String describeStems (const juce::File& folder, const std::vector<AudioEngine::Stem>&, int bits, bool throughMaster,
+                                       double seconds, bool wholeSong, const juce::StringArray& silent);
+
+    /** Stems into a new folder in `parent` (named after the song), as Export does once a folder's chosen,
+        a window showing how far it's got; returns the finished message, or why it failed. */
+    juce::String exportStems (const juce::File& parent, int bits, bool throughMaster);
+
+    /** Freeze (a channel's menu): its instrument and effects rendered to audio that plays in their place,
+        them switched off to save the computer's power (see Freeze in Song.h). Unfreeze switches them back
+        on. Each is an undo step; each returns what it says it did, or why it couldn't. */
+    juce::String freezeChannel (int channelId);
+    juce::String unfreezeChannel (int channelId);
+
+    /** Before a channel's notes change (the piano roll, Steps, an AI part): true to go ahead. A frozen
+        channel's can't, so it asks whether to unfreeze it first, and says false. */
+    bool mayEditNotes (int channelId);
 
     /** Export MIDI file: the whole song's notes as Arrange plays them, or one pattern's, with the
         tempo and time signature (see midifile::write), asked which first, then where. */
@@ -265,6 +290,17 @@ public:
 private:
     /** Export's second step: where to save it, then the render and the finished message. */
     void chooseExportFile (int bits);
+    void chooseMp3File (int kbps);
+    void chooseStemsFolder (int bits, bool throughMaster);
+
+    // Export's window while it's open, and how far a long job (stems, a freeze) has got for its progress window
+    juce::Component::SafePointer<juce::DialogWindow> exportWindow;
+    double jobProgress = 0.0;
+    bool askingToUnfreeze = false;
+
+    /** A small window with a progress bar while `work` runs (it pumps messages as it renders); `work` gets
+        a callback to say how far it's got and what it's doing. */
+    void runWithProgress (const juce::String& title, std::function<void (std::function<void (double, const juce::String&)>)> work);
 
     /** The gap between Arrange and the editor, which drags to resize them. */
     struct Splitter : public juce::Component

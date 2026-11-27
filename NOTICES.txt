@@ -11,7 +11,8 @@ plugins, is at:
     https://github.com/ExfilBravo/nightshift-drums
 
 NightShift and its plugins are built with the following open-source software. Each one's full licence
-text is in its folder in the source (external/tracktion_engine and external/NeuralAmpModelerCore).
+text is in its folder in the source (external/tracktion_engine, external/NeuralAmpModelerCore, and
+external/lame-3.100 once the build has fetched LAME).
 
   JUCE 9 (juce.com) ......................... GNU Affero General Public License v3
       with, inside JUCE: the VST3 SDK (MIT), the ASIO SDK (GPL v3), the Audio Unit SDK (Apache 2.0)
@@ -26,6 +27,11 @@ text is in its folder in the source (external/tracktion_engine and external/Neur
   Neural Amp Modeler core and AudioDSPTools . MIT (Steven Atkinson)
       with: Eigen (MPL 2.0), nlohmann/json (MIT), the iPlug2 / WDL resampler (zlib-style)
   Selawik font 1.01 (Microsoft) ............. SIL Open Font License 1.1 (resources/fonts)
+  LAME 3.100 (lame.sourceforge.io) .......... GNU Lesser General Public License 2 or later
+      the MP3 encoder Export uses: its libmp3lame, built into NightShift from the 3.100 release
+      (lame-3.100.tar.gz, SHA-256 ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e),
+      Copyright (c) 1999-2017 the LAME developers (Mike Cheng, Mark Taylor, Robert Hegemann,
+      Alexander Leidinger, Takehiro Tominaga, Gabriel Bouvigne and others)
 
 GPL v3 section 13 allows combining NightShift (GPL v3 or later) with JUCE (AGPL v3).
 

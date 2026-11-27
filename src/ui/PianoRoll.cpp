@@ -202,6 +202,12 @@ bool PianoRoll::edit (EditCommand c, std::optional<int> pasteAt)
 
     if (! canEdit (c))
         return false;
+
+    // Everything but selecting and copying changes notes: a frozen channel's ask to unfreeze it first
+    if (c != EditCommand::selectAll && c != EditCommand::deselect && c != EditCommand::copy
+         && mayEditNotes != nullptr && ! mayEditNotes (editId))
+        return false;
+
     const int step = snap > 1 ? snap : ticksPerStep;
 
     // The selected notes' earliest start, lowest and highest keys, and latest end
@@ -690,6 +696,49 @@ void PianoRoll::paint (juce::Graphics& g)
     g.setColour (textFaint);
     g.setFont (labelFont());
     g.drawText ("VEL", 0, velocityArea.getY() + 8, keysArea.getWidth(), 14, juce::Justification::centred, true);
+
+    // Frozen: a banner over the notes saying so; a click on it asks to unfreeze the channel
+    if (const auto banner = getFrozenBannerBounds(); ! banner.isEmpty())
+    {
+        g.setColour (panelLight);
+        g.fillRoundedRectangle (banner.toFloat(), 8.0f);
+        g.setColour (accentCool.withAlpha (0.6f));
+        g.drawRoundedRectangle (banner.toFloat().reduced (0.5f), 8.0f, 1.0f);
+        g.setColour (text);
+        g.setFont (font (16.0f));
+        g.drawText (frozenBannerText(), banner.reduced (14, 0), juce::Justification::centredLeft, true);
+    }
+}
+
+juce::String PianoRoll::frozenBannerText() const
+{
+    auto c = song.findChannel (editId);
+
+    if (c == nullptr || ! c->freeze.on)
+        return {};
+
+    // The whole sentence where it fits, else less
+    const float room = (float) gridArea.getWidth() - 20.0f - 28.0f;
+    const juce::StringArray tries { c->name + " is frozen: it plays from audio, so its notes can't change. Click here to unfreeze it",
+                                    c->name + " is frozen. Click here to unfreeze it",
+                                    "Frozen: click to unfreeze" };
+
+    for (auto& t : tries)
+        if (juce::GlyphArrangement::getStringWidth (font (16.0f), t) <= room)
+            return t;
+
+    return tries[tries.size() - 1];
+}
+
+juce::Rectangle<int> PianoRoll::getFrozenBannerBounds() const
+{
+    const auto words = frozenBannerText();
+
+    if (words.isEmpty())
+        return {};
+
+    const int w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (font (16.0f), words)) + 28;
+    return { gridArea.getX() + 10, gridArea.getY() + 10, std::min (w, gridArea.getWidth() - 20), 34 };
 }
 
 void PianoRoll::paintGrid (juce::Graphics& g)
@@ -1002,9 +1051,24 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
     if (channel() == nullptr)
         return;
 
+    // A frozen channel's banner: a click asks to unfreeze it
+    if (getFrozenBannerBounds().contains (e.getPosition()))
+    {
+        if (mayEditNotes != nullptr)
+            mayEditNotes (editId);
+
+        return;
+    }
+
+    // Anything that would change a frozen channel's notes asks to unfreeze it first (selecting doesn't)
+    auto mayEdit = [this] { return mayEditNotes == nullptr || mayEditNotes (editId); };
+
     if (velocityArea.contains (e.getPosition()))
     {
         dragIndex = velocityNoteAt (p);
+
+        if (dragIndex >= 0 && ! mayEdit())
+            return;
 
         if (dragIndex >= 0)
         {
@@ -1030,6 +1094,9 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
 
     if (e.mods.isPopupMenu() || tool == Tool::erase)
     {
+        if (! mayEdit())
+            return;
+
         song.checkpoint();
         drag = Drag::erase;
         mouseDrag (e);
@@ -1064,6 +1131,12 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
         if (chosen.count (index) == 0)
             chosen = { index };
 
+        if (! mayEdit())
+        {
+            repaint();
+            return;
+        }
+
         song.checkpoint();
         auto& n = list[(size_t) index];
         dragIndex = index;
@@ -1074,6 +1147,9 @@ void PianoRoll::mouseDown (const juce::MouseEvent& e)
     }
     else
     {
+        if (! mayEdit())
+            return;
+
         song.checkpoint();
         Note n;
         n.start = snapDown (xToTick (p.x));
