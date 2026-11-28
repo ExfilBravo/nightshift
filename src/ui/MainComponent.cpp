@@ -377,8 +377,8 @@ MainComponent::MainComponent (Song& s, AudioEngine& a)
     pianoRoll.mayEditNotes = [this] (int id) { return mayEditNotes (id); };
     freezing::mayEditNotes = [this] (int id) { return mayEditNotes (id); };     // the AI band's players
 
-    playlist.onOpenPattern = [this] (int id) { openPattern (id); };
-    playlist.onOpenChannel = [this] (int id) { openChannel (id); };
+    playlist.onOpenNotes = [this] (int patternId, int channelId) { openNotes (patternId, channelId); };
+    playlist.onOpenInstrument = [this] (int id) { openTrackInstrument (id); };
     playlist.onAddSound = [this] (const juce::String& sound) { return rack.addSound (sound); };
     playlist.nameOfSound = [this] (const juce::String& sound) { return rack.soundName (sound); };
     playlist.onShowAddMenu = [this] (int at, juce::Rectangle<int> area) { showAddTrackMenu (at, area); };
@@ -1013,7 +1013,7 @@ bool MainComponent::playsMelody (const Pattern& pattern, const Channel& c) const
     return c.type != InstrumentType::sampler;
 }
 
-void MainComponent::openPattern (int patternId)
+void MainComponent::openNotes (int patternId, int channelId)
 {
     auto pattern = song.findPattern (patternId);
 
@@ -1026,33 +1026,68 @@ void MainComponent::openPattern (int patternId)
         song.notify (Song::Change::currentPattern);
     }
 
-    // The piano roll on the selected channel if it plays a melody here, else the first that does
-    const Channel* melody = nullptr;
-    const Channel* firstPlaying = nullptr;
+    // The clip's track's own channel; else the selected one if it plays here, else the first
+    // playing a melody here, else the first playing here at all (a drum, its hits in the roll)
+    int chosen = song.findChannel (channelId) != nullptr ? channelId : 0;
 
-    for (auto& c : song.channels)
+    if (chosen == 0)
     {
-        if (! playsIn (*pattern, c.id))
-            continue;
+        const Channel* melody = nullptr;
+        const Channel* firstPlaying = nullptr;
 
-        if (firstPlaying == nullptr)
-            firstPlaying = &c;
+        for (auto& c : song.channels)
+        {
+            if (! playsIn (*pattern, c.id))
+                continue;
 
-        if (playsMelody (*pattern, c) && (melody == nullptr || c.id == song.selectedChannelId))
-            melody = &c;
+            if (c.id == song.selectedChannelId)
+            {
+                chosen = c.id;
+                break;
+            }
+
+            if (firstPlaying == nullptr)
+                firstPlaying = &c;
+
+            if (melody == nullptr && playsMelody (*pattern, c))
+                melody = &c;
+        }
+
+        if (chosen == 0)
+            chosen = melody != nullptr ? melody->id : firstPlaying != nullptr ? firstPlaying->id : 0;
     }
 
-    if (melody != nullptr)
-    {
-        openPianoRoll (melody->id);
+    if (chosen != 0)
+        openPianoRoll (chosen);
+}
+
+void MainComponent::openTrackInstrument (int channelId)
+{
+    auto c = song.findChannel (channelId);
+
+    if (c == nullptr)
         return;
+
+    selectChannel (channelId);
+
+    if (c->type == InstrumentType::sampler)
+    {
+        // A sampled sound's instrument is its row in Steps, on a pattern it plays in
+        if (! playsIn (song.currentPattern(), channelId))
+            for (auto& p : song.patterns)
+                if (playsIn (p, channelId))
+                {
+                    song.currentPatternId = p.id;
+                    song.notify (Song::Change::currentPattern);
+                    break;
+                }
+
+        showEditorTab (Panel::rack);
     }
-
-    // All drums: Steps, with one of them selected
-    if (firstPlaying != nullptr && ! playsIn (*pattern, song.selectedChannelId))
-        selectChannel (firstPlaying->id);
-
-    showEditorTab (Panel::rack);
+    else if (c->type != InstrumentType::audio)
+    {
+        openInstrument (channelId);     // Nova's panel, a plugin's window, the kit's drummer, a synth plugged in's menu
+    }
 }
 
 void MainComponent::openChannel (int channelId)

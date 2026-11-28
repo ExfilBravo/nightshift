@@ -834,17 +834,6 @@ void Playlist::selectChannelOn (int row)
         selectChannel (ids.front());
 }
 
-int Playlist::firstPatternOn (int row) const
-{
-    const PlaylistClip* first = nullptr;
-
-    for (auto& clip : song.playlist)
-        if (clip.track == row && (first == nullptr || clip.start < first->start))
-            first = &clip;
-
-    return first != nullptr ? first->patternId : 0;
-}
-
 const AudioClip* Playlist::openFolderOn (int row) const
 {
     for (auto& c : song.audioClips)
@@ -4142,8 +4131,9 @@ void Playlist::mouseDoubleClick (const juce::MouseEvent& e)
             return;
         }
 
-    // FL: a track's name opens its channel, or its pattern when it plays several (renaming
-    // is in the right-click menu)
+    // Logic: a track's header always opens its instrument; a track playing several channels (a
+    // drum pattern's) opens the one its first click selected (its buttons and icon keep their
+    // own clicks, and renaming is in the right-click menu)
     if (headerArea.contains (e.getPosition()))
     {
         const int row = yToRow (e.position.y);
@@ -4152,11 +4142,10 @@ void Playlist::mouseDoubleClick (const juce::MouseEvent& e)
             return;
 
         const auto ids = channelsOn (row);
+        const bool selectedHere = std::find (ids.begin(), ids.end(), song.selectedChannelId) != ids.end();
 
-        if (ids.size() == 1 && onOpenChannel != nullptr)
-            onOpenChannel (ids.front());
-        else if (ids.size() > 1 && onOpenPattern != nullptr)
-            onOpenPattern (firstPatternOn (row));
+        if (! ids.empty() && onOpenInstrument != nullptr)
+            onOpenInstrument (selectedHere ? song.selectedChannelId : ids.front());
 
         return;
     }
@@ -4195,9 +4184,11 @@ void Playlist::mouseDoubleClick (const juce::MouseEvent& e)
         clip.expanded = ! clip.expanded;
         song.notify (Song::Change::selection);
     }
-    else if (hit.found() && ! hit.audio && onOpenPattern != nullptr)
+    else if (hit.found() && ! hit.audio && onOpenNotes != nullptr)
     {
-        onOpenPattern (song.playlist[(size_t) hit.index].patternId);
+        // Logic and FL: a clip's notes, always in the piano roll (drums too)
+        const auto& clip = song.playlist[(size_t) hit.index];
+        onOpenNotes (clip.patternId, song.trackChannel (clip.track));
     }
 }
 

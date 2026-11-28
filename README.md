@@ -182,10 +182,12 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License ([LICENSE](LICENSE)
   channels) shows the drum already selected, else its first; right-click > Select channel picks another.
   The panel shows itself in windows 1280 px wide or more; Shift+I (or the button at the right of Arrange's header)
   shows or hides it.
-- **Double-clicks** (as in FL) – a pattern clip opens it in the piano roll on the channel playing its melody
-  (the selected one if it does), or in Steps if it's all drums; a track's or channel's name opens its plugin's
-  window, or its notes in the piano roll (a melody) or Steps (a drum), on a pattern it plays in. Rename is in
-  the right-click menus, and F2 renames the selected channel.
+- **Double-clicks** (as in Logic and FL) – in Arrange, a track's header always opens its instrument: Nova's
+  panel for a synth, a plugin's own window, the drummer for a drum kit, or Steps for a sampled sound (on a track
+  playing several channels, the selected one's). A clip always opens its notes in the piano roll, drums too, on
+  the track's channel (else the selected one, else the first playing a melody). In Steps, a channel's name opens
+  its plugin's window, or its notes in the piano roll (a melody) or Steps (a drum), on a pattern it plays in.
+  Rename is in the right-click menus, and F2 renames the selected channel.
 - **Mixer** (F9, the editor's third tab; as in Logic) – a strip per channel in Steps' order, then the buses,
   then the master pinned on the right; it takes the editor's whole height (and the Inspector steps aside)
   until you leave it. Strips scroll sideways. Each channel's **Output** plays into the master or a bus; its
@@ -1341,8 +1343,9 @@ chain, that Crush changes a kick, bypass, order, removal, and that a setting sur
 `--snapshot ... --lofi` shows them in the sidebar, with two on Kick and Vinyl on the master.
 `--mutetest` mutes a row mid-chord while playing and checks the chord stops (it used to hang on for ever).
 `--inspectortest` clicks through the whole studio: tracks, clips and an audio clip select their channel in
-the Inspector, its fader (drag, double-click, undo), Mute and Solo work, double-clicks on tracks, clips and a
-Steps row open the right editor, and the panel hides in a narrow window until Shift+I asks for it. `--fxtest` also
+the Inspector, its fader (drag, double-click, undo), Mute and Solo work, double-clicking a track's header opens its
+instrument (Keys' synth, the 808 and a drum in Steps), a clip its notes in the piano roll (Keys, the 808, a drum) and
+a Steps row stays in Steps, and the panel hides in a narrow window until Shift+I asks for it. `--fxtest` also
 clicks the Inspector's effect slots and lights. `--snapshot ... --select <channel>` shows a channel in it.
 `--stockfxtest` measures each stock effect on known signals: EQ and filter against their drawn curves,
 the compressor against its static curve and timing, the reverb's RT60 and stability, the delay's echo

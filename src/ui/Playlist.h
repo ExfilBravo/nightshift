@@ -48,10 +48,11 @@ public:
 
     void refreshPlayhead();
 
-    /** FL's double-clicks: a pattern clip opens the pattern; a track's name opens its channel
-        (or its first pattern, when it plays several channels). */
-    std::function<void (int patternId)> onOpenPattern;
-    std::function<void (int channelId)> onOpenChannel;
+    /** Double-clicks, as in Logic and FL: a track's header opens its instrument (the selected
+        channel's when the track plays several), and a pattern clip opens its notes in the piano
+        roll (on the track's own channel, 0 when it's a pattern's track). */
+    std::function<void (int channelId)> onOpenInstrument;
+    std::function<void (int patternId, int channelId)> onOpenNotes;
 
     /** Making channels for dragged sounds (returning the new channel's id, 0 if it can't),
         swapping a channel's instrument for one, putting an effect on a channel, naming a
@@ -406,7 +407,6 @@ private:
     void deleteTrack (int row, bool andChannel);
     void selectChannel (int channelId);
     void selectChannelOn (int row);
-    int firstPatternOn (int row) const;
 
     /** Row of the "Add track" line under the last track. */
     int addRow() const                      { return song.numTracks(); }

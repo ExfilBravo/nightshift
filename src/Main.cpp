@@ -6875,21 +6875,40 @@ namespace
 
             check (othersMuted && allBack, "Solo on the strip leaves only Keys playing, and again brings everything back");
 
-            // Double-clicks
-            main.setPanelVisible (Panel::rack, true);
+            // Double-clicks, as in Logic: a track's header opens its instrument, a clip its notes in
+            // the piano roll (drums too)
+            auto barX = [] (int bar) { return (float) Playlist::headerWidth + 72.0f * (float) bar + 10.0f; };   // a bar is 72 px here
+            main.setPanelVisible (Panel::pianoRoll, true);
+            doubleClick (playlist, header (keysRow));
+            check (shown (idOf ("Keys")) && main.isPanelVisible (Panel::synth),
+                   "double-clicking the Keys track's header opens its instrument, Keys' synth");
+
             doubleClick (playlist, header (bassRow));
-            check (shown (idOf ("808")) && main.isPanelVisible (Panel::pianoRoll) && song.currentPatternId == patternNamed ("808"),
-                   "double-clicking the 808 track opens its notes in the piano roll");
+            check (shown (idOf ("808")) && main.isPanelVisible (Panel::rack) && song.currentPatternId == patternNamed ("808"),
+                   "double-clicking the 808 track's header opens its instrument, the sampled 808 in Steps");
 
             doubleClick (playlist, header (drumsRow));
             const auto selectedDrum = song.findChannel (song.selectedChannelId);
             check (main.isPanelVisible (Panel::rack) && song.currentPatternId == patternNamed ("Beat")
                      && selectedDrum != nullptr && selectedDrum->type == InstrumentType::sampler && selectedDrum->name != "808",
-                   "double-clicking the drums track opens its first pattern (Beat) in Steps, with a drum selected");
+                   "double-clicking the drums track's header opens a drum in Steps, in Beat");
 
             doubleClick (playlist, { (float) Playlist::headerWidth + 30.0f, header (keysRow).y });
             check (shown (idOf ("Keys")) && main.isPanelVisible (Panel::pianoRoll) && song.currentPatternId == patternNamed ("Keys"),
                    "double-clicking a Keys clip opens it in the piano roll, on Keys");
+
+            doubleClick (playlist, { barX (4), header (bassRow).y });
+            check (shown (idOf ("808")) && main.isPanelVisible (Panel::pianoRoll) && song.currentPatternId == patternNamed ("808"),
+                   "double-clicking an 808 clip opens its notes in the piano roll");
+
+            main.setPanelVisible (Panel::rack, true);
+            doubleClick (playlist, { barX (4), header (drumsRow).y });
+            const auto drumInRoll = song.findChannel (song.selectedChannelId);
+            const auto drumNotes = drumInRoll != nullptr ? song.currentPattern().findNotes (drumInRoll->id) : nullptr;
+            check (main.isPanelVisible (Panel::pianoRoll) && drumInRoll != nullptr && drumInRoll->type == InstrumentType::sampler
+                     && drumNotes != nullptr && ! drumNotes->empty(),
+                   "double-clicking a drum clip opens its notes in the piano roll too, on a drum ("
+                     + (drumInRoll != nullptr ? drumInRoll->name : juce::String ("none")) + ")");
 
             // Steps: double-clicking a drum's name selects it and stays in Steps
             main.setPanelVisible (Panel::rack, true);

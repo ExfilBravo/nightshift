@@ -222,9 +222,15 @@ public:
     juce::Component::SafePointer<juce::DialogWindow> packsWindow;
     juce::String importDrumKitFrom (const juce::File& folder);
 
-    /** Double-click a pattern clip: the pattern in the piano roll, on the channel playing
-        its melody (the selected one if it does), or in Steps if it's all drums. */
-    void openPattern (int patternId);
+    /** Double-click a pattern clip in Arrange: its notes in the piano roll, always (drums too), on
+        `channelId` (the clip's track's own channel), else the selected channel if it plays in the
+        pattern, else the first playing a melody there, else the first playing there at all. */
+    void openNotes (int patternId, int channelId);
+
+    /** Double-click a track's header in Arrange (as in Logic): select its channel and open its
+        instrument. A sampled sound's is its row in Steps, on a pattern it plays in, and an audio
+        track's is its strip, already in the Inspector; the rest as openInstrument opens them. */
+    void openTrackInstrument (int channelId);
 
     /** Double-click a channel's name: select it, and open its plugin's window, or the
         piano roll for a melody, or Steps for a drum, on a pattern it plays in; the
