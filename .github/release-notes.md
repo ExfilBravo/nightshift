@@ -1,6 +1,10 @@
 NightShift is a free music studio for Windows and Mac: patterns and a step sequencer, a piano roll, a mixer, built-in synths and drum kits, and an AI band (drummer, bass, guitar, keys and synth) that writes parts in the style you describe.
 
-## What's new in 1.0
+## What's new in 1.0.1
+
+- **Double-clicks in Arrange work as in Logic.** Double-click a track's header and its instrument opens, every time: Nova's panel for a synth, a plugin's own window, the drummer for a drum kit, or Steps for a sampled sound. Double-click a clip and its notes open in the piano roll, drums included.
+
+## New in 1.0
 
 Everything that was on NightShift's "Not yet" list is in, plus free sample packs and TONE3000.
 
